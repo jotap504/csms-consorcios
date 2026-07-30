@@ -156,7 +156,16 @@ export default function ConsorcioDashboard() {
 
         <TabsContent value="cargadores">
           <Card>
-            <CardHeader><CardTitle>Cargadores del consorcio</CardTitle></CardHeader>
+            <CardHeader>
+              <CardTitle>Cargadores del consorcio</CardTitle>
+              <p className="mt-1 flex items-center gap-1.5 text-sm text-muted-foreground">
+                <Activity className="h-3.5 w-3.5" />
+                Consumo total ahora:
+                <span className="tabular-nums font-semibold text-foreground">
+                  {live.filter((c) => c.activo && c.potencia_actual_kw != null).reduce((sum, c) => sum + Number(c.potencia_actual_kw), 0).toFixed(1)} kW
+                </span>
+              </p>
+            </CardHeader>
             <CardContent>
               {cargadores.length === 0 ? (
                 <p className="text-sm text-muted-foreground">No hay cargadores registrados todavia.</p>
@@ -167,20 +176,33 @@ export default function ConsorcioDashboard() {
                       <TableHead>OCPP ID</TableHead>
                       <TableHead>Modelo</TableHead>
                       <TableHead>Estado</TableHead>
+                      <TableHead className="text-right">Consumo actual</TableHead>
+                      <TableHead className="text-right">Hoy</TableHead>
+                      <TableHead className="text-right">Semana</TableHead>
+                      <TableHead className="text-right">Mes</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {cargadores.map((c) => (
+                    {cargadores.map((c) => {
+                      const l = live.find((x) => x.ocpp_id === c.ocpp_id);
+                      return (
                       <TableRow key={c.id}>
                         <TableCell className="font-mono text-xs">{c.ocpp_id}</TableCell>
                         <TableCell>{c.charge_point_vendor} {c.charge_point_model}</TableCell>
                         <TableCell>
-                          <Badge variant={c.estado_online ? 'accent' : 'muted'}>
-                            {c.estado_online ? 'Online' : 'Offline'}
+                          <Badge variant={l?.activo ? 'accent' : 'muted'}>
+                            {l?.activo ? 'Cargando' : (c.estado_online ? 'Online' : 'Offline')}
                           </Badge>
                         </TableCell>
+                        <TableCell className="tabular-nums text-right">
+                          {l?.activo && l?.potencia_actual_kw != null ? `${Number(l.potencia_actual_kw).toFixed(1)} kW` : '-'}
+                        </TableCell>
+                        <TableCell className="tabular-nums text-right">{Number(l?.kwh_hoy ?? 0).toFixed(1)} kWh</TableCell>
+                        <TableCell className="tabular-nums text-right">{Number(l?.kwh_semana ?? 0).toFixed(1)} kWh</TableCell>
+                        <TableCell className="tabular-nums text-right">{Number(l?.kwh_mes ?? 0).toFixed(1)} kWh</TableCell>
                       </TableRow>
-                    ))}
+                      );
+                    })}
                   </TableBody>
                 </Table>
               )}

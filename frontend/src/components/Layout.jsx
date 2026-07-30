@@ -1,11 +1,11 @@
-import { NavLink, useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { LogOut } from 'lucide-react';
-import { cn } from '@/lib/utils';
 import { clearSession, getSession } from '@/lib/auth';
 
 export default function Layout({ title, navItems, children }) {
   const navigate = useNavigate();
   const session = getSession();
+  const homeTo = navItems?.[0]?.to ?? '/';
 
   function handleLogout() {
     clearSession();
@@ -13,49 +13,26 @@ export default function Layout({ title, navItems, children }) {
   }
 
   return (
-    <div className="min-h-dvh md:flex">
-      <aside className="flex shrink-0 flex-col border-b border-border bg-primary text-primary-foreground md:h-dvh md:w-60 md:border-b-0 md:border-r">
-        <div className="px-5 py-5">
-          <div className="inline-block rounded-lg bg-white px-3 py-2">
-            <img src="/logo.png" alt="Bilon Smart Buildings" className="h-7 w-auto" />
-          </div>
+    <div className="min-h-dvh">
+      <header className="sticky top-0 z-10 flex items-center justify-between gap-4 border-b border-border bg-white/80 px-6 py-3 backdrop-blur">
+        <div className="flex items-center gap-4">
+          <Link to={homeTo}>
+            <img src="/logo.png" alt="Bilon Smart Buildings" className="h-8 w-auto" />
+          </Link>
+          <h1 className="text-lg font-semibold">{title}</h1>
         </div>
-        <nav className="flex flex-1 flex-col gap-1 px-3">
-          {navItems.map((item) => (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              end={item.end}
-              className={({ isActive }) =>
-                cn(
-                  'flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
-                  isActive ? 'bg-white/15 text-white' : 'text-white/70 hover:bg-white/10 hover:text-white',
-                )
-              }
-            >
-              <item.icon className="h-4 w-4" />
-              {item.label}
-            </NavLink>
-          ))}
-        </nav>
-        <div className="border-t border-white/10 px-3 py-4">
+        <div className="flex items-center gap-4">
+          {session && <span className="text-sm text-muted-foreground">{session.rol}</span>}
           <button
             onClick={handleLogout}
-            className="flex w-full cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-white/70 transition-colors hover:bg-white/10 hover:text-white"
+            className="flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           >
             <LogOut className="h-4 w-4" />
             Cerrar sesion
           </button>
         </div>
-      </aside>
-
-      <div className="flex-1">
-        <header className="sticky top-0 z-10 flex items-center justify-between border-b border-border bg-white/80 px-6 py-4 backdrop-blur">
-          <h1 className="text-lg font-semibold">{title}</h1>
-          {session && <span className="text-sm text-muted-foreground">{session.rol}</span>}
-        </header>
-        <main className="p-6">{children}</main>
-      </div>
+      </header>
+      <main className="p-6">{children}</main>
     </div>
   );
 }

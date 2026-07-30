@@ -49,6 +49,9 @@ export default function AdminConsorcio() {
   const [dlmAmps, setDlmAmps] = useState('32');
   const [dlmStatus, setDlmStatus] = useState('');
 
+  const [editCargador, setEditCargador] = useState(null); // cargador row being edited, or null
+  const [editCargadorForm, setEditCargadorForm] = useState({ etiqueta: '', charge_point_vendor: '', charge_point_model: '' });
+
   const [paramsForm, setParamsForm] = useState({ limite_amperios_totales: '', costo_kwh_electricidad: '' });
 
   async function loadAll() {
@@ -105,6 +108,22 @@ export default function AdminConsorcio() {
 
   async function handleAssignCargadorUf(cargadorId, ufId) {
     await api.put(`/admin/cargadores/${cargadorId}`, { uf_id: ufId ? Number(ufId) : null });
+    loadAll();
+  }
+
+  function openEditCargador(c) {
+    setEditCargador(c);
+    setEditCargadorForm({
+      etiqueta: c.etiqueta ?? '',
+      charge_point_vendor: c.charge_point_vendor ?? '',
+      charge_point_model: c.charge_point_model ?? '',
+    });
+  }
+
+  async function handleEditCargador(e) {
+    e.preventDefault();
+    await api.put(`/admin/cargadores/${editCargador.id}`, editCargadorForm);
+    setEditCargador(null);
     loadAll();
   }
 
@@ -169,6 +188,11 @@ export default function AdminConsorcio() {
     }
   }
 
+  const liveByOcpp = new Map(live.map((c) => [c.ocpp_id, c]));
+  const consumoTotalActualKw = live
+    .filter((c) => c.activo && c.potencia_actual_kw != null)
+    .reduce((sum, c) => sum + Number(c.potencia_actual_kw), 0);
+
   if (!consorcio) {
     return (
       <Layout title="Cargando..." navItems={navItemsFor(session?.rol)}>
@@ -198,8 +222,15 @@ export default function AdminConsorcio() {
 
         <TabsContent value="cargadores">
           <Card>
-            <CardHeader className="flex-row items-center justify-between">
-              <CardTitle>Cargadores</CardTitle>
+            <CardHeader className="flex-row flex-wrap items-center justify-between gap-3">
+              <div>
+                <CardTitle>Cargadores</CardTitle>
+                <p className="mt-1 flex items-center gap-1.5 text-sm text-muted-foreground">
+                  <Activity className="h-3.5 w-3.5" />
+                  Consumo total ahora:
+                  <span className="tabular-nums font-semibold text-foreground">{consumoTotalActualKw.toFixed(1)} kW</span>
+                </p>
+              </div>
               <Dialog open={cargadorOpen} onOpenChange={setCargadorOpen}>
                 <DialogTrigger asChild>
                   <Button size="sm"><Plus className="h-4 w-4" />Agregar cargador</Button>
@@ -254,18 +285,22 @@ export default function AdminConsorcio() {
                     <TableRow>
                       <TableHead>Identificacion</TableHead>
                       <TableHead>ID OCPP</TableHead>
-                      <TableHead>Modelo</TableHead>
                       <TableHead>Unidad asignada</TableHead>
                       <TableHead>Estado</TableHead>
+                      <TableHead className="text-right">Consumo actual</TableHead>
+                      <TableHead className="text-right">Hoy</TableHead>
+                      <TableHead className="text-right">Semana</TableHead>
+                      <TableHead className="text-right">Mes</TableHead>
                       <TableHead className="text-right">Acciones</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {cargadores.map((c) => (
+                    {cargadores.map((c) => {
+                      const l = liveByOcpp.get(c.ocpp_id);
+                      return (
                       <TableRow key={c.id}>
                         <TableCell className="font-medium">{c.etiqueta || '-'}</TableCell>
                         <TableCell className="font-mono text-xs">{c.ocpp_id}</TableCell>
-                        <TableCell>{c.charge_point_vendor} {c.charge_point_model}</TableCell>
                         <TableCell>
                           <select
                             value={c.uf_id ?? ''}
@@ -279,10 +314,19 @@ export default function AdminConsorcio() {
                           </select>
                         </TableCell>
                         <TableCell>
-                          <Badge variant={c.estado_online ? 'accent' : 'muted'}>{c.estado_online ? 'Online' : 'Offline'}</Badge>
+                          <Badge variant={l?.activo ? 'accent' : 'muted'}>{l?.activo ? 'Cargando' : (c.estado_online ? 'Online' : 'Offline')}</Badge>
                         </TableCell>
+                        <TableCell className="tabular-nums text-right">
+                          {l?.activo && l?.potencia_actual_kw != null ? `${Number(l.potencia_actual_kw).toFixed(1)} kW` : '-'}
+                        </TableCell>
+                        <TableCell className="tabular-nums text-right">{Number(l?.kwh_hoy ?? 0).toFixed(1)} kWh</TableCell>
+                        <TableCell className="tabular-nums text-right">{Number(l?.kwh_semana ?? 0).toFixed(1)} kWh</TableCell>
+                        <TableCell className="tabular-nums text-right">{Number(l?.kwh_mes ?? 0).toFixed(1)} kWh</TableCell>
                         <TableCell className="text-right">
                           <div className="flex justify-end gap-1">
+                            <Button size="sm" variant="outline" onClick={() => openEditCargador(c)} title="Editar">
+                              <Pencil className="h-4 w-4" />
+                            </Button>
                             <Dialog open={dlmOpen === c.ocpp_id} onOpenChange={(open) => { setDlmOpen(open ? c.ocpp_id : null); setDlmStatus(''); }}>
                               <DialogTrigger asChild>
                                 <Button size="sm" variant="outline" title="Balanceo de carga">
@@ -310,12 +354,50 @@ export default function AdminConsorcio() {
                           </div>
                         </TableCell>
                       </TableRow>
-                    ))}
+                      );
+                    })}
                   </TableBody>
                 </Table>
               )}
             </CardContent>
           </Card>
+
+          <Dialog open={editCargador != null} onOpenChange={(open) => !open && setEditCargador(null)}>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Editar cargador</DialogTitle>
+                <DialogDescription>{editCargador?.ocpp_id}</DialogDescription>
+              </DialogHeader>
+              <form onSubmit={handleEditCargador} className="flex flex-col gap-3">
+                <div>
+                  <Label htmlFor="editEtiqueta">Etiqueta (identificacion)</Label>
+                  <Input
+                    id="editEtiqueta"
+                    placeholder="Ej: Cochera 5"
+                    value={editCargadorForm.etiqueta}
+                    onChange={(e) => setEditCargadorForm({ ...editCargadorForm, etiqueta: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="editVendor">Fabricante</Label>
+                  <Input
+                    id="editVendor"
+                    value={editCargadorForm.charge_point_vendor}
+                    onChange={(e) => setEditCargadorForm({ ...editCargadorForm, charge_point_vendor: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="editModel">Modelo</Label>
+                  <Input
+                    id="editModel"
+                    value={editCargadorForm.charge_point_model}
+                    onChange={(e) => setEditCargadorForm({ ...editCargadorForm, charge_point_model: e.target.value })}
+                  />
+                </div>
+                <Button type="submit" className="mt-2">Guardar cambios</Button>
+              </form>
+            </DialogContent>
+          </Dialog>
         </TabsContent>
 
         <TabsContent value="unidades">

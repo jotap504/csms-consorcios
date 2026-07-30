@@ -57,6 +57,14 @@ async function getConsorcioIdForStation(stationId) {
   return cargador.rows[0]?.consorcio_id ?? null;
 }
 
+async function getActiveConsorcioForStation(stationId) {
+  const r = await pool.query(
+    'SELECT consorcio_id FROM liquidacion_sesiones WHERE cargador_ocpp_id = $1 AND fecha_fin IS NULL LIMIT 1',
+    [stationId],
+  );
+  return r.rows[0]?.consorcio_id ?? null;
+}
+
 async function pushChargingProfile(ocppId, maxAmps) {
   const profileId = Date.now() % 1000000;
   const url = `${CITRINEOS_REST_URL}/ocpp/2.0.1/smartcharging/setChargingProfile?identifier=${encodeURIComponent(ocppId)}&tenantId=1`;
@@ -250,6 +258,21 @@ async function handleTransactionEvent(context, payload) {
   }
 }
 
+// Fail-safe default: whenever a station (re)connects, cap it at the minimum
+// unless it's reconnecting mid-session (e.g. brief WiFi drop), in which case
+// we restore its fair share instead of yanking an active car down to 6A.
+async function handleBootNotification(context) {
+  const stationId = context.ocppConnectionName;
+  const activeConsorcioId = await getActiveConsorcioForStation(stationId);
+  if (activeConsorcioId != null) {
+    console.log(`[Boot] ${stationId} reconecto con sesion activa, rebalanceando consorcio ${activeConsorcioId}`);
+    await rebalanceConsorcio(activeConsorcioId);
+  } else {
+    console.log(`[Boot] ${stationId} conecto sin sesion activa, aplicando piso de ${MIN_AMPS}A`);
+    await pushChargingProfile(stationId, MIN_AMPS);
+  }
+}
+
 async function main() {
   const conn = await amqp.connect(AMQP_URL);
   const channel = await conn.createChannel();
@@ -265,8 +288,14 @@ async function main() {
     state: '1',
     action: 'TransactionEvent',
   });
+  await channel.bindQueue(QUEUE, EXCHANGE, '', {
+    'x-match': 'all',
+    origin: 'cs',
+    state: '1',
+    action: 'BootNotification',
+  });
 
-  console.log(`Escuchando eventos TransactionEvent en cola "${QUEUE}"...`);
+  console.log(`Escuchando eventos TransactionEvent/BootNotification en cola "${QUEUE}"...`);
 
   // Safety net: re-balance periodically in case a Started/Ended event was
   // missed (e.g. listener was briefly down) and the last pushed profile is stale.
@@ -287,7 +316,11 @@ async function main() {
     if (!msg) return;
     try {
       const body = JSON.parse(msg.content.toString('utf-8'));
-      await handleTransactionEvent(body.context, body.payload);
+      if (body.action === 'BootNotification') {
+        await handleBootNotification(body.context);
+      } else {
+        await handleTransactionEvent(body.context, body.payload);
+      }
       channel.ack(msg);
     } catch (err) {
       console.error('Error procesando mensaje, se descarta:', err);

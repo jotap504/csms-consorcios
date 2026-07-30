@@ -80,7 +80,7 @@ router.get('/tarjetas', async (req, res) => {
 
 router.get('/live', async (req, res) => {
   const consorcioId = req.user.consorcioId;
-  const [cargadores, activos, lecturas] = await Promise.all([
+  const [cargadores, activos, lecturas, acumulados] = await Promise.all([
     pool.query('SELECT id, ocpp_id, etiqueta FROM cargadores WHERE consorcio_id = $1', [consorcioId]),
     pool.query(
       'SELECT cargador_ocpp_id, transaction_id_ocpp FROM liquidacion_sesiones WHERE consorcio_id = $1 AND fecha_fin IS NULL',
@@ -93,6 +93,16 @@ router.get('/live', async (req, res) => {
        ORDER BY "timestamp" ASC`,
       [consorcioId],
     ),
+    pool.query(
+      `SELECT cargador_ocpp_id,
+              COALESCE(SUM(kwh_consumidos) FILTER (WHERE fecha_inicio >= date_trunc('day', NOW())), 0) AS kwh_hoy,
+              COALESCE(SUM(kwh_consumidos) FILTER (WHERE fecha_inicio >= date_trunc('week', NOW())), 0) AS kwh_semana,
+              COALESCE(SUM(kwh_consumidos) FILTER (WHERE fecha_inicio >= date_trunc('month', NOW())), 0) AS kwh_mes
+       FROM liquidacion_sesiones
+       WHERE consorcio_id = $1
+       GROUP BY cargador_ocpp_id`,
+      [consorcioId],
+    ),
   ]);
 
   const activeByOcpp = new Map(activos.rows.map((r) => [r.cargador_ocpp_id, r.transaction_id_ocpp]));
@@ -101,15 +111,26 @@ router.get('/live', async (req, res) => {
     if (!readingsByOcpp.has(r.cargador_ocpp_id)) readingsByOcpp.set(r.cargador_ocpp_id, []);
     readingsByOcpp.get(r.cargador_ocpp_id).push(r);
   }
+  const acumuladosByOcpp = new Map(acumulados.rows.map((r) => [r.cargador_ocpp_id, r]));
 
   res.json(
-    cargadores.rows.map((c) => ({
-      ocpp_id: c.ocpp_id,
-      etiqueta: c.etiqueta,
-      activo: activeByOcpp.has(c.ocpp_id),
-      transaction_id_ocpp: activeByOcpp.get(c.ocpp_id) ?? null,
-      readings: readingsByOcpp.get(c.ocpp_id) ?? [],
-    })),
+    cargadores.rows.map((c) => {
+      const readings = readingsByOcpp.get(c.ocpp_id) ?? [];
+      const activo = activeByOcpp.has(c.ocpp_id);
+      const last = readings[readings.length - 1];
+      const acum = acumuladosByOcpp.get(c.ocpp_id);
+      return {
+        ocpp_id: c.ocpp_id,
+        etiqueta: c.etiqueta,
+        activo,
+        transaction_id_ocpp: activeByOcpp.get(c.ocpp_id) ?? null,
+        potencia_actual_kw: activo ? (last?.potencia_kw ?? null) : null,
+        readings,
+        kwh_hoy: Number(acum?.kwh_hoy ?? 0),
+        kwh_semana: Number(acum?.kwh_semana ?? 0),
+        kwh_mes: Number(acum?.kwh_mes ?? 0),
+      };
+    }),
   );
 });
 

@@ -1,6 +1,9 @@
 import axios from 'axios';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://192.168.1.38:3001';
+// Relative by default: nginx proxies /api/* to the backend container on the
+// same origin, so this works over LAN, a tunnel, or any public hostname
+// without a hardcoded IP baked into the build.
+const API_URL = import.meta.env.VITE_API_URL || '/api';
 
 export const api = axios.create({ baseURL: API_URL });
 
