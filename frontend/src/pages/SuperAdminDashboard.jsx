@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { Building2, Zap, Plus, Receipt } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { Building2, Zap, Plus, Receipt, LogIn } from 'lucide-react';
 import { api } from '@/lib/api';
 import Layout from '@/components/Layout';
 import {
@@ -112,6 +113,7 @@ export default function SuperAdminDashboard() {
                   <TableHead>Plan</TableHead>
                   <TableHead>Estado</TableHead>
                   <TableHead className="text-right">Costo kWh</TableHead>
+                  <TableHead className="text-right">Instalacion</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -125,6 +127,15 @@ export default function SuperAdminDashboard() {
                       </Badge>
                     </TableCell>
                     <TableCell className="tabular-nums text-right">${Number(c.costo_kwh_electricidad).toFixed(2)}</TableCell>
+                    <TableCell className="text-right">
+                      <Link
+                        to={`/admin/consorcio/${c.id}`}
+                        className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
+                      >
+                        Entrar
+                        <LogIn className="h-3.5 w-3.5" />
+                      </Link>
+                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>

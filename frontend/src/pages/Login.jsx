@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { Zap, AlertCircle } from 'lucide-react';
 import { api } from '@/lib/api';
 import { saveSession, homeForRole } from '@/lib/auth';
@@ -60,6 +60,9 @@ export default function Login() {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
               />
+              <Link to="/forgot-password" className="mt-1.5 inline-block text-xs text-muted-foreground hover:text-primary hover:underline">
+                Olvidaste tu contrasena?
+              </Link>
             </div>
 
             {error && (

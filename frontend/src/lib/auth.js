@@ -19,6 +19,8 @@ export function homeForRole(rol) {
   switch (rol) {
     case 'superadmin':
       return '/superadmin';
+    case 'instalador':
+      return '/instalador';
     case 'consorcio_admin':
       return '/consorcio';
     case 'residente':

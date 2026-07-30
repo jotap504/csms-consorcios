@@ -7,6 +7,7 @@ app.use(express.json());
 
 app.use('/auth', require('./routes/auth'));
 app.use('/superadmin', require('./routes/superadmin'));
+app.use('/admin', require('./routes/admin'));
 app.use('/consorcio', require('./routes/consorcio'));
 app.use('/residente', require('./routes/residente'));
 

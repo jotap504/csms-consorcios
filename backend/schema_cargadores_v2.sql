@@ -1,0 +1,1 @@
+ALTER TABLE cargadores ADD COLUMN IF NOT EXISTS etiqueta VARCHAR(100);
