@@ -66,14 +66,51 @@ router.get('/unidades', async (req, res) => {
 
 router.get('/tarjetas', async (req, res) => {
   const result = await pool.query(
-    `SELECT t.id, t.id_tag_ocpp, t.activa, uf.numero_departamento, uf.propietario_nombre
+    `SELECT t.id, t.id_tag_ocpp, t.activa, uf.numero_departamento, uf.propietario_nombre,
+            ca.ocpp_id AS cargador_ocpp_id, ca.etiqueta AS cargador_etiqueta
      FROM tarjetas_rfid t
      JOIN unidades_funcionales uf ON uf.id = t.uf_id
+     LEFT JOIN cargadores ca ON ca.id = t.cargador_id
      WHERE uf.consorcio_id = $1
      ORDER BY uf.numero_departamento`,
     [req.user.consorcioId],
   );
   res.json(result.rows);
+});
+
+router.get('/live', async (req, res) => {
+  const consorcioId = req.user.consorcioId;
+  const [cargadores, activos, lecturas] = await Promise.all([
+    pool.query('SELECT id, ocpp_id, etiqueta FROM cargadores WHERE consorcio_id = $1', [consorcioId]),
+    pool.query(
+      'SELECT cargador_ocpp_id, transaction_id_ocpp FROM liquidacion_sesiones WHERE consorcio_id = $1 AND fecha_fin IS NULL',
+      [consorcioId],
+    ),
+    pool.query(
+      `SELECT cargador_ocpp_id, "timestamp", kwh_acumulado, potencia_kw
+       FROM lecturas_medidor
+       WHERE consorcio_id = $1 AND "timestamp" > NOW() - INTERVAL '30 minutes'
+       ORDER BY "timestamp" ASC`,
+      [consorcioId],
+    ),
+  ]);
+
+  const activeByOcpp = new Map(activos.rows.map((r) => [r.cargador_ocpp_id, r.transaction_id_ocpp]));
+  const readingsByOcpp = new Map();
+  for (const r of lecturas.rows) {
+    if (!readingsByOcpp.has(r.cargador_ocpp_id)) readingsByOcpp.set(r.cargador_ocpp_id, []);
+    readingsByOcpp.get(r.cargador_ocpp_id).push(r);
+  }
+
+  res.json(
+    cargadores.rows.map((c) => ({
+      ocpp_id: c.ocpp_id,
+      etiqueta: c.etiqueta,
+      activo: activeByOcpp.has(c.ocpp_id),
+      transaction_id_ocpp: activeByOcpp.get(c.ocpp_id) ?? null,
+      readings: readingsByOcpp.get(c.ocpp_id) ?? [],
+    })),
+  );
 });
 
 router.post('/tarjetas', async (req, res) => {

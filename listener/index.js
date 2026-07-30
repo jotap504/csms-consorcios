@@ -31,6 +31,29 @@ function energyWh(meterValue) {
   return unit === 'kWh' ? value * 1000 : value;
 }
 
+function powerKw(meterValue) {
+  if (!Array.isArray(meterValue) || meterValue.length === 0) return null;
+  const last = meterValue[meterValue.length - 1];
+  const sample = (last.sampledValue || []).find((sv) => sv.measurand === 'Power.Active.Import');
+  if (!sample) return null;
+  const value = Number(sample.value);
+  const unit = sample.unitOfMeasure?.unit;
+  return unit === 'W' ? value / 1000 : value;
+}
+
+async function recordLectura(stationId, transactionId, consorcioId, timestamp, whReading) {
+  await pool.query(
+    `INSERT INTO lecturas_medidor (cargador_ocpp_id, transaction_id_ocpp, consorcio_id, "timestamp", kwh_acumulado, potencia_kw)
+     VALUES ($1, $2, $3, $4, $5, $6)`,
+    [stationId, String(transactionId), consorcioId, timestamp, whReading.wh / 1000, whReading.powerKw],
+  );
+}
+
+async function getConsorcioIdForStation(stationId) {
+  const cargador = await pool.query('SELECT consorcio_id FROM cargadores WHERE ocpp_id = $1', [stationId]);
+  return cargador.rows[0]?.consorcio_id ?? null;
+}
+
 async function handleStarted(context, payload) {
   const stationId = context.ocppConnectionName;
   const transactionId = payload.transactionInfo.transactionId;
@@ -73,8 +96,32 @@ async function handleStarted(context, payload) {
     [String(transactionId), consorcioId, ufId, stationId, payload.timestamp, precioKwh],
   );
 
-  openSessions.set(sessionKey(stationId, transactionId), { startWh, precioKwh });
+  openSessions.set(sessionKey(stationId, transactionId), { startWh, precioKwh, consorcioId });
+  await recordLectura(stationId, transactionId, consorcioId, payload.timestamp, {
+    wh: startWh,
+    powerKw: powerKw(payload.meterValue),
+  });
   console.log(`[Started] ${stationId} tx=${transactionId} uf=${ufId ?? '-'} precioKwh=${precioKwh}`);
+}
+
+async function handleUpdated(context, payload) {
+  const stationId = context.ocppConnectionName;
+  const transactionId = payload.transactionInfo.transactionId;
+  const key = sessionKey(stationId, transactionId);
+
+  const wh = energyWh(payload.meterValue);
+  if (wh == null) return; // no meter reading in this update, nothing to chart
+
+  let consorcioId = openSessions.get(key)?.consorcioId;
+  if (consorcioId === undefined) {
+    consorcioId = await getConsorcioIdForStation(stationId);
+  }
+  if (consorcioId == null) return;
+
+  await recordLectura(stationId, transactionId, consorcioId, payload.timestamp, {
+    wh,
+    powerKw: powerKw(payload.meterValue),
+  });
 }
 
 async function handleEnded(context, payload) {
@@ -82,7 +129,7 @@ async function handleEnded(context, payload) {
   const transactionId = payload.transactionInfo.transactionId;
   const key = sessionKey(stationId, transactionId);
 
-  let { startWh, precioKwh } = openSessions.get(key) ?? {};
+  let { startWh, precioKwh, consorcioId } = openSessions.get(key) ?? {};
   if (startWh === undefined) {
     console.warn(`[Ended] No hay estado en memoria para ${key}; se intenta recuperar de la DB.`);
     const row = await pool.query(
@@ -96,6 +143,7 @@ async function handleEnded(context, payload) {
     }
     precioKwh = row.rows[0].precio_kwh_aplicado;
     startWh = 0;
+    consorcioId = await getConsorcioIdForStation(stationId);
   }
 
   const endWh = energyWh(payload.meterValue) ?? startWh;
@@ -110,6 +158,13 @@ async function handleEnded(context, payload) {
     [payload.timestamp, kwh, monto, periodo, String(transactionId), stationId],
   );
 
+  if (consorcioId != null) {
+    await recordLectura(stationId, transactionId, consorcioId, payload.timestamp, {
+      wh: endWh,
+      powerKw: 0,
+    });
+  }
+
   openSessions.delete(key);
   console.log(`[Ended] ${stationId} tx=${transactionId} kwh=${kwh.toFixed(3)} monto=${monto.toFixed(2)}`);
 }
@@ -118,10 +173,11 @@ async function handleTransactionEvent(context, payload) {
   switch (payload.eventType) {
     case 'Started':
       return handleStarted(context, payload);
+    case 'Updated':
+      return handleUpdated(context, payload);
     case 'Ended':
       return handleEnded(context, payload);
     default:
-      // 'Updated' events are not persisted in v1.
       return;
   }
 }

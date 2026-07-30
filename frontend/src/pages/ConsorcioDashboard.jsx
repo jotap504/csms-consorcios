@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react';
-import { Zap, Home, CreditCard, Receipt, Download, Plus } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { Zap, Home, CreditCard, Receipt, Download, Plus, Activity } from 'lucide-react';
+import { LineChart, Line, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer, CartesianGrid } from 'recharts';
 import { api } from '@/lib/api';
 import Layout from '@/components/Layout';
 import {
@@ -20,6 +21,8 @@ export default function ConsorcioDashboard() {
   const [periodo, setPeriodo] = useState('');
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({ id_tag_ocpp: '', uf_id: '' });
+  const [live, setLive] = useState([]);
+  const liveIntervalRef = useRef(null);
 
   async function loadAll(currentPeriodo) {
     const [l, c, u, t] = await Promise.all([
@@ -37,6 +40,18 @@ export default function ConsorcioDashboard() {
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect, react-hooks/exhaustive-deps
     loadAll(periodo);
+  }, []);
+
+  async function loadLive() {
+    const res = await api.get('/consorcio/live');
+    setLive(res.data);
+  }
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    loadLive();
+    liveIntervalRef.current = setInterval(loadLive, 5000);
+    return () => clearInterval(liveIntervalRef.current);
   }, []);
 
   function handleFilter(e) {
@@ -87,6 +102,7 @@ export default function ConsorcioDashboard() {
           <TabsTrigger value="cargadores">Cargadores</TabsTrigger>
           <TabsTrigger value="unidades">Unidades</TabsTrigger>
           <TabsTrigger value="tarjetas">Tarjetas RFID</TabsTrigger>
+          <TabsTrigger value="tiempo-real">Tiempo real</TabsTrigger>
         </TabsList>
 
         <TabsContent value="liquidaciones">
@@ -254,6 +270,7 @@ export default function ConsorcioDashboard() {
                     <TableRow>
                       <TableHead>ID Tag</TableHead>
                       <TableHead>Unidad</TableHead>
+                      <TableHead>Cargador asignado</TableHead>
                       <TableHead>Activa</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -262,6 +279,7 @@ export default function ConsorcioDashboard() {
                       <TableRow key={t.id}>
                         <TableCell className="font-mono text-xs">{t.id_tag_ocpp}</TableCell>
                         <TableCell>{t.numero_departamento} ({t.propietario_nombre})</TableCell>
+                        <TableCell>{t.cargador_etiqueta || t.cargador_ocpp_id || '-'}</TableCell>
                         <TableCell>
                           <Switch checked={t.activa} onCheckedChange={() => toggleTarjeta(t.id, t.activa)} />
                         </TableCell>
@@ -272,6 +290,57 @@ export default function ConsorcioDashboard() {
               )}
             </CardContent>
           </Card>
+        </TabsContent>
+
+        <TabsContent value="tiempo-real">
+          <div className="mb-3 flex items-center gap-2 text-sm text-muted-foreground">
+            <Activity className="h-4 w-4" />
+            Actualiza cada 5 segundos - ultimos 30 minutos
+          </div>
+          {live.filter((c) => c.readings.length > 0).length === 0 ? (
+            <Card>
+              <CardContent className="p-5 text-sm text-muted-foreground">
+                Ningun cargador tiene lecturas recientes. Los graficos aparecen cuando hay una sesion de carga activa.
+              </CardContent>
+            </Card>
+          ) : (
+            <div className="grid gap-4 lg:grid-cols-2">
+              {live.filter((c) => c.readings.length > 0).map((c) => {
+                const chartData = c.readings.map((r) => ({
+                  hora: new Date(r.timestamp).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+                  kWh: Number(r.kwh_acumulado),
+                }));
+                const last = c.readings[c.readings.length - 1];
+                return (
+                  <Card key={c.ocpp_id}>
+                    <CardHeader className="flex-row items-center justify-between">
+                      <CardTitle>{c.etiqueta || c.ocpp_id}</CardTitle>
+                      <div className="flex items-center gap-2">
+                        {c.activo && <Badge variant="accent">Cargando</Badge>}
+                        {last?.potencia_kw != null && (
+                          <span className="tabular-nums text-xs text-muted-foreground">{Number(last.potencia_kw).toFixed(1)} kW</span>
+                        )}
+                      </div>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="h-56 w-full">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <LineChart data={chartData}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#e4e7eb" vertical={false} />
+                            <XAxis dataKey="hora" tick={{ fontSize: 11 }} stroke="#64748b" />
+                            <YAxis tick={{ fontSize: 11 }} stroke="#64748b" />
+                            <Tooltip formatter={(value) => [`${value} kWh`, 'Acumulado']} />
+                            <Legend wrapperStyle={{ fontSize: 12 }} />
+                            <Line type="monotone" dataKey="kWh" name="kWh acumulados" stroke="#059669" strokeWidth={2} dot={false} />
+                          </LineChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </CardContent>
+                  </Card>
+                );
+              })}
+            </div>
+          )}
         </TabsContent>
       </Tabs>
     </Layout>

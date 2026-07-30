@@ -45,22 +45,35 @@ router.put('/consorcios/:id', async (req, res) => {
 // Cargadores
 router.get('/consorcios/:id/cargadores', async (req, res) => {
   const result = await pool.query(
-    'SELECT * FROM cargadores WHERE consorcio_id = $1 ORDER BY etiqueta NULLS LAST, ocpp_id',
+    `SELECT c.*, uf.numero_departamento AS uf_numero_departamento, uf.numero_cochera AS uf_numero_cochera
+     FROM cargadores c
+     LEFT JOIN unidades_funcionales uf ON uf.id = c.uf_id
+     WHERE c.consorcio_id = $1
+     ORDER BY c.etiqueta NULLS LAST, c.ocpp_id`,
     [req.params.id],
   );
   res.json(result.rows);
 });
 
 router.post('/consorcios/:id/cargadores', async (req, res) => {
-  const { ocpp_id, etiqueta, charge_point_vendor, charge_point_model } = req.body ?? {};
+  const { ocpp_id, etiqueta, charge_point_vendor, charge_point_model, uf_id } = req.body ?? {};
   if (!ocpp_id) {
     return res.status(400).json({ error: 'ocpp_id es requerido.' });
   }
+  if (uf_id) {
+    const uf = await pool.query(
+      'SELECT id FROM unidades_funcionales WHERE id = $1 AND consorcio_id = $2',
+      [uf_id, req.params.id],
+    );
+    if (uf.rowCount === 0) {
+      return res.status(404).json({ error: 'Unidad funcional no encontrada en este consorcio.' });
+    }
+  }
   try {
     const result = await pool.query(
-      `INSERT INTO cargadores (ocpp_id, etiqueta, charge_point_vendor, charge_point_model, consorcio_id)
-       VALUES ($1,$2,$3,$4,$5) RETURNING *`,
-      [ocpp_id, etiqueta, charge_point_vendor, charge_point_model, req.params.id],
+      `INSERT INTO cargadores (ocpp_id, etiqueta, charge_point_vendor, charge_point_model, consorcio_id, uf_id)
+       VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+      [ocpp_id, etiqueta, charge_point_vendor, charge_point_model, req.params.id, uf_id ?? null],
     );
     res.status(201).json(result.rows[0]);
   } catch (err) {
@@ -72,14 +85,27 @@ router.post('/consorcios/:id/cargadores', async (req, res) => {
 });
 
 router.put('/cargadores/:id', async (req, res) => {
-  const { etiqueta, charge_point_vendor, charge_point_model } = req.body ?? {};
+  const { etiqueta, charge_point_vendor, charge_point_model, uf_id } = req.body ?? {};
+  if (uf_id) {
+    const cargador = await pool.query('SELECT consorcio_id FROM cargadores WHERE id = $1', [req.params.id]);
+    if (cargador.rowCount === 0) return res.status(404).json({ error: 'Cargador no encontrado.' });
+    const uf = await pool.query(
+      'SELECT id FROM unidades_funcionales WHERE id = $1 AND consorcio_id = $2',
+      [uf_id, cargador.rows[0].consorcio_id],
+    );
+    if (uf.rowCount === 0) {
+      return res.status(404).json({ error: 'Unidad funcional no encontrada en este consorcio.' });
+    }
+  }
   const result = await pool.query(
     `UPDATE cargadores SET
        etiqueta = COALESCE($1, etiqueta),
        charge_point_vendor = COALESCE($2, charge_point_vendor),
-       charge_point_model = COALESCE($3, charge_point_model)
-     WHERE id = $4 RETURNING *`,
-    [etiqueta, charge_point_vendor, charge_point_model, req.params.id],
+       charge_point_model = COALESCE($3, charge_point_model),
+       uf_id = CASE WHEN $4 THEN $5::int ELSE uf_id END
+     WHERE id = $6 RETURNING *`,
+    [etiqueta ?? null, charge_point_vendor ?? null, charge_point_model ?? null,
+      'uf_id' in (req.body ?? {}), uf_id ?? null, req.params.id],
   );
   if (result.rowCount === 0) return res.status(404).json({ error: 'Cargador no encontrado.' });
   res.json(result.rows[0]);
@@ -137,8 +163,10 @@ router.delete('/unidades/:id', async (req, res) => {
 // Tarjetas RFID / NFC
 router.get('/consorcios/:id/tarjetas', async (req, res) => {
   const result = await pool.query(
-    `SELECT t.* FROM tarjetas_rfid t
+    `SELECT t.*, ca.ocpp_id AS cargador_ocpp_id, ca.etiqueta AS cargador_etiqueta
+     FROM tarjetas_rfid t
      JOIN unidades_funcionales uf ON uf.id = t.uf_id
+     LEFT JOIN cargadores ca ON ca.id = t.cargador_id
      WHERE uf.consorcio_id = $1 ORDER BY t.id`,
     [req.params.id],
   );
@@ -146,7 +174,7 @@ router.get('/consorcios/:id/tarjetas', async (req, res) => {
 });
 
 router.post('/consorcios/:id/tarjetas', async (req, res) => {
-  const { id_tag_ocpp, uf_id } = req.body ?? {};
+  const { id_tag_ocpp, uf_id, cargador_id } = req.body ?? {};
   if (!id_tag_ocpp || !uf_id) {
     return res.status(400).json({ error: 'id_tag_ocpp y uf_id son requeridos.' });
   }
@@ -157,10 +185,19 @@ router.post('/consorcios/:id/tarjetas', async (req, res) => {
   if (uf.rowCount === 0) {
     return res.status(404).json({ error: 'Unidad funcional no encontrada en este consorcio.' });
   }
+  if (cargador_id) {
+    const cargador = await pool.query(
+      'SELECT id FROM cargadores WHERE id = $1 AND consorcio_id = $2',
+      [cargador_id, req.params.id],
+    );
+    if (cargador.rowCount === 0) {
+      return res.status(404).json({ error: 'Cargador no encontrado en este consorcio.' });
+    }
+  }
   try {
     const result = await pool.query(
-      'INSERT INTO tarjetas_rfid (id_tag_ocpp, uf_id, activa) VALUES ($1,$2,TRUE) RETURNING *',
-      [id_tag_ocpp, uf_id],
+      'INSERT INTO tarjetas_rfid (id_tag_ocpp, uf_id, cargador_id, activa) VALUES ($1,$2,$3,TRUE) RETURNING *',
+      [id_tag_ocpp, uf_id, cargador_id ?? null],
     );
     res.status(201).json(result.rows[0]);
   } catch (err) {
@@ -172,10 +209,14 @@ router.post('/consorcios/:id/tarjetas', async (req, res) => {
 });
 
 router.put('/tarjetas/:id', async (req, res) => {
-  const { activa } = req.body ?? {};
+  const { activa, cargador_id } = req.body ?? {};
+  const hasCargadorId = 'cargador_id' in (req.body ?? {});
   const result = await pool.query(
-    'UPDATE tarjetas_rfid SET activa = COALESCE($1, activa) WHERE id = $2 RETURNING *',
-    [activa, req.params.id],
+    `UPDATE tarjetas_rfid SET
+       activa = COALESCE($1, activa),
+       cargador_id = CASE WHEN $2 THEN $3::int ELSE cargador_id END
+     WHERE id = $4 RETURNING *`,
+    [activa ?? null, hasCargadorId, cargador_id ?? null, req.params.id],
   );
   if (result.rowCount === 0) return res.status(404).json({ error: 'Tarjeta no encontrada.' });
   res.json(result.rows[0]);
@@ -185,6 +226,42 @@ router.delete('/tarjetas/:id', async (req, res) => {
   const result = await pool.query('DELETE FROM tarjetas_rfid WHERE id = $1', [req.params.id]);
   if (result.rowCount === 0) return res.status(404).json({ error: 'Tarjeta no encontrada.' });
   res.status(204).end();
+});
+
+// Consumo en tiempo real: lecturas de los ultimos 30 min por cargador, mas
+// si tiene una sesion de carga activa en este momento.
+router.get('/consorcios/:id/live', async (req, res) => {
+  const [cargadores, activos, lecturas] = await Promise.all([
+    pool.query('SELECT id, ocpp_id, etiqueta FROM cargadores WHERE consorcio_id = $1', [req.params.id]),
+    pool.query(
+      'SELECT cargador_ocpp_id, transaction_id_ocpp FROM liquidacion_sesiones WHERE consorcio_id = $1 AND fecha_fin IS NULL',
+      [req.params.id],
+    ),
+    pool.query(
+      `SELECT cargador_ocpp_id, "timestamp", kwh_acumulado, potencia_kw
+       FROM lecturas_medidor
+       WHERE consorcio_id = $1 AND "timestamp" > NOW() - INTERVAL '30 minutes'
+       ORDER BY "timestamp" ASC`,
+      [req.params.id],
+    ),
+  ]);
+
+  const activeByOcpp = new Map(activos.rows.map((r) => [r.cargador_ocpp_id, r.transaction_id_ocpp]));
+  const readingsByOcpp = new Map();
+  for (const r of lecturas.rows) {
+    if (!readingsByOcpp.has(r.cargador_ocpp_id)) readingsByOcpp.set(r.cargador_ocpp_id, []);
+    readingsByOcpp.get(r.cargador_ocpp_id).push(r);
+  }
+
+  res.json(
+    cargadores.rows.map((c) => ({
+      ocpp_id: c.ocpp_id,
+      etiqueta: c.etiqueta,
+      activo: activeByOcpp.has(c.ocpp_id),
+      transaction_id_ocpp: activeByOcpp.get(c.ocpp_id) ?? null,
+      readings: readingsByOcpp.get(c.ocpp_id) ?? [],
+    })),
+  );
 });
 
 // Balanceo de carga (DLM): pushes a ChargingStationMaxProfile to the station

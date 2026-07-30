@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Plus, Pencil, Trash2, Gauge, Building2, Wrench } from 'lucide-react';
+import { ArrowLeft, Plus, Pencil, Trash2, Gauge, Building2, Wrench, Activity } from 'lucide-react';
+import { LineChart, Line, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer, CartesianGrid } from 'recharts';
 import { api } from '@/lib/api';
 import { getSession } from '@/lib/auth';
 import Layout from '@/components/Layout';
@@ -33,13 +34,16 @@ export default function AdminConsorcio() {
   const [tarjetas, setTarjetas] = useState([]);
 
   const [cargadorOpen, setCargadorOpen] = useState(false);
-  const [cargadorForm, setCargadorForm] = useState({ ocpp_id: '', etiqueta: '', charge_point_vendor: '', charge_point_model: '' });
+  const [cargadorForm, setCargadorForm] = useState({ ocpp_id: '', etiqueta: '', charge_point_vendor: '', charge_point_model: '', uf_id: '' });
 
   const [unidadOpen, setUnidadOpen] = useState(false);
   const [unidadForm, setUnidadForm] = useState({ numero_departamento: '', numero_cochera: '', propietario_nombre: '', propietario_email: '' });
 
   const [tarjetaOpen, setTarjetaOpen] = useState(false);
-  const [tarjetaForm, setTarjetaForm] = useState({ id_tag_ocpp: '', uf_id: '' });
+  const [tarjetaForm, setTarjetaForm] = useState({ id_tag_ocpp: '', uf_id: '', cargador_id: '' });
+
+  const [live, setLive] = useState([]);
+  const liveIntervalRef = useRef(null);
 
   const [dlmOpen, setDlmOpen] = useState(null); // ocpp_id of cargador being configured
   const [dlmAmps, setDlmAmps] = useState('32');
@@ -69,17 +73,38 @@ export default function AdminConsorcio() {
     loadAll();
   }, [id]);
 
+  async function loadLive() {
+    const res = await api.get(`/admin/consorcios/${id}/live`);
+    setLive(res.data);
+  }
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect, react-hooks/exhaustive-deps
+    loadLive();
+    liveIntervalRef.current = setInterval(loadLive, 5000);
+    return () => clearInterval(liveIntervalRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
+
   async function handleCreateCargador(e) {
     e.preventDefault();
-    await api.post(`/admin/consorcios/${id}/cargadores`, cargadorForm);
+    await api.post(`/admin/consorcios/${id}/cargadores`, {
+      ...cargadorForm,
+      uf_id: cargadorForm.uf_id ? Number(cargadorForm.uf_id) : null,
+    });
     setCargadorOpen(false);
-    setCargadorForm({ ocpp_id: '', etiqueta: '', charge_point_vendor: '', charge_point_model: '' });
+    setCargadorForm({ ocpp_id: '', etiqueta: '', charge_point_vendor: '', charge_point_model: '', uf_id: '' });
     loadAll();
   }
 
   async function handleDeleteCargador(cargadorId) {
     if (!confirm('Borrar este cargador?')) return;
     await api.delete(`/admin/cargadores/${cargadorId}`);
+    loadAll();
+  }
+
+  async function handleAssignCargadorUf(cargadorId, ufId) {
+    await api.put(`/admin/cargadores/${cargadorId}`, { uf_id: ufId ? Number(ufId) : null });
     loadAll();
   }
 
@@ -99,14 +124,23 @@ export default function AdminConsorcio() {
 
   async function handleCreateTarjeta(e) {
     e.preventDefault();
-    await api.post(`/admin/consorcios/${id}/tarjetas`, { id_tag_ocpp: tarjetaForm.id_tag_ocpp, uf_id: Number(tarjetaForm.uf_id) });
+    await api.post(`/admin/consorcios/${id}/tarjetas`, {
+      id_tag_ocpp: tarjetaForm.id_tag_ocpp,
+      uf_id: Number(tarjetaForm.uf_id),
+      cargador_id: tarjetaForm.cargador_id ? Number(tarjetaForm.cargador_id) : null,
+    });
     setTarjetaOpen(false);
-    setTarjetaForm({ id_tag_ocpp: '', uf_id: '' });
+    setTarjetaForm({ id_tag_ocpp: '', uf_id: '', cargador_id: '' });
     loadAll();
   }
 
   async function toggleTarjeta(tarjetaId, activa) {
     await api.put(`/admin/tarjetas/${tarjetaId}`, { activa: !activa });
+    loadAll();
+  }
+
+  async function handleAssignTarjetaCargador(tarjetaId, cargadorId) {
+    await api.put(`/admin/tarjetas/${tarjetaId}`, { cargador_id: cargadorId ? Number(cargadorId) : null });
     loadAll();
   }
 
@@ -159,6 +193,7 @@ export default function AdminConsorcio() {
           <TabsTrigger value="unidades">Unidades</TabsTrigger>
           <TabsTrigger value="tarjetas">Tarjetas RFID / NFC</TabsTrigger>
           <TabsTrigger value="parametros">Parametros del edificio</TabsTrigger>
+          <TabsTrigger value="tiempo-real">Tiempo real</TabsTrigger>
         </TabsList>
 
         <TabsContent value="cargadores">
@@ -191,6 +226,20 @@ export default function AdminConsorcio() {
                       <Label htmlFor="model">Modelo</Label>
                       <Input id="model" value={cargadorForm.charge_point_model} onChange={(e) => setCargadorForm({ ...cargadorForm, charge_point_model: e.target.value })} />
                     </div>
+                    <div>
+                      <Label htmlFor="cargadorUf">Unidad funcional</Label>
+                      <select
+                        id="cargadorUf"
+                        value={cargadorForm.uf_id}
+                        onChange={(e) => setCargadorForm({ ...cargadorForm, uf_id: e.target.value })}
+                        className="flex h-10 w-full rounded-lg border border-border bg-white px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      >
+                        <option value="">Sin asignar</option>
+                        {unidades.map((u) => (
+                          <option key={u.id} value={u.id}>{u.numero_departamento} - {u.propietario_nombre}</option>
+                        ))}
+                      </select>
+                    </div>
                     <Button type="submit" className="mt-2">Agregar</Button>
                   </form>
                 </DialogContent>
@@ -206,6 +255,7 @@ export default function AdminConsorcio() {
                       <TableHead>Identificacion</TableHead>
                       <TableHead>ID OCPP</TableHead>
                       <TableHead>Modelo</TableHead>
+                      <TableHead>Unidad asignada</TableHead>
                       <TableHead>Estado</TableHead>
                       <TableHead className="text-right">Acciones</TableHead>
                     </TableRow>
@@ -216,6 +266,18 @@ export default function AdminConsorcio() {
                         <TableCell className="font-medium">{c.etiqueta || '-'}</TableCell>
                         <TableCell className="font-mono text-xs">{c.ocpp_id}</TableCell>
                         <TableCell>{c.charge_point_vendor} {c.charge_point_model}</TableCell>
+                        <TableCell>
+                          <select
+                            value={c.uf_id ?? ''}
+                            onChange={(e) => handleAssignCargadorUf(c.id, e.target.value)}
+                            className="h-8 rounded-md border border-border bg-white px-2 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                          >
+                            <option value="">Sin asignar</option>
+                            {unidades.map((u) => (
+                              <option key={u.id} value={u.id}>{u.numero_departamento}{u.numero_cochera ? ` / ${u.numero_cochera}` : ''}</option>
+                            ))}
+                          </select>
+                        </TableCell>
                         <TableCell>
                           <Badge variant={c.estado_online ? 'accent' : 'muted'}>{c.estado_online ? 'Online' : 'Offline'}</Badge>
                         </TableCell>
@@ -358,6 +420,20 @@ export default function AdminConsorcio() {
                         ))}
                       </select>
                     </div>
+                    <div>
+                      <Label htmlFor="tarjetaCargador">Cargador (opcional)</Label>
+                      <select
+                        id="tarjetaCargador"
+                        value={tarjetaForm.cargador_id}
+                        onChange={(e) => setTarjetaForm({ ...tarjetaForm, cargador_id: e.target.value })}
+                        className="flex h-10 w-full rounded-lg border border-border bg-white px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      >
+                        <option value="">Sin asignar</option>
+                        {cargadores.map((c) => (
+                          <option key={c.id} value={c.id}>{c.etiqueta || c.ocpp_id}</option>
+                        ))}
+                      </select>
+                    </div>
                     <Button type="submit" className="mt-2">Vincular</Button>
                   </form>
                 </DialogContent>
@@ -371,6 +447,7 @@ export default function AdminConsorcio() {
                   <TableHeader>
                     <TableRow>
                       <TableHead>ID Tag</TableHead>
+                      <TableHead>Cargador asignado</TableHead>
                       <TableHead>Activa</TableHead>
                       <TableHead className="text-right">Acciones</TableHead>
                     </TableRow>
@@ -379,6 +456,18 @@ export default function AdminConsorcio() {
                     {tarjetas.map((t) => (
                       <TableRow key={t.id}>
                         <TableCell className="font-mono text-xs">{t.id_tag_ocpp}</TableCell>
+                        <TableCell>
+                          <select
+                            value={t.cargador_id ?? ''}
+                            onChange={(e) => handleAssignTarjetaCargador(t.id, e.target.value)}
+                            className="h-8 rounded-md border border-border bg-white px-2 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                          >
+                            <option value="">Sin asignar</option>
+                            {cargadores.map((c) => (
+                              <option key={c.id} value={c.id}>{c.etiqueta || c.ocpp_id}</option>
+                            ))}
+                          </select>
+                        </TableCell>
                         <TableCell>
                           <Switch checked={t.activa} onCheckedChange={() => toggleTarjeta(t.id, t.activa)} />
                         </TableCell>
@@ -429,6 +518,57 @@ export default function AdminConsorcio() {
               </form>
             </CardContent>
           </Card>
+        </TabsContent>
+
+        <TabsContent value="tiempo-real">
+          <div className="mb-3 flex items-center gap-2 text-sm text-muted-foreground">
+            <Activity className="h-4 w-4" />
+            Actualiza cada 5 segundos - ultimos 30 minutos
+          </div>
+          {live.filter((c) => c.readings.length > 0).length === 0 ? (
+            <Card>
+              <CardContent className="p-5 text-sm text-muted-foreground">
+                Ningun cargador tiene lecturas recientes. Los graficos aparecen cuando hay una sesion de carga activa.
+              </CardContent>
+            </Card>
+          ) : (
+            <div className="grid gap-4 lg:grid-cols-2">
+              {live.filter((c) => c.readings.length > 0).map((c) => {
+                const chartData = c.readings.map((r) => ({
+                  hora: new Date(r.timestamp).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+                  kWh: Number(r.kwh_acumulado),
+                }));
+                const last = c.readings[c.readings.length - 1];
+                return (
+                  <Card key={c.ocpp_id}>
+                    <CardHeader className="flex-row items-center justify-between">
+                      <CardTitle>{c.etiqueta || c.ocpp_id}</CardTitle>
+                      <div className="flex items-center gap-2">
+                        {c.activo && <Badge variant="accent">Cargando</Badge>}
+                        {last?.potencia_kw != null && (
+                          <span className="tabular-nums text-xs text-muted-foreground">{Number(last.potencia_kw).toFixed(1)} kW</span>
+                        )}
+                      </div>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="h-56 w-full">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <LineChart data={chartData}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#e4e7eb" vertical={false} />
+                            <XAxis dataKey="hora" tick={{ fontSize: 11 }} stroke="#64748b" />
+                            <YAxis tick={{ fontSize: 11 }} stroke="#64748b" />
+                            <Tooltip formatter={(value) => [`${value} kWh`, 'Acumulado']} />
+                            <Legend wrapperStyle={{ fontSize: 12 }} />
+                            <Line type="monotone" dataKey="kWh" name="kWh acumulados" stroke="#059669" strokeWidth={2} dot={false} />
+                          </LineChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </CardContent>
+                  </Card>
+                );
+              })}
+            </div>
+          )}
         </TabsContent>
       </Tabs>
     </Layout>
