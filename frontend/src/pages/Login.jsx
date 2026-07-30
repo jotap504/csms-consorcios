@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { Zap, AlertCircle } from 'lucide-react';
+import { AlertCircle } from 'lucide-react';
 import { api } from '@/lib/api';
 import { saveSession, homeForRole } from '@/lib/auth';
 import { Button, Card, CardContent, CardHeader, CardTitle, CardDescription, Input, Label } from '@/components/ui';
@@ -31,9 +31,7 @@ export default function Login() {
     <div className="flex min-h-dvh items-center justify-center bg-background px-4">
       <Card className="w-full max-w-sm">
         <CardHeader className="items-center text-center">
-          <div className="mb-2 flex h-11 w-11 items-center justify-center rounded-xl bg-primary text-primary-foreground">
-            <Zap className="h-5 w-5" />
-          </div>
+          <img src="/logo.png" alt="Bilon Smart Buildings" className="mb-2 h-12 w-auto" />
           <CardTitle className="text-xl">CSMS Consorcios</CardTitle>
           <CardDescription>Ingresa a tu cuenta para continuar</CardDescription>
         </CardHeader>

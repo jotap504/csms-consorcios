@@ -4,8 +4,11 @@ const { Pool } = require('pg');
 
 const AMQP_URL = process.env.AMQP_URL;
 const DATABASE_URL = process.env.DATABASE_URL;
+const CITRINEOS_REST_URL = process.env.CITRINEOS_REST_URL || 'http://citrineos-core:8080';
 const EXCHANGE = 'citrineos';
 const QUEUE = 'csms_saas_transaction_listener';
+const MIN_AMPS = 6; // IEC 61851 minimum safe charging current
+const REBALANCE_INTERVAL_MS = 60000;
 
 const pool = new Pool({ connectionString: DATABASE_URL });
 
@@ -52,6 +55,69 @@ async function recordLectura(stationId, transactionId, consorcioId, timestamp, w
 async function getConsorcioIdForStation(stationId) {
   const cargador = await pool.query('SELECT consorcio_id FROM cargadores WHERE ocpp_id = $1', [stationId]);
   return cargador.rows[0]?.consorcio_id ?? null;
+}
+
+async function pushChargingProfile(ocppId, maxAmps) {
+  const profileId = Date.now() % 1000000;
+  const url = `${CITRINEOS_REST_URL}/ocpp/2.0.1/smartcharging/setChargingProfile?identifier=${encodeURIComponent(ocppId)}&tenantId=1`;
+  const body = {
+    evseId: 0,
+    chargingProfile: {
+      id: profileId,
+      stackLevel: 0,
+      chargingProfilePurpose: 'ChargingStationMaxProfile',
+      chargingProfileKind: 'Absolute',
+      chargingSchedule: [
+        {
+          id: profileId,
+          chargingRateUnit: 'A',
+          startSchedule: new Date().toISOString(),
+          chargingSchedulePeriod: [{ startPeriod: 0, limit: maxAmps }],
+        },
+      ],
+    },
+  };
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    const confirmation = Array.isArray(data) ? data[0] : data;
+    if (!confirmation?.success) {
+      console.warn(`[Balanceador] ${ocppId} rechazo el perfil de ${maxAmps}A:`, confirmation?.payload);
+    }
+  } catch (err) {
+    console.warn(`[Balanceador] No se pudo enviar perfil a ${ocppId}:`, err.message);
+  }
+}
+
+// Reparte limite_amperios_totales del consorcio en partes iguales entre los
+// cargadores con una sesion activa en este momento. Estrategia simple
+// (equal-share): no distingue capacidad del vehiculo ni fases, solo evita
+// que la suma de todos supere la instalacion.
+async function rebalanceConsorcio(consorcioId) {
+  if (consorcioId == null) return;
+
+  const consorcio = await pool.query(
+    'SELECT limite_amperios_totales FROM consorcios WHERE id = $1',
+    [consorcioId],
+  );
+  const limite = consorcio.rows[0]?.limite_amperios_totales;
+  if (!limite) return; // sin limite configurado, no hay nada para repartir
+
+  const activos = await pool.query(
+    `SELECT DISTINCT cargador_ocpp_id FROM liquidacion_sesiones
+     WHERE consorcio_id = $1 AND fecha_fin IS NULL`,
+    [consorcioId],
+  );
+  const ocppIds = activos.rows.map((r) => r.cargador_ocpp_id);
+  if (ocppIds.length === 0) return;
+
+  const perAmps = Math.max(MIN_AMPS, Math.floor(limite / ocppIds.length));
+  console.log(`[Balanceador] consorcio=${consorcioId} activos=${ocppIds.length} limite=${limite}A -> ${perAmps}A c/u`);
+  await Promise.all(ocppIds.map((ocppId) => pushChargingProfile(ocppId, perAmps)));
 }
 
 async function handleStarted(context, payload) {
@@ -102,6 +168,7 @@ async function handleStarted(context, payload) {
     powerKw: powerKw(payload.meterValue),
   });
   console.log(`[Started] ${stationId} tx=${transactionId} uf=${ufId ?? '-'} precioKwh=${precioKwh}`);
+  await rebalanceConsorcio(consorcioId);
 }
 
 async function handleUpdated(context, payload) {
@@ -167,6 +234,7 @@ async function handleEnded(context, payload) {
 
   openSessions.delete(key);
   console.log(`[Ended] ${stationId} tx=${transactionId} kwh=${kwh.toFixed(3)} monto=${monto.toFixed(2)}`);
+  await rebalanceConsorcio(consorcioId);
 }
 
 async function handleTransactionEvent(context, payload) {
@@ -200,6 +268,21 @@ async function main() {
 
   console.log(`Escuchando eventos TransactionEvent en cola "${QUEUE}"...`);
 
+  // Safety net: re-balance periodically in case a Started/Ended event was
+  // missed (e.g. listener was briefly down) and the last pushed profile is stale.
+  setInterval(async () => {
+    try {
+      const result = await pool.query(
+        'SELECT DISTINCT consorcio_id FROM liquidacion_sesiones WHERE fecha_fin IS NULL',
+      );
+      for (const { consorcio_id: consorcioId } of result.rows) {
+        await rebalanceConsorcio(consorcioId);
+      }
+    } catch (err) {
+      console.error('Error en el balanceo periodico:', err);
+    }
+  }, REBALANCE_INTERVAL_MS);
+
   channel.consume(QUEUE, async (msg) => {
     if (!msg) return;
     try {
@@ -210,6 +293,13 @@ async function main() {
       console.error('Error procesando mensaje, se descarta:', err);
       channel.nack(msg, false, false);
     }
+  });
+
+  // Without this handler, a transient network blip (e.g. ECONNRESET during a
+  // heartbeat) throws an unhandled 'error' event and crashes the process
+  // before the 'close' handler below even gets a chance to run.
+  conn.on('error', (err) => {
+    console.error('Error de conexion a RabbitMQ:', err.message);
   });
 
   conn.on('close', () => {

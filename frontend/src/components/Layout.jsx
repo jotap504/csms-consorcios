@@ -1,5 +1,5 @@
 import { NavLink, useNavigate } from 'react-router-dom';
-import { LogOut, Zap } from 'lucide-react';
+import { LogOut } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { clearSession, getSession } from '@/lib/auth';
 
@@ -15,9 +15,10 @@ export default function Layout({ title, navItems, children }) {
   return (
     <div className="min-h-dvh md:flex">
       <aside className="flex shrink-0 flex-col border-b border-border bg-primary text-primary-foreground md:h-dvh md:w-60 md:border-b-0 md:border-r">
-        <div className="flex items-center gap-2 px-5 py-5">
-          <Zap className="h-5 w-5" />
-          <span className="font-semibold tracking-tight">CSMS Consorcios</span>
+        <div className="px-5 py-5">
+          <div className="inline-block rounded-lg bg-white px-3 py-2">
+            <img src="/logo.png" alt="Bilon Smart Buildings" className="h-7 w-auto" />
+          </div>
         </div>
         <nav className="flex flex-1 flex-col gap-1 px-3">
           {navItems.map((item) => (
