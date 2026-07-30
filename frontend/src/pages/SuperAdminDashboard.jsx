@@ -53,13 +53,13 @@ export default function SuperAdminDashboard() {
     loadAll();
   }
 
-  const cargadoresOnline = cargadores.filter((c) => c.estado_online).length;
+  const cargadoresActivos = cargadores.filter((c) => c.activo).length;
 
   return (
     <Layout title="Panel SuperAdmin" navItems={navItems}>
       <div className="grid gap-4 sm:grid-cols-3">
         <StatCard icon={Building2} label="Consorcios activos" value={consorcios.length} />
-        <StatCard icon={Zap} label="Cargadores online" value={`${cargadoresOnline} / ${cargadores.length}`} />
+        <StatCard icon={Zap} label="Cargadores cargando" value={`${cargadoresActivos} / ${cargadores.length}`} />
         <StatCard icon={Receipt} label="Planes disponibles" value={planes.length} />
       </div>
 
@@ -168,8 +168,8 @@ export default function SuperAdminDashboard() {
                     <TableCell>{c.consorcio_nombre}</TableCell>
                     <TableCell>{c.charge_point_vendor} {c.charge_point_model}</TableCell>
                     <TableCell>
-                      <Badge variant={c.estado_online ? 'accent' : 'muted'}>
-                        {c.estado_online ? 'Online' : 'Offline'}
+                      <Badge variant={c.activo ? 'accent' : 'muted'}>
+                        {c.activo ? 'Cargando' : 'Inactivo'}
                       </Badge>
                     </TableCell>
                   </TableRow>

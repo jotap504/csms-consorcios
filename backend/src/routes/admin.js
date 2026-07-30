@@ -245,13 +245,44 @@ router.get('/consorcios/:id/live', async (req, res) => {
       [req.params.id],
     ),
     pool.query(
-      `SELECT cargador_ocpp_id,
-              COALESCE(SUM(kwh_consumidos) FILTER (WHERE fecha_inicio >= date_trunc('day', NOW())), 0) AS kwh_hoy,
-              COALESCE(SUM(kwh_consumidos) FILTER (WHERE fecha_inicio >= date_trunc('week', NOW())), 0) AS kwh_semana,
-              COALESCE(SUM(kwh_consumidos) FILTER (WHERE fecha_inicio >= date_trunc('month', NOW())), 0) AS kwh_mes
-       FROM liquidacion_sesiones
-       WHERE consorcio_id = $1
-       GROUP BY cargador_ocpp_id`,
+      // Completed sessions contribute their final kwh_consumidos; sessions
+      // still open contribute their in-progress delta (latest reading minus
+      // the reading at Started) so an ongoing charge isn't invisible to the
+      // daily/weekly/monthly totals until it ends.
+      `WITH activas AS (
+         SELECT cargador_ocpp_id, transaction_id_ocpp, fecha_inicio
+         FROM liquidacion_sesiones
+         WHERE consorcio_id = $1 AND fecha_fin IS NULL
+       ),
+       en_curso AS (
+         SELECT a.cargador_ocpp_id, a.fecha_inicio,
+                COALESCE(
+                  (SELECT lm.kwh_acumulado FROM lecturas_medidor lm
+                   WHERE lm.transaction_id_ocpp = a.transaction_id_ocpp
+                   ORDER BY lm."timestamp" DESC LIMIT 1) -
+                  (SELECT lm.kwh_acumulado FROM lecturas_medidor lm
+                   WHERE lm.transaction_id_ocpp = a.transaction_id_ocpp
+                   ORDER BY lm."timestamp" ASC LIMIT 1),
+                  0
+                ) AS kwh_en_curso
+         FROM activas a
+       ),
+       completadas AS (
+         SELECT cargador_ocpp_id,
+                COALESCE(SUM(kwh_consumidos) FILTER (WHERE fecha_inicio >= date_trunc('day', NOW())), 0) AS kwh_hoy,
+                COALESCE(SUM(kwh_consumidos) FILTER (WHERE fecha_inicio >= date_trunc('week', NOW())), 0) AS kwh_semana,
+                COALESCE(SUM(kwh_consumidos) FILTER (WHERE fecha_inicio >= date_trunc('month', NOW())), 0) AS kwh_mes
+         FROM liquidacion_sesiones
+         WHERE consorcio_id = $1
+         GROUP BY cargador_ocpp_id
+       )
+       SELECT
+         COALESCE(c.cargador_ocpp_id, e.cargador_ocpp_id) AS cargador_ocpp_id,
+         COALESCE(c.kwh_hoy, 0) + CASE WHEN e.fecha_inicio >= date_trunc('day', NOW()) THEN e.kwh_en_curso ELSE 0 END AS kwh_hoy,
+         COALESCE(c.kwh_semana, 0) + CASE WHEN e.fecha_inicio >= date_trunc('week', NOW()) THEN e.kwh_en_curso ELSE 0 END AS kwh_semana,
+         COALESCE(c.kwh_mes, 0) + CASE WHEN e.fecha_inicio >= date_trunc('month', NOW()) THEN e.kwh_en_curso ELSE 0 END AS kwh_mes
+       FROM completadas c
+       FULL OUTER JOIN en_curso e ON e.cargador_ocpp_id = c.cargador_ocpp_id`,
       [req.params.id],
     ),
   ]);

@@ -127,9 +127,16 @@ router.post('/consorcios/:id/pagos', async (req, res) => {
 
 // Vista global de cargadores
 router.get('/cargadores', async (_req, res) => {
+  // estado_online is never updated by anything (dead column from the original
+  // schema) — "activo" mirrors what the per-consorcio panel actually shows:
+  // whether there's an open charging session right now.
   const result = await pool.query(
     `SELECT ca.id, ca.ocpp_id, ca.charge_point_vendor, ca.charge_point_model,
-            ca.estado_online, ca.ultimo_heartbeat, co.id AS consorcio_id, co.nombre AS consorcio_nombre
+            ca.estado_online, ca.ultimo_heartbeat, co.id AS consorcio_id, co.nombre AS consorcio_nombre,
+            EXISTS (
+              SELECT 1 FROM liquidacion_sesiones l
+              WHERE l.cargador_ocpp_id = ca.ocpp_id AND l.fecha_fin IS NULL
+            ) AS activo
      FROM cargadores ca
      JOIN consorcios co ON co.id = ca.consorcio_id
      ORDER BY co.nombre, ca.ocpp_id`,
