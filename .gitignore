@@ -1,0 +1,5 @@
+node_modules/
+.env
+context.md.txt
+backend/seed_users.sql
+.claude/
