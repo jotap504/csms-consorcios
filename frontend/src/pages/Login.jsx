@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate, useSearchParams, Link } from 'react-router-dom';
 import { AlertCircle } from 'lucide-react';
 import { api } from '@/lib/api';
 import { saveSession, homeForRole } from '@/lib/auth';
@@ -7,6 +7,7 @@ import { Button, Card, CardContent, CardHeader, CardTitle, CardDescription, Inpu
 
 export default function Login() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -19,7 +20,8 @@ export default function Login() {
     try {
       const { data } = await api.post('/auth/login', { email, password });
       saveSession(data);
-      navigate(homeForRole(data.rol));
+      const next = searchParams.get('next');
+      navigate(next && next.startsWith('/') ? next : homeForRole(data.rol));
     } catch {
       setError('Email o contrasena incorrectos.');
     } finally {

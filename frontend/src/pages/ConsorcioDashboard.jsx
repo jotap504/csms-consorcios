@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Zap, Home, CreditCard, Receipt, Download, Plus, Activity } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer, CartesianGrid } from 'recharts';
 import { api } from '@/lib/api';
+import { formatElapsed } from '@/lib/utils';
 import Layout from '@/components/Layout';
 import {
   StatCard, Card, CardHeader, CardTitle, CardContent,
@@ -176,6 +177,7 @@ export default function ConsorcioDashboard() {
                       <TableHead>OCPP ID</TableHead>
                       <TableHead>Modelo</TableHead>
                       <TableHead>Estado</TableHead>
+                      <TableHead className="text-right">Conectado hace</TableHead>
                       <TableHead className="text-right">Consumo actual</TableHead>
                       <TableHead className="text-right">Hoy</TableHead>
                       <TableHead className="text-right">Semana</TableHead>
@@ -193,6 +195,9 @@ export default function ConsorcioDashboard() {
                           <Badge variant={l?.activo ? 'accent' : 'muted'}>
                             {l?.activo ? 'Cargando' : (c.estado_online ? 'Online' : 'Offline')}
                           </Badge>
+                        </TableCell>
+                        <TableCell className="tabular-nums text-right">
+                          {l?.activo ? formatElapsed(l.conectado_desde) : '-'}
                         </TableCell>
                         <TableCell className="tabular-nums text-right">
                           {l?.activo && l?.potencia_actual_kw != null ? `${Number(l.potencia_actual_kw).toFixed(1)} kW` : '-'}
@@ -339,6 +344,9 @@ export default function ConsorcioDashboard() {
                       <CardTitle>{c.etiqueta || c.ocpp_id}</CardTitle>
                       <div className="flex items-center gap-2">
                         {c.activo && <Badge variant="accent">Cargando</Badge>}
+                        {c.activo && c.conectado_desde && (
+                          <span className="text-xs text-muted-foreground">hace {formatElapsed(c.conectado_desde)}</span>
+                        )}
                         {last?.potencia_kw != null && (
                           <span className="tabular-nums text-xs text-muted-foreground">{Number(last.potencia_kw).toFixed(1)} kW</span>
                         )}

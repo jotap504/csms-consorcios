@@ -234,7 +234,7 @@ router.get('/consorcios/:id/live', async (req, res) => {
   const [cargadores, activos, lecturas, acumulados] = await Promise.all([
     pool.query('SELECT id, ocpp_id, etiqueta FROM cargadores WHERE consorcio_id = $1', [req.params.id]),
     pool.query(
-      'SELECT cargador_ocpp_id, transaction_id_ocpp FROM liquidacion_sesiones WHERE consorcio_id = $1 AND fecha_fin IS NULL',
+      'SELECT cargador_ocpp_id, transaction_id_ocpp, fecha_inicio FROM liquidacion_sesiones WHERE consorcio_id = $1 AND fecha_fin IS NULL',
       [req.params.id],
     ),
     pool.query(
@@ -287,7 +287,7 @@ router.get('/consorcios/:id/live', async (req, res) => {
     ),
   ]);
 
-  const activeByOcpp = new Map(activos.rows.map((r) => [r.cargador_ocpp_id, r.transaction_id_ocpp]));
+  const activeByOcpp = new Map(activos.rows.map((r) => [r.cargador_ocpp_id, r]));
   const readingsByOcpp = new Map();
   for (const r of lecturas.rows) {
     if (!readingsByOcpp.has(r.cargador_ocpp_id)) readingsByOcpp.set(r.cargador_ocpp_id, []);
@@ -298,14 +298,16 @@ router.get('/consorcios/:id/live', async (req, res) => {
   res.json(
     cargadores.rows.map((c) => {
       const readings = readingsByOcpp.get(c.ocpp_id) ?? [];
-      const activo = activeByOcpp.has(c.ocpp_id);
+      const activa = activeByOcpp.get(c.ocpp_id);
+      const activo = activa != null;
       const last = readings[readings.length - 1];
       const acum = acumuladosByOcpp.get(c.ocpp_id);
       return {
         ocpp_id: c.ocpp_id,
         etiqueta: c.etiqueta,
         activo,
-        transaction_id_ocpp: activeByOcpp.get(c.ocpp_id) ?? null,
+        transaction_id_ocpp: activa?.transaction_id_ocpp ?? null,
+        conectado_desde: activa?.fecha_inicio ?? null,
         potencia_actual_kw: activo ? (last?.potencia_kw ?? null) : null,
         readings,
         kwh_hoy: Number(acum?.kwh_hoy ?? 0),

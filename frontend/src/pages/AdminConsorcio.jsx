@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Plus, Pencil, Trash2, Gauge, Building2, Wrench, Activity } from 'lucide-react';
+import QRCode from 'qrcode';
+import { ArrowLeft, Plus, Pencil, Trash2, Gauge, Building2, Wrench, Activity, QrCode, Download } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer, CartesianGrid } from 'recharts';
 import { api } from '@/lib/api';
 import { getSession } from '@/lib/auth';
+import { formatElapsed } from '@/lib/utils';
 import Layout from '@/components/Layout';
 import {
   Card, CardHeader, CardTitle, CardContent,
@@ -48,6 +50,16 @@ export default function AdminConsorcio() {
   const [dlmOpen, setDlmOpen] = useState(null); // ocpp_id of cargador being configured
   const [dlmAmps, setDlmAmps] = useState('32');
   const [dlmStatus, setDlmStatus] = useState('');
+
+  const [qrOpen, setQrOpen] = useState(null); // cargador row being shown as QR
+  const [qrDataUrl, setQrDataUrl] = useState('');
+
+  async function openQr(c) {
+    setQrOpen(c);
+    const url = `${window.location.origin}/cargar/${c.ocpp_id}`;
+    const dataUrl = await QRCode.toDataURL(url, { width: 320, margin: 2 });
+    setQrDataUrl(dataUrl);
+  }
 
   const [editCargador, setEditCargador] = useState(null); // cargador row being edited, or null
   const [editCargadorForm, setEditCargadorForm] = useState({ etiqueta: '', charge_point_vendor: '', charge_point_model: '' });
@@ -287,6 +299,7 @@ export default function AdminConsorcio() {
                       <TableHead>ID OCPP</TableHead>
                       <TableHead>Unidad asignada</TableHead>
                       <TableHead>Estado</TableHead>
+                      <TableHead className="text-right">Conectado hace</TableHead>
                       <TableHead className="text-right">Consumo actual</TableHead>
                       <TableHead className="text-right">Hoy</TableHead>
                       <TableHead className="text-right">Semana</TableHead>
@@ -317,6 +330,9 @@ export default function AdminConsorcio() {
                           <Badge variant={l?.activo ? 'accent' : 'muted'}>{l?.activo ? 'Cargando' : (c.estado_online ? 'Online' : 'Offline')}</Badge>
                         </TableCell>
                         <TableCell className="tabular-nums text-right">
+                          {l?.activo ? formatElapsed(l.conectado_desde) : '-'}
+                        </TableCell>
+                        <TableCell className="tabular-nums text-right">
                           {l?.activo && l?.potencia_actual_kw != null ? `${Number(l.potencia_actual_kw).toFixed(1)} kW` : '-'}
                         </TableCell>
                         <TableCell className="tabular-nums text-right">{Number(l?.kwh_hoy ?? 0).toFixed(1)} kWh</TableCell>
@@ -326,6 +342,9 @@ export default function AdminConsorcio() {
                           <div className="flex justify-end gap-1">
                             <Button size="sm" variant="outline" onClick={() => openEditCargador(c)} title="Editar">
                               <Pencil className="h-4 w-4" />
+                            </Button>
+                            <Button size="sm" variant="outline" onClick={() => openQr(c)} title="Ver QR para el residente">
+                              <QrCode className="h-4 w-4" />
                             </Button>
                             <Dialog open={dlmOpen === c.ocpp_id} onOpenChange={(open) => { setDlmOpen(open ? c.ocpp_id : null); setDlmStatus(''); }}>
                               <DialogTrigger asChild>
@@ -396,6 +415,26 @@ export default function AdminConsorcio() {
                 </div>
                 <Button type="submit" className="mt-2">Guardar cambios</Button>
               </form>
+            </DialogContent>
+          </Dialog>
+
+          <Dialog open={qrOpen != null} onOpenChange={(open) => !open && setQrOpen(null)}>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>QR de carga - {qrOpen?.etiqueta || qrOpen?.ocpp_id}</DialogTitle>
+                <DialogDescription>
+                  Imprimi y pega este codigo en el wallbox. El residente lo escanea, inicia sesion (si hace falta) y puede iniciar/detener la carga desde el celular.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="flex flex-col items-center gap-4">
+                {qrDataUrl && <img src={qrDataUrl} alt={`QR ${qrOpen?.ocpp_id}`} className="h-64 w-64" />}
+                <p className="break-all text-center text-xs text-muted-foreground">
+                  {window.location.origin}/cargar/{qrOpen?.ocpp_id}
+                </p>
+                <a href={qrDataUrl} download={`qr-${qrOpen?.ocpp_id}.png`}>
+                  <Button variant="outline" size="sm"><Download className="h-4 w-4" />Descargar PNG</Button>
+                </a>
+              </div>
             </DialogContent>
           </Dialog>
         </TabsContent>
@@ -627,6 +666,9 @@ export default function AdminConsorcio() {
                       <CardTitle>{c.etiqueta || c.ocpp_id}</CardTitle>
                       <div className="flex items-center gap-2">
                         {c.activo && <Badge variant="accent">Cargando</Badge>}
+                        {c.activo && c.conectado_desde && (
+                          <span className="text-xs text-muted-foreground">hace {formatElapsed(c.conectado_desde)}</span>
+                        )}
                         {last?.potencia_kw != null && (
                           <span className="tabular-nums text-xs text-muted-foreground">{Number(last.potencia_kw).toFixed(1)} kW</span>
                         )}
