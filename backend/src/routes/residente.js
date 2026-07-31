@@ -132,6 +132,42 @@ router.get('/cargadores/:ocppId/historial', async (req, res) => {
   res.json(result.rows);
 });
 
+// Preview de capacidad: "si tocara Iniciar ahora mismo, cuantos amps me
+// tocarian" - no reserva nada, solo informa antes de arrancar de verdad.
+router.get('/cargadores/:ocppId/disponibilidad', async (req, res) => {
+  const own = await pool.query(
+    'SELECT consorcio_id FROM cargadores WHERE ocpp_id = $1 AND uf_id = $2',
+    [req.params.ocppId, req.user.ufId],
+  );
+  if (own.rowCount === 0) {
+    return res.status(404).json({ error: 'Este cargador no esta asignado a tu unidad.' });
+  }
+  const { consorcio_id: consorcioId } = own.rows[0];
+
+  const consorcio = await pool.query(
+    'SELECT limite_amperios_totales FROM consorcios WHERE id = $1',
+    [consorcioId],
+  );
+  const limite = consorcio.rows[0]?.limite_amperios_totales;
+  if (!limite) {
+    return res.json({ disponible: true, amps_estimados: null });
+  }
+
+  const MIN_AMPS = 6;
+  const activos = await pool.query(
+    `SELECT COUNT(DISTINCT cargador_ocpp_id) AS n FROM liquidacion_sesiones
+     WHERE consorcio_id = $1 AND fecha_fin IS NULL AND cargador_ocpp_id != $2`,
+    [consorcioId, req.params.ocppId],
+  );
+  const activeCount = Number(activos.rows[0].n);
+  const maxCupos = Math.floor(limite / MIN_AMPS);
+
+  if (activeCount < maxCupos) {
+    return res.json({ disponible: true, amps_estimados: Math.floor(limite / (activeCount + 1)) });
+  }
+  res.json({ disponible: false, amps_estimados: 0 });
+});
+
 router.post('/cargadores/:ocppId/iniciar', async (req, res) => {
   const cargador = await pool.query(
     'SELECT id FROM cargadores WHERE ocpp_id = $1 AND uf_id = $2',

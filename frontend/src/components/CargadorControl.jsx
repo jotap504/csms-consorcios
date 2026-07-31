@@ -7,6 +7,7 @@ import { Button, Card, CardContent, CardHeader, CardTitle, CardDescription, Badg
 export default function CargadorControl({ ocppId }) {
   const [cargador, setCargador] = useState(null);
   const [estado, setEstado] = useState(null);
+  const [disponibilidad, setDisponibilidad] = useState(null);
   const [historial, setHistorial] = useState([]);
   const [loadError, setLoadError] = useState('');
   const [actionError, setActionError] = useState('');
@@ -31,6 +32,15 @@ export default function CargadorControl({ ocppId }) {
     }
   }, [ocppId]);
 
+  const loadDisponibilidad = useCallback(async () => {
+    try {
+      const { data } = await api.get(`/residente/cargadores/${ocppId}/disponibilidad`);
+      setDisponibilidad(data);
+    } catch {
+      // silencioso: no es critico, se reintenta en el proximo poll
+    }
+  }, [ocppId]);
+
   useEffect(() => {
     let cancelled = false;
     async function init() {
@@ -40,7 +50,7 @@ export default function CargadorControl({ ocppId }) {
         const { data } = await api.get(`/residente/cargadores/${ocppId}`);
         if (cancelled) return;
         setCargador(data);
-        await Promise.all([loadEstado(), loadHistorial()]);
+        await Promise.all([loadEstado(), loadHistorial(), loadDisponibilidad()]);
       } catch (err) {
         if (cancelled) return;
         setLoadError(err.response?.data?.error || 'No se pudo cargar la informacion del cargador.');
@@ -50,20 +60,23 @@ export default function CargadorControl({ ocppId }) {
     }
     init();
     return () => { cancelled = true; };
-  }, [ocppId, loadEstado, loadHistorial]);
+  }, [ocppId, loadEstado, loadHistorial, loadDisponibilidad]);
 
   useEffect(() => {
     if (!cargador) return undefined;
-    const interval = setInterval(loadEstado, 5000);
+    const interval = setInterval(() => {
+      loadEstado();
+      loadDisponibilidad();
+    }, 5000);
     return () => clearInterval(interval);
-  }, [cargador, loadEstado]);
+  }, [cargador, loadEstado, loadDisponibilidad]);
 
   async function handleIniciar() {
     setActionError('');
     setActionLoading(true);
     try {
       await api.post(`/residente/cargadores/${ocppId}/iniciar`);
-      await loadEstado();
+      await Promise.all([loadEstado(), loadDisponibilidad()]);
     } catch (err) {
       setActionError(err.response?.data?.error || 'No se pudo iniciar la carga.');
     } finally {
@@ -76,8 +89,7 @@ export default function CargadorControl({ ocppId }) {
     setActionLoading(true);
     try {
       await api.post(`/residente/cargadores/${ocppId}/detener`);
-      await loadEstado();
-      await loadHistorial();
+      await Promise.all([loadEstado(), loadHistorial(), loadDisponibilidad()]);
     } catch (err) {
       setActionError(err.response?.data?.error || 'No se pudo detener la carga.');
     } finally {
@@ -153,6 +165,24 @@ export default function CargadorControl({ ocppId }) {
             </p>
           )}
 
+          {!estado.activo && (
+            <p className="-mt-4 text-center text-xs text-muted-foreground">
+              {disponibilidad == null
+                ? 'Chequeando disponibilidad de carga en la red...'
+                : disponibilidad.disponible
+                  ? disponibilidad.amps_estimados != null
+                    ? `Disponemos de ${disponibilidad.amps_estimados} A para carga en este momento.`
+                    : 'Hay disponibilidad para cargar ahora mismo.'
+                  : 'Alta demanda en el edificio ahora mismo. Si iniciás, tu carga podria entrar en cola.'}
+            </p>
+          )}
+
+          {estado.conectado === false && !estado.activo && (
+            <p className="-mt-4 text-center text-xs text-amber-600">
+              Conecta tu vehiculo al cargador para poder iniciar.
+            </p>
+          )}
+
           {cargando && (
             <div className="grid w-full grid-cols-3 gap-3 text-center">
               <div className="flex flex-col items-center gap-1">
@@ -187,7 +217,12 @@ export default function CargadorControl({ ocppId }) {
               {actionLoading ? 'Deteniendo...' : enCola ? 'Cancelar' : 'Detener carga'}
             </Button>
           ) : (
-            <Button size="lg" className="w-full" disabled={actionLoading} onClick={handleIniciar}>
+            <Button
+              size="lg"
+              className="w-full"
+              disabled={actionLoading || estado.conectado === false}
+              onClick={handleIniciar}
+            >
               {actionLoading ? 'Iniciando...' : 'Iniciar carga'}
             </Button>
           )}
