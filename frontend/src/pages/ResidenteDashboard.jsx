@@ -3,6 +3,7 @@ import { Home, Zap, Receipt, CreditCard } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 import { api } from '@/lib/api';
 import Layout from '@/components/Layout';
+import CargadorControl from '@/components/CargadorControl';
 import {
   StatCard, Card, CardHeader, CardTitle, CardContent,
   Table, TableHeader, TableBody, TableRow, TableHead, TableCell,
@@ -14,15 +15,18 @@ const navItems = [{ to: '/residente', label: 'Mi consumo', icon: Home, end: true
 export default function ResidenteDashboard() {
   const [consumos, setConsumos] = useState([]);
   const [tarjetas, setTarjetas] = useState([]);
+  const [cargadores, setCargadores] = useState([]);
   const [periodo, setPeriodo] = useState('');
 
   async function loadAll(currentPeriodo) {
-    const [c, t] = await Promise.all([
+    const [c, t, ca] = await Promise.all([
       api.get('/residente/consumos', { params: currentPeriodo ? { periodo: currentPeriodo } : {} }),
       api.get('/residente/tarjetas'),
+      api.get('/residente/cargadores'),
     ]);
     setConsumos(c.data);
     setTarjetas(t.data);
+    setCargadores(ca.data);
   }
 
   useEffect(() => {
@@ -46,6 +50,19 @@ export default function ResidenteDashboard() {
 
   return (
     <Layout title="Mi consumo" navItems={navItems}>
+      {cargadores.length > 0 && (
+        <div className="mb-8">
+          <h2 className="mb-3 text-sm font-semibold text-muted-foreground">Mis cargadores</h2>
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {cargadores.map((c) => (
+              <div key={c.ocpp_id} className="max-w-sm">
+                <CargadorControl ocppId={c.ocpp_id} />
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="grid gap-4 sm:grid-cols-3">
         <StatCard icon={Zap} label="Sesiones de carga" value={consumos.length} />
         <StatCard icon={Receipt} label="kWh consumidos" value={totalKwh.toFixed(2)} />

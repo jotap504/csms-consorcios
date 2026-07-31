@@ -19,6 +19,14 @@ router.get('/consumos', async (req, res) => {
   res.json(result.rows);
 });
 
+router.get('/cargadores', async (req, res) => {
+  const result = await pool.query(
+    'SELECT ocpp_id, etiqueta FROM cargadores WHERE uf_id = $1 ORDER BY etiqueta, ocpp_id',
+    [req.user.ufId],
+  );
+  res.json(result.rows);
+});
+
 router.get('/tarjetas', async (req, res) => {
   const result = await pool.query(
     'SELECT id, id_tag_ocpp, activa FROM tarjetas_rfid WHERE uf_id = $1 ORDER BY id',
