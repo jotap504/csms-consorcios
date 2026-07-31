@@ -45,12 +45,19 @@ router.get('/cargadores/:ocppId', async (req, res) => {
 
 router.get('/cargadores/:ocppId/estado', async (req, res) => {
   const own = await pool.query(
-    'SELECT 1 FROM cargadores WHERE ocpp_id = $1 AND uf_id = $2',
+    'SELECT consorcio_id FROM cargadores WHERE ocpp_id = $1 AND uf_id = $2',
     [req.params.ocppId, req.user.ufId],
   );
   if (own.rowCount === 0) {
     return res.status(404).json({ error: 'Este cargador no esta asignado a tu unidad.' });
   }
+  const { consorcio_id: consorcioId } = own.rows[0];
+
+  const estadoActual = await pool.query(
+    'SELECT amps_asignados, en_cola, conectado, status_ocpp FROM cargador_estado_actual WHERE cargador_ocpp_id = $1',
+    [req.params.ocppId],
+  );
+  const conectado = estadoActual.rows[0]?.conectado ?? null;
 
   const sesion = await pool.query(
     `SELECT transaction_id_ocpp, fecha_inicio FROM liquidacion_sesiones
@@ -59,10 +66,25 @@ router.get('/cargadores/:ocppId/estado', async (req, res) => {
     [req.params.ocppId, req.user.ufId],
   );
   if (sesion.rowCount === 0) {
-    return res.json({ activo: false });
+    return res.json({ activo: false, conectado });
   }
 
   const { transaction_id_ocpp: txId, fecha_inicio: conectadoDesde } = sesion.rows[0];
+  const enCola = estadoActual.rows[0]?.en_cola ?? false;
+
+  let posicionEnCola = null;
+  if (enCola) {
+    const cola = await pool.query(
+      `SELECT ls.cargador_ocpp_id FROM liquidacion_sesiones ls
+       JOIN cargador_estado_actual ce ON ce.cargador_ocpp_id = ls.cargador_ocpp_id
+       WHERE ls.consorcio_id = $1 AND ls.fecha_fin IS NULL AND ce.en_cola = TRUE
+       ORDER BY ls.fecha_inicio ASC`,
+      [consorcioId],
+    );
+    const idx = cola.rows.findIndex((r) => r.cargador_ocpp_id === req.params.ocppId);
+    posicionEnCola = idx >= 0 ? idx + 1 : null;
+  }
+
   const lecturas = await pool.query(
     `SELECT kwh_acumulado, potencia_kw FROM lecturas_medidor
      WHERE transaction_id_ocpp = $1 ORDER BY "timestamp" ASC`,
@@ -74,10 +96,32 @@ router.get('/cargadores/:ocppId/estado', async (req, res) => {
 
   res.json({
     activo: true,
+    en_cola: enCola,
+    posicion_en_cola: posicionEnCola,
+    conectado,
     conectado_desde: conectadoDesde,
     potencia_actual_kw: last?.potencia_kw ?? null,
     kwh_sesion: Math.max(0, kwhSesion),
   });
+});
+
+router.get('/cargadores/:ocppId/historial', async (req, res) => {
+  const own = await pool.query(
+    'SELECT 1 FROM cargadores WHERE ocpp_id = $1 AND uf_id = $2',
+    [req.params.ocppId, req.user.ufId],
+  );
+  if (own.rowCount === 0) {
+    return res.status(404).json({ error: 'Este cargador no esta asignado a tu unidad.' });
+  }
+
+  const result = await pool.query(
+    `SELECT transaction_id_ocpp, fecha_inicio, fecha_fin, kwh_consumidos, monto_total_expensa
+     FROM liquidacion_sesiones
+     WHERE cargador_ocpp_id = $1 AND uf_id = $2 AND fecha_fin IS NOT NULL
+     ORDER BY fecha_inicio DESC LIMIT 20`,
+    [req.params.ocppId, req.user.ufId],
+  );
+  res.json(result.rows);
 });
 
 router.post('/cargadores/:ocppId/iniciar', async (req, res) => {

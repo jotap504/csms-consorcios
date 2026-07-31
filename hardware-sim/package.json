@@ -1,0 +1,13 @@
+{
+  "name": "csms-hardware-sim",
+  "version": "1.0.0",
+  "description": "Simulador fisico de cargador OCPP 2.0.1 para Raspberry Pi 4 (rele + LEDs + boton)",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "ws": "^8.18.0"
+  }
+}

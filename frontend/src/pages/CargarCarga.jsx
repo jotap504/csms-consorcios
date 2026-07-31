@@ -1,15 +1,16 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
-import { AlertCircle, Zap, Clock, Gauge, Battery, LogOut } from 'lucide-react';
+import { AlertCircle, Zap, Clock, Gauge, Battery, LogOut, ListOrdered, Plug, PlugZap, History } from 'lucide-react';
 import { api } from '@/lib/api';
 import { clearSession } from '@/lib/auth';
 import { formatElapsed, cn } from '@/lib/utils';
-import { Button, Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui';
+import { Button, Card, CardContent, CardHeader, CardTitle, CardDescription, Badge } from '@/components/ui';
 
 export default function CargarCarga() {
   const { ocppId } = useParams();
   const [cargador, setCargador] = useState(null);
   const [estado, setEstado] = useState(null);
+  const [historial, setHistorial] = useState([]);
   const [loadError, setLoadError] = useState('');
   const [actionError, setActionError] = useState('');
   const [actionLoading, setActionLoading] = useState(false);
@@ -24,6 +25,15 @@ export default function CargarCarga() {
     }
   }, [ocppId]);
 
+  const loadHistorial = useCallback(async () => {
+    try {
+      const { data } = await api.get(`/residente/cargadores/${ocppId}/historial`);
+      setHistorial(data);
+    } catch {
+      // no bloquea el resto de la pagina si esto falla
+    }
+  }, [ocppId]);
+
   useEffect(() => {
     let cancelled = false;
     async function init() {
@@ -31,7 +41,7 @@ export default function CargarCarga() {
         const { data } = await api.get(`/residente/cargadores/${ocppId}`);
         if (cancelled) return;
         setCargador(data);
-        await loadEstado();
+        await Promise.all([loadEstado(), loadHistorial()]);
       } catch (err) {
         if (cancelled) return;
         setLoadError(err.response?.data?.error || 'No se pudo cargar la informacion del cargador.');
@@ -41,7 +51,7 @@ export default function CargarCarga() {
     }
     init();
     return () => { cancelled = true; };
-  }, [ocppId, loadEstado]);
+  }, [ocppId, loadEstado, loadHistorial]);
 
   useEffect(() => {
     if (!cargador) return undefined;
@@ -68,12 +78,16 @@ export default function CargarCarga() {
     try {
       await api.post(`/residente/cargadores/${ocppId}/detener`);
       await loadEstado();
+      await loadHistorial();
     } catch (err) {
       setActionError(err.response?.data?.error || 'No se pudo detener la carga.');
     } finally {
       setActionLoading(false);
     }
   }
+
+  const enCola = estado?.activo && estado?.en_cola;
+  const cargando = estado?.activo && !estado?.en_cola;
 
   return (
     <div className="flex min-h-dvh flex-col items-center bg-background px-4 py-6">
@@ -111,22 +125,43 @@ export default function CargarCarga() {
             <CardHeader className="items-center text-center">
               <CardTitle className="text-xl">{cargador.etiqueta || cargador.ocpp_id}</CardTitle>
               <CardDescription className="font-mono text-xs">{cargador.ocpp_id}</CardDescription>
+              {estado.conectado != null && (
+                <Badge variant={estado.conectado ? 'accent' : 'muted'} className="mt-1 gap-1">
+                  {estado.conectado ? <PlugZap className="h-3 w-3" /> : <Plug className="h-3 w-3" />}
+                  {estado.conectado ? 'Vehiculo conectado' : 'Sin vehiculo conectado'}
+                </Badge>
+              )}
             </CardHeader>
             <CardContent className="flex flex-col items-center gap-6">
               <div
                 className={cn(
                   'flex h-32 w-32 items-center justify-center rounded-full border-4',
-                  estado.activo ? 'border-accent bg-accent/10' : 'border-border bg-muted',
+                  cargando && 'border-accent bg-accent/10',
+                  enCola && 'border-amber-500 bg-amber-500/10',
+                  !estado.activo && 'border-border bg-muted',
                 )}
               >
-                <Zap className={cn('h-14 w-14', estado.activo ? 'text-accent' : 'text-muted-foreground')} />
+                {enCola ? (
+                  <ListOrdered className="h-14 w-14 text-amber-500" />
+                ) : (
+                  <Zap className={cn('h-14 w-14', cargando ? 'text-accent' : 'text-muted-foreground')} />
+                )}
               </div>
 
               <p className="text-sm font-medium text-foreground">
-                {estado.activo ? 'Cargando' : 'Listo para cargar'}
+                {enCola
+                  ? `En cola${estado.posicion_en_cola ? ` - posicion ${estado.posicion_en_cola}` : ''}`
+                  : cargando
+                    ? 'Cargando'
+                    : 'Listo para cargar'}
               </p>
+              {enCola && (
+                <p className="-mt-4 text-center text-xs text-muted-foreground">
+                  Alta demanda en el edificio ahora mismo. Arranca automaticamente apenas se libera un cupo, sin que tengas que hacer nada.
+                </p>
+              )}
 
-              {estado.activo && (
+              {cargando && (
                 <div className="grid w-full grid-cols-3 gap-3 text-center">
                   <div className="flex flex-col items-center gap-1">
                     <Clock className="h-4 w-4 text-muted-foreground" />
@@ -157,7 +192,7 @@ export default function CargarCarga() {
 
               {estado.activo ? (
                 <Button size="lg" variant="destructive" className="w-full" disabled={actionLoading} onClick={handleDetener}>
-                  {actionLoading ? 'Deteniendo...' : 'Detener carga'}
+                  {actionLoading ? 'Deteniendo...' : enCola ? 'Cancelar' : 'Detener carga'}
                 </Button>
               ) : (
                 <Button size="lg" className="w-full" disabled={actionLoading} onClick={handleIniciar}>
@@ -168,6 +203,26 @@ export default function CargarCarga() {
               <p className="text-center text-xs text-muted-foreground">
                 Precio actual: ${Number(cargador.costo_kwh_electricidad).toFixed(2)} / kWh
               </p>
+            </CardContent>
+          </Card>
+        )}
+
+        {!loading && !loadError && historial.length > 0 && (
+          <Card className="mt-4">
+            <CardHeader className="flex-row items-center gap-2 py-4">
+              <History className="h-4 w-4 text-muted-foreground" />
+              <CardTitle className="text-sm">Historial de cargas</CardTitle>
+            </CardHeader>
+            <CardContent className="flex flex-col gap-3 pt-0">
+              {historial.map((h) => (
+                <div key={h.transaction_id_ocpp} className="flex items-center justify-between border-t border-border pt-3 first:border-t-0 first:pt-0">
+                  <div>
+                    <p className="text-sm text-foreground">{new Date(h.fecha_inicio).toLocaleDateString('es-AR')}</p>
+                    <p className="text-xs text-muted-foreground">{Number(h.kwh_consumidos).toFixed(2)} kWh</p>
+                  </div>
+                  <p className="text-sm font-semibold tabular-nums">${Number(h.monto_total_expensa).toFixed(2)}</p>
+                </div>
+              ))}
             </CardContent>
           </Card>
         )}

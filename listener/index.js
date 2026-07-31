@@ -65,6 +65,15 @@ async function getActiveConsorcioForStation(stationId) {
   return r.rows[0]?.consorcio_id ?? null;
 }
 
+async function setCargadorEstado(ocppId, ampsAsignados, enCola) {
+  await pool.query(
+    `INSERT INTO cargador_estado_actual (cargador_ocpp_id, amps_asignados, en_cola, updated_at)
+     VALUES ($1, $2, $3, NOW())
+     ON CONFLICT (cargador_ocpp_id) DO UPDATE SET amps_asignados = $2, en_cola = $3, updated_at = NOW()`,
+    [ocppId, ampsAsignados, enCola],
+  );
+}
+
 async function pushChargingProfile(ocppId, maxAmps) {
   const profileId = Date.now() % 1000000;
   const url = `${CITRINEOS_REST_URL}/ocpp/2.0.1/smartcharging/setChargingProfile?identifier=${encodeURIComponent(ocppId)}&tenantId=1`;
@@ -102,9 +111,10 @@ async function pushChargingProfile(ocppId, maxAmps) {
 }
 
 // Reparte limite_amperios_totales del consorcio en partes iguales entre los
-// cargadores con una sesion activa en este momento. Estrategia simple
-// (equal-share): no distingue capacidad del vehiculo ni fases, solo evita
-// que la suma de todos supere la instalacion.
+// cargadores con una sesion activa, respetando un piso de MIN_AMPS por
+// cargador. Si entran mas sesiones de las que el limite alcanza a cubrir con
+// el piso, las mas nuevas (por fecha_inicio, FIFO) quedan "en cola" con 0A
+// hasta que se libera un cupo (otra sesion termina y se vuelve a llamar aca).
 async function rebalanceConsorcio(consorcioId) {
   if (consorcioId == null) return;
 
@@ -116,16 +126,31 @@ async function rebalanceConsorcio(consorcioId) {
   if (!limite) return; // sin limite configurado, no hay nada para repartir
 
   const activos = await pool.query(
-    `SELECT DISTINCT cargador_ocpp_id FROM liquidacion_sesiones
-     WHERE consorcio_id = $1 AND fecha_fin IS NULL`,
+    `SELECT DISTINCT ON (cargador_ocpp_id) cargador_ocpp_id, fecha_inicio
+     FROM liquidacion_sesiones
+     WHERE consorcio_id = $1 AND fecha_fin IS NULL
+     ORDER BY cargador_ocpp_id, fecha_inicio ASC`,
     [consorcioId],
   );
-  const ocppIds = activos.rows.map((r) => r.cargador_ocpp_id);
-  if (ocppIds.length === 0) return;
+  const ordenados = activos.rows
+    .sort((a, b) => new Date(a.fecha_inicio) - new Date(b.fecha_inicio))
+    .map((r) => r.cargador_ocpp_id);
+  if (ordenados.length === 0) return;
 
-  const perAmps = Math.max(MIN_AMPS, Math.floor(limite / ocppIds.length));
-  console.log(`[Balanceador] consorcio=${consorcioId} activos=${ocppIds.length} limite=${limite}A -> ${perAmps}A c/u`);
-  await Promise.all(ocppIds.map((ocppId) => pushChargingProfile(ocppId, perAmps)));
+  const maxCupos = Math.max(0, Math.floor(limite / MIN_AMPS));
+  const conCupo = ordenados.slice(0, maxCupos);
+  const enCola = ordenados.slice(maxCupos);
+  const perAmps = conCupo.length > 0 ? Math.floor(limite / conCupo.length) : 0;
+
+  console.log(
+    `[Balanceador] consorcio=${consorcioId} activos=${ordenados.length} cupos=${maxCupos} -> `
+    + `${conCupo.length}x${perAmps}A, ${enCola.length} en cola`,
+  );
+
+  await Promise.all([
+    ...conCupo.map((ocppId) => setCargadorEstado(ocppId, perAmps, false).then(() => pushChargingProfile(ocppId, perAmps))),
+    ...enCola.map((ocppId) => setCargadorEstado(ocppId, 0, true).then(() => pushChargingProfile(ocppId, 0))),
+  ]);
 }
 
 async function handleStarted(context, payload) {
@@ -269,8 +294,25 @@ async function handleBootNotification(context) {
     await rebalanceConsorcio(activeConsorcioId);
   } else {
     console.log(`[Boot] ${stationId} conecto sin sesion activa, aplicando piso de ${MIN_AMPS}A`);
+    await setCargadorEstado(stationId, MIN_AMPS, false);
     await pushChargingProfile(stationId, MIN_AMPS);
   }
+}
+
+// Reporta si hay un vehiculo fisicamente enchufado en el conector,
+// independiente de si ya esta autorizado/cargando (eso lo cubre TransactionEvent).
+async function handleStatusNotification(context, payload) {
+  const stationId = context.ocppConnectionName;
+  const status = payload.connectorStatus;
+  const conectado = status === 'Occupied' ? true : status === 'Available' ? false : null;
+
+  await pool.query(
+    `INSERT INTO cargador_estado_actual (cargador_ocpp_id, conectado, status_ocpp, updated_at)
+     VALUES ($1, $2, $3, NOW())
+     ON CONFLICT (cargador_ocpp_id) DO UPDATE SET conectado = $2, status_ocpp = $3, updated_at = NOW()`,
+    [stationId, conectado, status],
+  );
+  console.log(`[StatusNotification] ${stationId} status=${status} conectado=${conectado}`);
 }
 
 async function main() {
@@ -294,8 +336,14 @@ async function main() {
     state: '1',
     action: 'BootNotification',
   });
+  await channel.bindQueue(QUEUE, EXCHANGE, '', {
+    'x-match': 'all',
+    origin: 'cs',
+    state: '1',
+    action: 'StatusNotification',
+  });
 
-  console.log(`Escuchando eventos TransactionEvent/BootNotification en cola "${QUEUE}"...`);
+  console.log(`Escuchando eventos TransactionEvent/BootNotification/StatusNotification en cola "${QUEUE}"...`);
 
   // Safety net: re-balance periodically in case a Started/Ended event was
   // missed (e.g. listener was briefly down) and the last pushed profile is stale.
@@ -318,6 +366,8 @@ async function main() {
       const body = JSON.parse(msg.content.toString('utf-8'));
       if (body.action === 'BootNotification') {
         await handleBootNotification(body.context);
+      } else if (body.action === 'StatusNotification') {
+        await handleStatusNotification(body.context, body.payload);
       } else {
         await handleTransactionEvent(body.context, body.payload);
       }
