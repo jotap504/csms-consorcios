@@ -4,6 +4,33 @@ import { api } from '@/lib/api';
 import { formatElapsed, cn } from '@/lib/utils';
 import { Button, Card, CardContent, CardHeader, CardTitle, CardDescription, Badge } from '@/components/ui';
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function CrossfadeText({ text, className }) {
+  const [display, setDisplay] = useState(text);
+  const [anim, setAnim] = useState('');
+
+  useEffect(() => {
+    if (text === display) return;
+    setAnim('anim-text-exit');
+  }, [text, display]);
+
+  function handleAnimationEnd() {
+    if (anim === 'anim-text-exit') {
+      setDisplay(text);
+      setAnim('anim-text-enter');
+    } else if (anim === 'anim-text-enter') {
+      setAnim('');
+    }
+  }
+
+  return (
+    <p className={cn(className, anim)} onAnimationEnd={handleAnimationEnd}>
+      {display}
+    </p>
+  );
+}
+
 export default function CargadorControl({ ocppId }) {
   const [cargador, setCargador] = useState(null);
   const [estado, setEstado] = useState(null);
@@ -12,6 +39,7 @@ export default function CargadorControl({ ocppId }) {
   const [loadError, setLoadError] = useState('');
   const [actionError, setActionError] = useState('');
   const [actionLoading, setActionLoading] = useState(false);
+  const [startPhase, setStartPhase] = useState(null); // null | 'checking' | 'starting'
   const [loading, setLoading] = useState(true);
 
   const loadEstado = useCallback(async () => {
@@ -74,6 +102,9 @@ export default function CargadorControl({ ocppId }) {
   async function handleIniciar() {
     setActionError('');
     setActionLoading(true);
+    setStartPhase('checking');
+    await sleep(750);
+    setStartPhase('starting');
     try {
       await api.post(`/residente/cargadores/${ocppId}/iniciar`);
       await Promise.all([loadEstado(), loadDisponibilidad()]);
@@ -81,6 +112,7 @@ export default function CargadorControl({ ocppId }) {
       setActionError(err.response?.data?.error || 'No se pudo iniciar la carga.');
     } finally {
       setActionLoading(false);
+      setStartPhase(null);
     }
   }
 
@@ -122,6 +154,18 @@ export default function CargadorControl({ ocppId }) {
 
   const enCola = estado.activo && estado.en_cola;
   const cargando = estado.activo && !estado.en_cola;
+  const activando = startPhase != null;
+  const visualCharging = cargando || activando;
+
+  const statusText = startPhase === 'checking'
+    ? 'Chequeando disponibilidad energetica...'
+    : startPhase === 'starting'
+      ? 'Iniciando carga'
+      : enCola
+        ? `En cola${estado.posicion_en_cola ? ` - posicion ${estado.posicion_en_cola}` : ''}`
+        : cargando
+          ? 'Cargando'
+          : 'Listo para cargar';
 
   return (
     <>
@@ -139,33 +183,28 @@ export default function CargadorControl({ ocppId }) {
         <CardContent className="flex flex-col items-center gap-6">
           <div
             className={cn(
-              'flex h-32 w-32 items-center justify-center rounded-full border-4',
-              cargando && 'border-accent bg-accent/10',
-              enCola && 'border-amber-500 bg-amber-500/10',
-              !estado.activo && 'border-border bg-muted',
+              'flex h-32 w-32 items-center justify-center rounded-full border-4 transition-colors duration-500',
+              visualCharging && 'border-accent bg-accent/10',
+              enCola && !activando && 'border-amber-500 bg-amber-500/10',
+              !estado.activo && !activando && 'border-border bg-muted',
             )}
           >
-            {enCola ? (
+            {enCola && !activando ? (
               <ListOrdered className="h-14 w-14 text-amber-500" />
             ) : (
-              <Zap className={cn('h-14 w-14', cargando ? 'text-accent' : 'text-muted-foreground')} />
+              <Zap className={cn('h-14 w-14', visualCharging ? 'text-accent anim-zap-charging' : 'text-muted-foreground')} />
             )}
           </div>
 
-          <p className="text-sm font-medium text-foreground">
-            {enCola
-              ? `En cola${estado.posicion_en_cola ? ` - posicion ${estado.posicion_en_cola}` : ''}`
-              : cargando
-                ? 'Cargando'
-                : 'Listo para cargar'}
-          </p>
-          {enCola && (
+          <CrossfadeText text={statusText} className="text-sm font-medium text-foreground" />
+
+          {enCola && !activando && (
             <p className="-mt-4 text-center text-xs text-muted-foreground">
               Alta demanda en el edificio ahora mismo. Arranca automaticamente apenas se libera un cupo, sin que tengas que hacer nada.
             </p>
           )}
 
-          {!estado.activo && (
+          {!estado.activo && !activando && (
             <p className="-mt-4 text-center text-xs text-muted-foreground">
               {disponibilidad == null
                 ? 'Chequeando disponibilidad de carga en la red...'
@@ -177,13 +216,13 @@ export default function CargadorControl({ ocppId }) {
             </p>
           )}
 
-          {estado.conectado === false && !estado.activo && (
+          {estado.conectado === false && !estado.activo && !activando && (
             <p className="-mt-4 text-center text-xs text-amber-600">
               Conecta tu vehiculo al cargador para poder iniciar.
             </p>
           )}
 
-          {cargando && (
+          {cargando && !activando && (
             <div className="grid w-full grid-cols-3 gap-3 text-center">
               <div className="flex flex-col items-center gap-1">
                 <Clock className="h-4 w-4 text-muted-foreground" />
@@ -223,7 +262,7 @@ export default function CargadorControl({ ocppId }) {
               disabled={actionLoading || estado.conectado === false}
               onClick={handleIniciar}
             >
-              {actionLoading ? 'Iniciando...' : 'Iniciar carga'}
+              {activando ? '...' : 'Iniciar carga'}
             </Button>
           )}
 

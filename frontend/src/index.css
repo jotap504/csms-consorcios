@@ -54,3 +54,43 @@
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
 }
+
+@keyframes text-slide-exit {
+  to {
+    transform: translateY(-14px);
+    opacity: 0;
+  }
+}
+
+@keyframes text-slide-enter {
+  from {
+    transform: translateY(14px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.anim-text-exit {
+  animation: text-slide-exit 220ms ease-in forwards;
+}
+
+.anim-text-enter {
+  animation: text-slide-enter 280ms ease-out forwards;
+}
+
+@keyframes zap-flicker {
+  0%, 19%, 21%, 23%, 25%, 54%, 56%, 100% { opacity: 1; }
+  20%, 22%, 24%, 55% { opacity: 0.55; }
+}
+
+@keyframes zap-glow {
+  0%, 100% { filter: drop-shadow(0 0 2px rgba(5, 150, 105, 0.5)); }
+  50% { filter: drop-shadow(0 0 12px rgba(5, 150, 105, 0.95)); }
+}
+
+.anim-zap-charging {
+  animation: zap-flicker 2.4s infinite, zap-glow 1.5s ease-in-out infinite;
+}
