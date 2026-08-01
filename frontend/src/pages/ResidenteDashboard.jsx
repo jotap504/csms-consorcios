@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Home, Zap, Receipt, CreditCard } from 'lucide-react';
+import { Home, Zap, Receipt, CreditCard, ChevronDown, ChevronUp } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 import { api } from '@/lib/api';
 import Layout from '@/components/Layout';
@@ -17,6 +17,8 @@ export default function ResidenteDashboard() {
   const [tarjetas, setTarjetas] = useState([]);
   const [cargadores, setCargadores] = useState([]);
   const [periodo, setPeriodo] = useState('');
+  const [historialExpanded, setHistorialExpanded] = useState(false);
+  const HISTORIAL_VISIBLE = 15;
 
   async function loadAll(currentPeriodo) {
     const [c, t, ca] = await Promise.all([
@@ -36,6 +38,7 @@ export default function ResidenteDashboard() {
 
   function handleFilter(e) {
     e.preventDefault();
+    setHistorialExpanded(false);
     loadAll(periodo);
   }
 
@@ -110,7 +113,7 @@ export default function ResidenteDashboard() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {consumos.map((c) => (
+                {(historialExpanded ? consumos : consumos.slice(0, HISTORIAL_VISIBLE)).map((c) => (
                   <TableRow key={c.transaction_id_ocpp}>
                     <TableCell className="font-mono text-xs">{c.cargador_ocpp_id}</TableCell>
                     <TableCell>{new Date(c.fecha_inicio).toLocaleDateString('es-AR')}</TableCell>
@@ -120,6 +123,18 @@ export default function ResidenteDashboard() {
                 ))}
               </TableBody>
             </Table>
+          )}
+          {consumos.length > HISTORIAL_VISIBLE && (
+            <button
+              onClick={() => setHistorialExpanded((v) => !v)}
+              className="mt-3 flex w-full cursor-pointer items-center justify-center gap-1.5 rounded-lg py-2 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
+            >
+              {historialExpanded ? (
+                <>Ver menos <ChevronUp className="h-4 w-4" /></>
+              ) : (
+                <>Ver {consumos.length - HISTORIAL_VISIBLE} mas <ChevronDown className="h-4 w-4" /></>
+              )}
+            </button>
           )}
         </CardContent>
       </Card>
