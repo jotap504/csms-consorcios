@@ -102,14 +102,28 @@ router.get('/cargadores/:ocppId/estado', async (req, res) => {
   const last = lecturas.rows[lecturas.rows.length - 1];
   const kwhSesion = first && last ? Number(last.kwh_acumulado) - Number(first.kwh_acumulado) : 0;
 
+  // Aproximacion: no guardamos tension por consorcio, asumimos 220V
+  // monofasico (mismo default que usa hardware-sim) solo para esta metrica
+  // visual de "cuanto de tu cupo asignado estas usando ahora".
+  const ASSUMED_VOLTS = 220;
+  const ampsAsignados = estadoActual.rows[0]?.amps_asignados ?? null;
+  const potenciaKw = last?.potencia_kw ?? null;
+  let utilizacionPct = null;
+  if (ampsAsignados && potenciaKw != null) {
+    const maxKw = (ampsAsignados * ASSUMED_VOLTS) / 1000;
+    utilizacionPct = maxKw > 0 ? Math.min(100, Math.round((Number(potenciaKw) / maxKw) * 100)) : null;
+  }
+
   res.json({
     activo: true,
     en_cola: enCola,
     posicion_en_cola: posicionEnCola,
     conectado,
     conectado_desde: conectadoDesde,
-    potencia_actual_kw: last?.potencia_kw ?? null,
+    potencia_actual_kw: potenciaKw,
     kwh_sesion: Math.max(0, kwhSesion),
+    amps_asignados: ampsAsignados,
+    utilizacion_pct: utilizacionPct,
   });
 });
 

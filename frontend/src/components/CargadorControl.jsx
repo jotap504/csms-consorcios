@@ -3,6 +3,7 @@ import { AlertCircle, Zap, Clock, Gauge, Battery, ListOrdered, Plug, PlugZap, Hi
 import { api } from '@/lib/api';
 import { formatElapsed, cn } from '@/lib/utils';
 import { Button, Card, CardContent, CardHeader, CardTitle, CardDescription, Badge } from '@/components/ui';
+import ChargeGauge from '@/components/ChargeGauge';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -181,20 +182,24 @@ export default function CargadorControl({ ocppId }) {
           )}
         </CardHeader>
         <CardContent className="flex flex-col items-center gap-6">
-          <div
-            className={cn(
-              'flex h-32 w-32 items-center justify-center rounded-full border-4 transition-colors duration-500',
-              visualCharging && 'border-accent bg-accent/10',
-              enCola && !activando && 'border-amber-500 bg-amber-500/10',
-              !estado.activo && !activando && 'border-border bg-muted',
-            )}
-          >
-            {enCola && !activando ? (
-              <ListOrdered className="h-14 w-14 text-amber-500" />
-            ) : (
-              <Zap className={cn('h-14 w-14', visualCharging ? 'text-accent anim-zap-charging' : 'text-muted-foreground')} />
-            )}
-          </div>
+          {cargando && !activando ? (
+            <ChargeGauge value={estado.utilizacion_pct ?? 0} size={176} />
+          ) : (
+            <div
+              className={cn(
+                'flex h-32 w-32 items-center justify-center rounded-full border-4 transition-colors duration-500',
+                visualCharging && 'border-accent bg-accent/10',
+                enCola && !activando && 'border-amber-500 bg-amber-500/10',
+                !estado.activo && !activando && 'border-border bg-muted',
+              )}
+            >
+              {enCola && !activando ? (
+                <ListOrdered className="h-14 w-14 text-amber-500" />
+              ) : (
+                <Zap className={cn('h-14 w-14', visualCharging ? 'text-accent anim-zap-charging' : 'text-muted-foreground')} />
+              )}
+            </div>
+          )}
 
           <CrossfadeText text={statusText} className="text-sm font-medium text-foreground" />
 
