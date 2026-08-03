@@ -9,6 +9,8 @@ const EXCHANGE = 'citrineos';
 const QUEUE = 'csms_saas_transaction_listener';
 const MIN_AMPS = 6; // IEC 61851 minimum safe charging current
 const REBALANCE_INTERVAL_MS = 60000;
+const METER_STALE_MS = 90000; // lectura de medidor mas vieja que esto se ignora (fail-safe al limite estatico)
+const ASSUMED_VOLTS = 220; // solo si el medidor manda potencia_kw en vez de amps por fase
 
 const pool = new Pool({ connectionString: DATABASE_URL });
 
@@ -115,6 +117,28 @@ async function pushChargingProfile(ocppId, maxAmps) {
   }
 }
 
+// Ultima lectura del medidor de corriente de un sector (consumo del RESTO
+// del edificio, sin contar los cargadores EV - ver nota de instalacion).
+// Devuelve null si no hay lectura o si es demasiado vieja (fail-safe: en ese
+// caso rebalanceGroup usa el limite estatico configurado, como si no
+// tuviera medidor dinamico).
+async function getConsumoMedidoAmps(sectorId) {
+  const r = await pool.query(
+    `SELECT amps_l1, amps_l2, amps_l3, potencia_kw, "timestamp"
+     FROM lecturas_sector WHERE sector_id = $1 ORDER BY "timestamp" DESC LIMIT 1`,
+    [sectorId],
+  );
+  if (r.rowCount === 0) return null;
+  const row = r.rows[0];
+  const ageMs = Date.now() - new Date(row.timestamp).getTime();
+  if (ageMs > METER_STALE_MS) return null;
+
+  const fases = [row.amps_l1, row.amps_l2, row.amps_l3].filter((v) => v != null).map(Number);
+  if (fases.length > 0) return Math.max(...fases); // fase mas cargada, criterio conservador
+  if (row.potencia_kw != null) return (Number(row.potencia_kw) * 1000) / ASSUMED_VOLTS;
+  return null;
+}
+
 // Reparte el limite de amperios de un GRUPO (un sector especifico si el
 // cargador pertenece a uno, o el consorcio entero para los que no tienen
 // sector asignado) en partes iguales entre los cargadores con sesion activa
@@ -132,8 +156,22 @@ async function rebalanceGroup({ consorcioId, sectorId }) {
 
   let limite;
   if (sectorId != null) {
-    const sector = await pool.query('SELECT limite_amperios_totales FROM sectores WHERE id = $1', [sectorId]);
+    const sector = await pool.query(
+      'SELECT limite_amperios_totales, usar_medidor_dinamico FROM sectores WHERE id = $1',
+      [sectorId],
+    );
     limite = sector.rows[0]?.limite_amperios_totales;
+    if (sector.rows[0]?.usar_medidor_dinamico && limite) {
+      const consumoMedido = await getConsumoMedidoAmps(sectorId);
+      if (consumoMedido != null) {
+        const limiteOriginal = limite;
+        limite = Math.max(0, Math.floor(limite - consumoMedido));
+        console.log(
+          `[Balanceador] sector=${sectorId} medidor dinamico: resto_edificio=${consumoMedido.toFixed(1)}A, `
+          + `${limiteOriginal}A contratado -> ${limite}A disponibles para autos`,
+        );
+      }
+    }
   } else {
     const consorcio = await pool.query('SELECT limite_amperios_totales FROM consorcios WHERE id = $1', [consorcioId]);
     limite = consorcio.rows[0]?.limite_amperios_totales;

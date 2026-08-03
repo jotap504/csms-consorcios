@@ -1,4 +1,5 @@
 const express = require('express');
+const crypto = require('crypto');
 const { pool } = require('../db');
 const { authenticate, requireRole } = require('../auth/middleware');
 
@@ -146,7 +147,14 @@ router.delete('/cargadores/:id', async (req, res) => {
 // Sectores (pisos/subsuelos con circuito y balanceo independiente)
 router.get('/consorcios/:id/sectores', async (req, res) => {
   const result = await pool.query(
-    'SELECT * FROM sectores WHERE consorcio_id = $1 ORDER BY nombre',
+    `SELECT s.*, lu.amps_l1, lu.amps_l2, lu.amps_l3, lu.potencia_kw, lu."timestamp" AS ultima_lectura_en
+     FROM sectores s
+     LEFT JOIN LATERAL (
+       SELECT amps_l1, amps_l2, amps_l3, potencia_kw, "timestamp"
+       FROM lecturas_sector ls WHERE ls.sector_id = s.id
+       ORDER BY ls."timestamp" DESC LIMIT 1
+     ) lu ON TRUE
+     WHERE s.consorcio_id = $1 ORDER BY s.nombre`,
     [req.params.id],
   );
   res.json(result.rows);
@@ -157,21 +165,23 @@ router.post('/consorcios/:id/sectores', async (req, res) => {
   if (!nombre) {
     return res.status(400).json({ error: 'nombre es requerido.' });
   }
+  const apiKey = crypto.randomBytes(24).toString('hex');
   const result = await pool.query(
-    'INSERT INTO sectores (consorcio_id, nombre, limite_amperios_totales) VALUES ($1,$2,$3) RETURNING *',
-    [req.params.id, nombre, limite_amperios_totales ?? null],
+    'INSERT INTO sectores (consorcio_id, nombre, limite_amperios_totales, medidor_api_key) VALUES ($1,$2,$3,$4) RETURNING *',
+    [req.params.id, nombre, limite_amperios_totales ?? null, apiKey],
   );
   res.status(201).json(result.rows[0]);
 });
 
 router.put('/sectores/:id', async (req, res) => {
-  const { nombre, limite_amperios_totales } = req.body ?? {};
+  const { nombre, limite_amperios_totales, usar_medidor_dinamico } = req.body ?? {};
   const result = await pool.query(
     `UPDATE sectores SET
        nombre = COALESCE($1, nombre),
-       limite_amperios_totales = COALESCE($2, limite_amperios_totales)
-     WHERE id = $3 RETURNING *`,
-    [nombre ?? null, limite_amperios_totales ?? null, req.params.id],
+       limite_amperios_totales = COALESCE($2, limite_amperios_totales),
+       usar_medidor_dinamico = COALESCE($3, usar_medidor_dinamico)
+     WHERE id = $4 RETURNING *`,
+    [nombre ?? null, limite_amperios_totales ?? null, usar_medidor_dinamico ?? null, req.params.id],
   );
   if (result.rowCount === 0) return res.status(404).json({ error: 'Sector no encontrado.' });
   res.json(result.rows[0]);

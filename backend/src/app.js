@@ -10,6 +10,7 @@ app.use('/superadmin', require('./routes/superadmin'));
 app.use('/admin', require('./routes/admin'));
 app.use('/consorcio', require('./routes/consorcio'));
 app.use('/residente', require('./routes/residente'));
+app.use('/medidor', require('./routes/medidor'));
 
 app.get('/health', (_req, res) => res.json({ ok: true }));
 

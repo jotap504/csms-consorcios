@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import QRCode from 'qrcode';
-import { ArrowLeft, Plus, Pencil, Trash2, Gauge, Building2, Wrench, Activity, QrCode, Download } from 'lucide-react';
+import { ArrowLeft, Plus, Pencil, Trash2, Gauge, Building2, Wrench, Activity, QrCode, Download, Copy, PlugZap } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer, CartesianGrid } from 'recharts';
 import { api } from '@/lib/api';
 import { getSession } from '@/lib/auth';
@@ -43,6 +43,7 @@ export default function AdminConsorcio() {
   const [sectorForm, setSectorForm] = useState({ nombre: '', limite_amperios_totales: '' });
   const [editSector, setEditSector] = useState(null);
   const [editSectorForm, setEditSectorForm] = useState({ nombre: '', limite_amperios_totales: '' });
+  const [medidorOpen, setMedidorOpen] = useState(null);
 
   const [unidadOpen, setUnidadOpen] = useState(false);
   const [unidadForm, setUnidadForm] = useState({ numero_departamento: '', numero_cochera: '', propietario_nombre: '', propietario_email: '' });
@@ -185,6 +186,11 @@ export default function AdminConsorcio() {
   async function handleDeleteSector(sectorId) {
     if (!confirm('Borrar este sector? Los cargadores asignados quedan sin sector (usan el limite del edificio).')) return;
     await api.delete(`/admin/sectores/${sectorId}`);
+    loadAll();
+  }
+
+  async function handleToggleMedidorDinamico(sector) {
+    await api.put(`/admin/sectores/${sector.id}`, { usar_medidor_dinamico: !sector.usar_medidor_dinamico });
     loadAll();
   }
 
@@ -565,6 +571,7 @@ export default function AdminConsorcio() {
                       <TableHead>Nombre</TableHead>
                       <TableHead className="text-right">Limite (A)</TableHead>
                       <TableHead className="text-right">Cargadores asignados</TableHead>
+                      <TableHead>Medidor</TableHead>
                       <TableHead className="text-right">Acciones</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -575,6 +582,19 @@ export default function AdminConsorcio() {
                         <TableCell className="tabular-nums text-right">{s.limite_amperios_totales ?? '-'}</TableCell>
                         <TableCell className="tabular-nums text-right">
                           {cargadores.filter((c) => c.sector_id === s.id).length}
+                        </TableCell>
+                        <TableCell>
+                          <button
+                            onClick={() => setMedidorOpen(s)}
+                            className="flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground"
+                          >
+                            <Badge variant={s.usar_medidor_dinamico ? 'accent' : 'muted'}>
+                              {s.usar_medidor_dinamico ? 'Dinamico' : 'Estatico'}
+                            </Badge>
+                            {s.ultima_lectura_en && (
+                              <span>hace {formatElapsed(s.ultima_lectura_en)}</span>
+                            )}
+                          </button>
                         </TableCell>
                         <TableCell className="text-right">
                           <div className="flex justify-end gap-1">
@@ -620,6 +640,82 @@ export default function AdminConsorcio() {
                 </div>
                 <Button type="submit" className="mt-2">Guardar cambios</Button>
               </form>
+            </DialogContent>
+          </Dialog>
+
+          <Dialog open={medidorOpen != null} onOpenChange={(open) => !open && setMedidorOpen(null)}>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2"><PlugZap className="h-4 w-4" />Medidor - {medidorOpen?.nombre}</DialogTitle>
+                <DialogDescription>
+                  Conecta un gateway (ESP32, puente MQTT, etc) para que mande lecturas reales del consumo del resto del edificio (sin contar los cargadores EV) a esta URL.
+                </DialogDescription>
+              </DialogHeader>
+              {medidorOpen && (
+                <div className="flex flex-col gap-4">
+                  <div className="flex items-center justify-between rounded-lg border border-border p-3">
+                    <div>
+                      <p className="text-sm font-medium">Usar lectura dinamica</p>
+                      <p className="text-xs text-muted-foreground">Si esta apagado, se usa siempre el limite fijo de arriba.</p>
+                    </div>
+                    <Switch
+                      checked={medidorOpen.usar_medidor_dinamico}
+                      onCheckedChange={() => { handleToggleMedidorDinamico(medidorOpen); setMedidorOpen({ ...medidorOpen, usar_medidor_dinamico: !medidorOpen.usar_medidor_dinamico }); }}
+                    />
+                  </div>
+
+                  <div>
+                    <Label>URL de ingesta (POST)</Label>
+                    <div className="flex gap-2">
+                      <Input readOnly value={`${window.location.origin}/api/medidor/sectores/${medidorOpen.id}/lectura`} className="font-mono text-xs" />
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => navigator.clipboard.writeText(`${window.location.origin}/api/medidor/sectores/${medidorOpen.id}/lectura`)}
+                      >
+                        <Copy className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <Label>Header X-Meter-Key</Label>
+                    <div className="flex gap-2">
+                      <Input readOnly value={medidorOpen.medidor_api_key ?? ''} className="font-mono text-xs" />
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => navigator.clipboard.writeText(medidorOpen.medidor_api_key ?? '')}
+                      >
+                        <Copy className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+
+                  <p className="rounded-lg bg-muted p-3 font-mono text-xs text-muted-foreground">
+                    {'{ "amps_l1": 12.3, "amps_l2": 11.8, "amps_l3": 12.9 }'}
+                    <br />o simplemente:
+                    <br />
+                    {'{ "potencia_kw": 8.2 }'}
+                  </p>
+
+                  {medidorOpen.ultima_lectura_en ? (
+                    <div className="rounded-lg border border-border p-3 text-sm">
+                      <p className="font-medium">Ultima lectura: hace {formatElapsed(medidorOpen.ultima_lectura_en)}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {medidorOpen.amps_l1 != null && `L1: ${Number(medidorOpen.amps_l1).toFixed(1)}A `}
+                        {medidorOpen.amps_l2 != null && `L2: ${Number(medidorOpen.amps_l2).toFixed(1)}A `}
+                        {medidorOpen.amps_l3 != null && `L3: ${Number(medidorOpen.amps_l3).toFixed(1)}A `}
+                        {medidorOpen.potencia_kw != null && `${Number(medidorOpen.potencia_kw).toFixed(1)} kW`}
+                      </p>
+                    </div>
+                  ) : (
+                    <p className="text-sm text-muted-foreground">Todavia no llego ninguna lectura para este sector.</p>
+                  )}
+                </div>
+              )}
             </DialogContent>
           </Dialog>
         </TabsContent>
