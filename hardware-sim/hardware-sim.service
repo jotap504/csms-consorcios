@@ -1,0 +1,15 @@
+[Unit]
+Description=CSMS hardware-sim (simulador fisico OCPP Pi4)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=wallbox
+WorkingDirectory=/home/wallbox/hardware-sim
+ExecStart=/usr/bin/node index.js
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
