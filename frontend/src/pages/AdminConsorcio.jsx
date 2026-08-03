@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import QRCode from 'qrcode';
 import {
   ArrowLeft, Plus, Pencil, Trash2, Gauge, Building2, Wrench, Activity, QrCode, Download,
-  Copy, PlugZap, ChevronDown, ChevronRight, Zap, CreditCard,
+  Copy, PlugZap, ChevronDown, ChevronRight, Zap, CreditCard, Upload, Sparkles, X as XIcon,
 } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer, CartesianGrid } from 'recharts';
 import { api } from '@/lib/api';
@@ -65,6 +65,13 @@ export default function AdminConsorcio() {
 
   const [quickOpen, setQuickOpen] = useState(false);
   const [quickForm, setQuickForm] = useState(EMPTY_QUICK_FORM);
+
+  const [importOpen, setImportOpen] = useState(false);
+  const [importFile, setImportFile] = useState(null);
+  const [importLoading, setImportLoading] = useState(false);
+  const [importError, setImportError] = useState('');
+  const [importRows, setImportRows] = useState(null); // null = todavia no se analizo nada
+  const [importSaving, setImportSaving] = useState(false);
 
   const [tarjetaOpen, setTarjetaOpen] = useState(false);
   const [tarjetaForm, setTarjetaForm] = useState(EMPTY_TARJETA_FORM);
@@ -316,6 +323,62 @@ export default function AdminConsorcio() {
     loadAll();
   }
 
+  function closeImport() {
+    setImportOpen(false);
+    setImportFile(null);
+    setImportError('');
+    setImportRows(null);
+  }
+
+  async function handleAnalyzeImport() {
+    if (!importFile) return;
+    setImportLoading(true);
+    setImportError('');
+    try {
+      const formData = new FormData();
+      formData.append('file', importFile);
+      const { data } = await api.post(`/admin/consorcios/${id}/unidades/import-preview`, formData);
+      setImportRows(
+        (data.rows ?? []).map((r) => ({
+          numero_departamento: r.numero_departamento ?? '',
+          numero_cochera: r.numero_cochera ?? '',
+          propietario_nombre: r.propietario_nombre ?? '',
+          propietario_email: r.propietario_email ?? '',
+          telefono_propietario: r.telefono_propietario ?? '',
+        })),
+      );
+    } catch (err) {
+      setImportError(err.response?.data?.error || 'No se pudo analizar el archivo.');
+    } finally {
+      setImportLoading(false);
+    }
+  }
+
+  function updateImportRow(idx, field, value) {
+    setImportRows((rows) => rows.map((r, i) => (i === idx ? { ...r, [field]: value } : r)));
+  }
+
+  function removeImportRow(idx) {
+    setImportRows((rows) => rows.filter((_, i) => i !== idx));
+  }
+
+  async function handleConfirmImport() {
+    setImportSaving(true);
+    setImportError('');
+    try {
+      for (const row of importRows) {
+        if (!row.numero_departamento) continue;
+        await api.post(`/admin/consorcios/${id}/unidades`, row);
+      }
+      closeImport();
+      loadAll();
+    } catch (err) {
+      setImportError(err.response?.data?.error || 'Fallo al crear las unidades.');
+    } finally {
+      setImportSaving(false);
+    }
+  }
+
   async function handleSaveParams(e) {
     e.preventDefault();
     await api.put(`/admin/consorcios/${id}`, {
@@ -564,6 +627,78 @@ export default function AdminConsorcio() {
 
             <Button type="submit" className="mt-2">Crear todo</Button>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={importOpen} onOpenChange={(open) => { if (!open) closeImport(); else setImportOpen(true); }}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2"><Sparkles className="h-4 w-4" />Importar unidades con IA</DialogTitle>
+            <DialogDescription>
+              Subi un Excel, CSV o PDF con el listado de unidades del edificio. La IA extrae depto, cochera, propietario, email y telefono —
+              revisa y corregi antes de confirmar, no se crea nada automaticamente.
+            </DialogDescription>
+          </DialogHeader>
+
+          {importRows == null ? (
+            <div className="flex flex-col gap-3">
+              <Input
+                type="file"
+                accept=".xlsx,.xls,.csv,.pdf"
+                onChange={(e) => setImportFile(e.target.files?.[0] ?? null)}
+              />
+              {importError && (
+                <p className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">{importError}</p>
+              )}
+              <Button onClick={handleAnalyzeImport} disabled={!importFile || importLoading}>
+                {importLoading ? 'Analizando...' : 'Analizar archivo'}
+              </Button>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-3">
+              {importRows.length === 0 ? (
+                <p className="text-sm text-muted-foreground">La IA no encontro unidades en este archivo.</p>
+              ) : (
+                <div className="max-h-[50vh] overflow-y-auto rounded-lg border border-border">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Depto</TableHead>
+                        <TableHead>Cochera</TableHead>
+                        <TableHead>Propietario</TableHead>
+                        <TableHead>Email</TableHead>
+                        <TableHead>Telefono</TableHead>
+                        <TableHead></TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {importRows.map((row, idx) => (
+                        <TableRow key={idx}>
+                          <TableCell><Input className="h-8 text-xs" value={row.numero_departamento} onChange={(e) => updateImportRow(idx, 'numero_departamento', e.target.value)} /></TableCell>
+                          <TableCell><Input className="h-8 text-xs" value={row.numero_cochera} onChange={(e) => updateImportRow(idx, 'numero_cochera', e.target.value)} /></TableCell>
+                          <TableCell><Input className="h-8 text-xs" value={row.propietario_nombre} onChange={(e) => updateImportRow(idx, 'propietario_nombre', e.target.value)} /></TableCell>
+                          <TableCell><Input className="h-8 text-xs" value={row.propietario_email} onChange={(e) => updateImportRow(idx, 'propietario_email', e.target.value)} /></TableCell>
+                          <TableCell><Input className="h-8 text-xs" value={row.telefono_propietario} onChange={(e) => updateImportRow(idx, 'telefono_propietario', e.target.value)} /></TableCell>
+                          <TableCell>
+                            <Button size="sm" variant="ghost" onClick={() => removeImportRow(idx)}><XIcon className="h-4 w-4" /></Button>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
+              {importError && (
+                <p className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">{importError}</p>
+              )}
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" onClick={() => setImportRows(null)}>Volver</Button>
+                <Button onClick={handleConfirmImport} disabled={importRows.length === 0 || importSaving}>
+                  {importSaving ? 'Creando...' : `Confirmar e importar ${importRows.length} unidades`}
+                </Button>
+              </div>
+            </div>
+          )}
         </DialogContent>
       </Dialog>
 
@@ -933,6 +1068,7 @@ export default function AdminConsorcio() {
                   </DialogContent>
                 </Dialog>
                 <Button size="sm" onClick={() => setQuickOpen(true)}><Plus className="h-4 w-4" />Alta rapida</Button>
+                <Button size="sm" variant="outline" onClick={() => setImportOpen(true)}><Upload className="h-4 w-4" />Importar Excel/PDF</Button>
               </div>
             </CardHeader>
             <CardContent>

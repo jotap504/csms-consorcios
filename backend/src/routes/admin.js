@@ -1,7 +1,12 @@
 const express = require('express');
 const crypto = require('crypto');
+const multer = require('multer');
+const XLSX = require('xlsx');
+const pdfParse = require('pdf-parse');
 const { pool } = require('../db');
 const { authenticate, requireRole } = require('../auth/middleware');
+
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
 
 const router = express.Router();
 router.use(authenticate, requireRole('superadmin', 'instalador'));
@@ -213,6 +218,86 @@ router.post('/consorcios/:id/unidades', async (req, res) => {
     [req.params.id, numero_departamento, numero_cochera, propietario_nombre, propietario_email, telefono_propietario ?? null],
   );
   res.status(201).json(result.rows[0]);
+});
+
+// Import con IA: lee un Excel/CSV/PDF y devuelve filas candidatas de
+// unidades funcionales para que el admin las revise/edite ANTES de crear
+// nada - esta ruta no escribe en la base, solo previsualiza.
+router.post('/consorcios/:id/unidades/import-preview', upload.single('file'), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: 'Falta el archivo.' });
+  }
+  if (!process.env.OPENROUTER_API_KEY) {
+    return res.status(500).json({ error: 'Falta configurar OPENROUTER_API_KEY en el servidor.' });
+  }
+
+  const name = req.file.originalname.toLowerCase();
+  let rawContent;
+  try {
+    if (name.endsWith('.pdf')) {
+      const parsed = await pdfParse(req.file.buffer);
+      rawContent = parsed.text;
+    } else if (name.endsWith('.xlsx') || name.endsWith('.xls') || name.endsWith('.csv')) {
+      const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      rawContent = JSON.stringify(XLSX.utils.sheet_to_json(sheet, { defval: '' }));
+    } else {
+      return res.status(400).json({ error: 'Formato no soportado. Usa Excel (.xlsx/.xls), CSV o PDF.' });
+    }
+  } catch (err) {
+    console.error('Error leyendo archivo de import:', err);
+    return res.status(400).json({ error: 'No se pudo leer el archivo. Verifica que no este corrupto.' });
+  }
+
+  if (!rawContent || !rawContent.trim()) {
+    return res.status(400).json({ error: 'El archivo no tiene contenido legible.' });
+  }
+
+  const prompt = `Sos un asistente que extrae datos de unidades funcionales de un consorcio/edificio a partir de un documento (planilla o listado en texto).
+Devolve EXCLUSIVAMENTE un array JSON valido (sin texto adicional, sin markdown, sin backticks), donde cada elemento tiene EXACTAMENTE estos campos:
+- numero_departamento (string, requerido - el identificador de la unidad, ej "1A", "PB 2", "Depto 5")
+- numero_cochera (string o null - numero/identificador de cochera si existe)
+- propietario_nombre (string o null)
+- propietario_email (string o null)
+- telefono_propietario (string o null)
+
+Si un dato no esta presente para una fila, usa null. No inventes datos que no esten en el documento. Si el documento no tiene informacion de unidades, devolve un array vacio [].
+
+Contenido del documento:
+${rawContent.slice(0, 40000)}`;
+
+  try {
+    const aiRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'anthropic/claude-3.5-sonnet',
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0,
+      }),
+    });
+    const data = await aiRes.json();
+    if (!aiRes.ok) {
+      console.error('Error de OpenRouter:', data);
+      return res.status(502).json({ error: 'El servicio de IA no pudo procesar el documento.' });
+    }
+    let text = (data.choices?.[0]?.message?.content ?? '').trim();
+    text = text.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/, '');
+    let rows;
+    try {
+      rows = JSON.parse(text);
+    } catch {
+      console.error('IA devolvio JSON invalido:', text);
+      return res.status(502).json({ error: 'La IA no devolvio un formato valido. Proba con un archivo mas simple o cargalo a mano.' });
+    }
+    res.json({ rows: Array.isArray(rows) ? rows : [] });
+  } catch (err) {
+    console.error('Error llamando a OpenRouter:', err);
+    res.status(502).json({ error: 'No se pudo comunicar con el servicio de IA.' });
+  }
 });
 
 router.put('/unidades/:id', async (req, res) => {
