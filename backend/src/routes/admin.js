@@ -203,28 +203,29 @@ router.get('/consorcios/:id/unidades', async (req, res) => {
 });
 
 router.post('/consorcios/:id/unidades', async (req, res) => {
-  const { numero_departamento, numero_cochera, propietario_nombre, propietario_email } = req.body ?? {};
+  const { numero_departamento, numero_cochera, propietario_nombre, propietario_email, telefono_propietario } = req.body ?? {};
   if (!numero_departamento) {
     return res.status(400).json({ error: 'numero_departamento es requerido.' });
   }
   const result = await pool.query(
-    `INSERT INTO unidades_funcionales (consorcio_id, numero_departamento, numero_cochera, propietario_nombre, propietario_email)
-     VALUES ($1,$2,$3,$4,$5) RETURNING *`,
-    [req.params.id, numero_departamento, numero_cochera, propietario_nombre, propietario_email],
+    `INSERT INTO unidades_funcionales (consorcio_id, numero_departamento, numero_cochera, propietario_nombre, propietario_email, telefono_propietario)
+     VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+    [req.params.id, numero_departamento, numero_cochera, propietario_nombre, propietario_email, telefono_propietario ?? null],
   );
   res.status(201).json(result.rows[0]);
 });
 
 router.put('/unidades/:id', async (req, res) => {
-  const { numero_departamento, numero_cochera, propietario_nombre, propietario_email } = req.body ?? {};
+  const { numero_departamento, numero_cochera, propietario_nombre, propietario_email, telefono_propietario } = req.body ?? {};
   const result = await pool.query(
     `UPDATE unidades_funcionales SET
        numero_departamento = COALESCE($1, numero_departamento),
        numero_cochera = COALESCE($2, numero_cochera),
        propietario_nombre = COALESCE($3, propietario_nombre),
-       propietario_email = COALESCE($4, propietario_email)
-     WHERE id = $5 RETURNING *`,
-    [numero_departamento, numero_cochera, propietario_nombre, propietario_email, req.params.id],
+       propietario_email = COALESCE($4, propietario_email),
+       telefono_propietario = COALESCE($5, telefono_propietario)
+     WHERE id = $6 RETURNING *`,
+    [numero_departamento, numero_cochera, propietario_nombre, propietario_email, telefono_propietario, req.params.id],
   );
   if (result.rowCount === 0) return res.status(404).json({ error: 'Unidad funcional no encontrada.' });
   res.json(result.rows[0]);

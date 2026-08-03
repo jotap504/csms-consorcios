@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import QRCode from 'qrcode';
-import { ArrowLeft, Plus, Pencil, Trash2, Gauge, Building2, Wrench, Activity, QrCode, Download, Copy, PlugZap } from 'lucide-react';
+import {
+  ArrowLeft, Plus, Pencil, Trash2, Gauge, Building2, Wrench, Activity, QrCode, Download,
+  Copy, PlugZap, ChevronDown, ChevronRight, Zap, CreditCard,
+} from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer, CartesianGrid } from 'recharts';
 import { api } from '@/lib/api';
 import { getSession } from '@/lib/auth';
@@ -24,6 +27,14 @@ function navItemsFor(rol) {
   ];
 }
 
+const EMPTY_CARGADOR_FORM = { ocpp_id: '', etiqueta: '', charge_point_vendor: '', charge_point_model: '', uf_id: '', sector_id: '' };
+const EMPTY_TARJETA_FORM = { id_tag_ocpp: '', uf_id: '', cargador_id: '' };
+const EMPTY_UNIDAD_FORM = { numero_departamento: '', numero_cochera: '', propietario_nombre: '', propietario_email: '', telefono_propietario: '' };
+const EMPTY_QUICK_FORM = {
+  numero_departamento: '', numero_cochera: '', propietario_nombre: '', propietario_email: '', telefono_propietario: '',
+  ocpp_id: '', etiqueta: '', id_tag_ocpp: '',
+};
+
 export default function AdminConsorcio() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -36,8 +47,10 @@ export default function AdminConsorcio() {
   const [tarjetas, setTarjetas] = useState([]);
   const [sectores, setSectores] = useState([]);
 
+  const [expandedUnidad, setExpandedUnidad] = useState(null);
+
   const [cargadorOpen, setCargadorOpen] = useState(false);
-  const [cargadorForm, setCargadorForm] = useState({ ocpp_id: '', etiqueta: '', charge_point_vendor: '', charge_point_model: '', uf_id: '', sector_id: '' });
+  const [cargadorForm, setCargadorForm] = useState(EMPTY_CARGADOR_FORM);
 
   const [sectorOpen, setSectorOpen] = useState(false);
   const [sectorForm, setSectorForm] = useState({ nombre: '', limite_amperios_totales: '' });
@@ -46,10 +59,15 @@ export default function AdminConsorcio() {
   const [medidorOpen, setMedidorOpen] = useState(null);
 
   const [unidadOpen, setUnidadOpen] = useState(false);
-  const [unidadForm, setUnidadForm] = useState({ numero_departamento: '', numero_cochera: '', propietario_nombre: '', propietario_email: '' });
+  const [unidadForm, setUnidadForm] = useState(EMPTY_UNIDAD_FORM);
+  const [editUnidad, setEditUnidad] = useState(null);
+  const [editUnidadForm, setEditUnidadForm] = useState(EMPTY_UNIDAD_FORM);
+
+  const [quickOpen, setQuickOpen] = useState(false);
+  const [quickForm, setQuickForm] = useState(EMPTY_QUICK_FORM);
 
   const [tarjetaOpen, setTarjetaOpen] = useState(false);
-  const [tarjetaForm, setTarjetaForm] = useState({ id_tag_ocpp: '', uf_id: '', cargador_id: '' });
+  const [tarjetaForm, setTarjetaForm] = useState(EMPTY_TARJETA_FORM);
 
   const [live, setLive] = useState([]);
   const liveIntervalRef = useRef(null);
@@ -110,6 +128,11 @@ export default function AdminConsorcio() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
+  function openNewCargador(ufId) {
+    setCargadorForm({ ...EMPTY_CARGADOR_FORM, uf_id: ufId ? String(ufId) : '' });
+    setCargadorOpen(true);
+  }
+
   async function handleCreateCargador(e) {
     e.preventDefault();
     await api.post(`/admin/consorcios/${id}/cargadores`, {
@@ -118,7 +141,7 @@ export default function AdminConsorcio() {
       sector_id: cargadorForm.sector_id ? Number(cargadorForm.sector_id) : null,
     });
     setCargadorOpen(false);
-    setCargadorForm({ ocpp_id: '', etiqueta: '', charge_point_vendor: '', charge_point_model: '', uf_id: '', sector_id: '' });
+    setCargadorForm(EMPTY_CARGADOR_FORM);
     loadAll();
   }
 
@@ -198,14 +221,37 @@ export default function AdminConsorcio() {
     e.preventDefault();
     await api.post(`/admin/consorcios/${id}/unidades`, unidadForm);
     setUnidadOpen(false);
-    setUnidadForm({ numero_departamento: '', numero_cochera: '', propietario_nombre: '', propietario_email: '' });
+    setUnidadForm(EMPTY_UNIDAD_FORM);
+    loadAll();
+  }
+
+  function openEditUnidad(u) {
+    setEditUnidad(u);
+    setEditUnidadForm({
+      numero_departamento: u.numero_departamento ?? '',
+      numero_cochera: u.numero_cochera ?? '',
+      propietario_nombre: u.propietario_nombre ?? '',
+      propietario_email: u.propietario_email ?? '',
+      telefono_propietario: u.telefono_propietario ?? '',
+    });
+  }
+
+  async function handleEditUnidad(e) {
+    e.preventDefault();
+    await api.put(`/admin/unidades/${editUnidad.id}`, editUnidadForm);
+    setEditUnidad(null);
     loadAll();
   }
 
   async function handleDeleteUnidad(unidadId) {
-    if (!confirm('Borrar esta unidad funcional?')) return;
+    if (!confirm('Borrar esta unidad funcional? Tambien se desvinculan sus cargadores y tarjetas.')) return;
     await api.delete(`/admin/unidades/${unidadId}`);
     loadAll();
+  }
+
+  function openNewTarjeta(ufId) {
+    setTarjetaForm({ ...EMPTY_TARJETA_FORM, uf_id: ufId ? String(ufId) : '' });
+    setTarjetaOpen(true);
   }
 
   async function handleCreateTarjeta(e) {
@@ -216,7 +262,7 @@ export default function AdminConsorcio() {
       cargador_id: tarjetaForm.cargador_id ? Number(tarjetaForm.cargador_id) : null,
     });
     setTarjetaOpen(false);
-    setTarjetaForm({ id_tag_ocpp: '', uf_id: '', cargador_id: '' });
+    setTarjetaForm(EMPTY_TARJETA_FORM);
     loadAll();
   }
 
@@ -233,6 +279,40 @@ export default function AdminConsorcio() {
   async function handleDeleteTarjeta(tarjetaId) {
     if (!confirm('Borrar esta tarjeta?')) return;
     await api.delete(`/admin/tarjetas/${tarjetaId}`);
+    loadAll();
+  }
+
+  async function handleQuickAdd(e) {
+    e.preventDefault();
+    const unidad = await api.post(`/admin/consorcios/${id}/unidades`, {
+      numero_departamento: quickForm.numero_departamento,
+      numero_cochera: quickForm.numero_cochera,
+      propietario_nombre: quickForm.propietario_nombre,
+      propietario_email: quickForm.propietario_email,
+      telefono_propietario: quickForm.telefono_propietario,
+    });
+    const ufId = unidad.data.id;
+
+    let cargadorId = null;
+    if (quickForm.ocpp_id) {
+      const cargador = await api.post(`/admin/consorcios/${id}/cargadores`, {
+        ocpp_id: quickForm.ocpp_id,
+        etiqueta: quickForm.etiqueta,
+        uf_id: ufId,
+      });
+      cargadorId = cargador.data.id;
+    }
+
+    if (quickForm.id_tag_ocpp) {
+      await api.post(`/admin/consorcios/${id}/tarjetas`, {
+        id_tag_ocpp: quickForm.id_tag_ocpp,
+        uf_id: ufId,
+        cargador_id: cargadorId,
+      });
+    }
+
+    setQuickOpen(false);
+    setQuickForm(EMPTY_QUICK_FORM);
     loadAll();
   }
 
@@ -278,12 +358,220 @@ export default function AdminConsorcio() {
         Volver a consorcios
       </button>
 
+      {/* Dialogs compartidos entre tabs (cargador/tarjeta se pueden abrir desde Cargadores o desde Unidades) */}
+      <Dialog open={cargadorOpen} onOpenChange={(open) => { setCargadorOpen(open); if (!open) setCargadorForm(EMPTY_CARGADOR_FORM); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Nuevo cargador</DialogTitle>
+            <DialogDescription>El ID OCPP debe coincidir con el configurado en el equipo fisico.</DialogDescription>
+          </DialogHeader>
+          <form onSubmit={handleCreateCargador} className="flex flex-col gap-3">
+            <div>
+              <Label htmlFor="ocpp_id">ID OCPP</Label>
+              <Input id="ocpp_id" required value={cargadorForm.ocpp_id} onChange={(e) => setCargadorForm({ ...cargadorForm, ocpp_id: e.target.value })} />
+            </div>
+            <div>
+              <Label htmlFor="etiqueta">Etiqueta (identificacion)</Label>
+              <Input id="etiqueta" placeholder="Ej: Cochera 5" value={cargadorForm.etiqueta} onChange={(e) => setCargadorForm({ ...cargadorForm, etiqueta: e.target.value })} />
+            </div>
+            <div>
+              <Label htmlFor="vendor">Fabricante</Label>
+              <Input id="vendor" value={cargadorForm.charge_point_vendor} onChange={(e) => setCargadorForm({ ...cargadorForm, charge_point_vendor: e.target.value })} />
+            </div>
+            <div>
+              <Label htmlFor="model">Modelo</Label>
+              <Input id="model" value={cargadorForm.charge_point_model} onChange={(e) => setCargadorForm({ ...cargadorForm, charge_point_model: e.target.value })} />
+            </div>
+            <div>
+              <Label htmlFor="cargadorUf">Unidad funcional</Label>
+              <select
+                id="cargadorUf"
+                value={cargadorForm.uf_id}
+                onChange={(e) => setCargadorForm({ ...cargadorForm, uf_id: e.target.value })}
+                className="flex h-10 w-full rounded-lg border border-border bg-white px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <option value="">Sin asignar</option>
+                {unidades.map((u) => (
+                  <option key={u.id} value={u.id}>{u.numero_departamento} - {u.propietario_nombre}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <Label htmlFor="cargadorSector">Sector / piso</Label>
+              <select
+                id="cargadorSector"
+                value={cargadorForm.sector_id}
+                onChange={(e) => setCargadorForm({ ...cargadorForm, sector_id: e.target.value })}
+                className="flex h-10 w-full rounded-lg border border-border bg-white px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <option value="">Sin sector (limite del edificio)</option>
+                {sectores.map((s) => (
+                  <option key={s.id} value={s.id}>{s.nombre}</option>
+                ))}
+              </select>
+            </div>
+            <Button type="submit" className="mt-2">Agregar</Button>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={editCargador != null} onOpenChange={(open) => !open && setEditCargador(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Editar cargador</DialogTitle>
+            <DialogDescription>{editCargador?.ocpp_id}</DialogDescription>
+          </DialogHeader>
+          <form onSubmit={handleEditCargador} className="flex flex-col gap-3">
+            <div>
+              <Label htmlFor="editEtiqueta">Etiqueta (identificacion)</Label>
+              <Input
+                id="editEtiqueta"
+                placeholder="Ej: Cochera 5"
+                value={editCargadorForm.etiqueta}
+                onChange={(e) => setEditCargadorForm({ ...editCargadorForm, etiqueta: e.target.value })}
+              />
+            </div>
+            <div>
+              <Label htmlFor="editVendor">Fabricante</Label>
+              <Input
+                id="editVendor"
+                value={editCargadorForm.charge_point_vendor}
+                onChange={(e) => setEditCargadorForm({ ...editCargadorForm, charge_point_vendor: e.target.value })}
+              />
+            </div>
+            <div>
+              <Label htmlFor="editModel">Modelo</Label>
+              <Input
+                id="editModel"
+                value={editCargadorForm.charge_point_model}
+                onChange={(e) => setEditCargadorForm({ ...editCargadorForm, charge_point_model: e.target.value })}
+              />
+            </div>
+            <Button type="submit" className="mt-2">Guardar cambios</Button>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={qrOpen != null} onOpenChange={(open) => !open && setQrOpen(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>QR de carga - {qrOpen?.etiqueta || qrOpen?.ocpp_id}</DialogTitle>
+            <DialogDescription>
+              Imprimi y pega este codigo en el wallbox. El residente lo escanea, inicia sesion (si hace falta) y puede iniciar/detener la carga desde el celular.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col items-center gap-4">
+            {qrDataUrl && <img src={qrDataUrl} alt={`QR ${qrOpen?.ocpp_id}`} className="h-64 w-64" />}
+            <p className="break-all text-center text-xs text-muted-foreground">
+              {window.location.origin}/cargar/{qrOpen?.ocpp_id}
+            </p>
+            <a href={qrDataUrl} download={`qr-${qrOpen?.ocpp_id}.png`}>
+              <Button variant="outline" size="sm"><Download className="h-4 w-4" />Descargar PNG</Button>
+            </a>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={tarjetaOpen} onOpenChange={(open) => { setTarjetaOpen(open); if (!open) setTarjetaForm(EMPTY_TARJETA_FORM); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Asignar tarjeta</DialogTitle>
+            <DialogDescription>Vincula un tag RFID o NFC (celular) a una unidad funcional.</DialogDescription>
+          </DialogHeader>
+          <form onSubmit={handleCreateTarjeta} className="flex flex-col gap-3">
+            <div>
+              <Label htmlFor="tag">ID Tag OCPP</Label>
+              <Input id="tag" required value={tarjetaForm.id_tag_ocpp} onChange={(e) => setTarjetaForm({ ...tarjetaForm, id_tag_ocpp: e.target.value })} />
+            </div>
+            <div>
+              <Label htmlFor="uf">Unidad funcional</Label>
+              <select
+                id="uf"
+                required
+                value={tarjetaForm.uf_id}
+                onChange={(e) => setTarjetaForm({ ...tarjetaForm, uf_id: e.target.value })}
+                className="flex h-10 w-full rounded-lg border border-border bg-white px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <option value="">Selecciona una unidad</option>
+                {unidades.map((u) => (
+                  <option key={u.id} value={u.id}>{u.numero_departamento} - {u.propietario_nombre}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <Label htmlFor="tarjetaCargador">Cargador (opcional)</Label>
+              <select
+                id="tarjetaCargador"
+                value={tarjetaForm.cargador_id}
+                onChange={(e) => setTarjetaForm({ ...tarjetaForm, cargador_id: e.target.value })}
+                className="flex h-10 w-full rounded-lg border border-border bg-white px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <option value="">Sin asignar</option>
+                {cargadores.map((c) => (
+                  <option key={c.id} value={c.id}>{c.etiqueta || c.ocpp_id}</option>
+                ))}
+              </select>
+            </div>
+            <Button type="submit" className="mt-2">Vincular</Button>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={quickOpen} onOpenChange={(open) => { setQuickOpen(open); if (!open) setQuickForm(EMPTY_QUICK_FORM); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Alta rapida</DialogTitle>
+            <DialogDescription>Crea la unidad, su cargador y su tarjeta en un solo paso — ideal para el caso comun (1 depto = 1 cochera = 1 auto).</DialogDescription>
+          </DialogHeader>
+          <form onSubmit={handleQuickAdd} className="flex max-h-[70vh] flex-col gap-3 overflow-y-auto pr-1">
+            <p className="text-xs font-semibold uppercase text-muted-foreground">Unidad</p>
+            <div>
+              <Label htmlFor="qDepto">Departamento</Label>
+              <Input id="qDepto" required value={quickForm.numero_departamento} onChange={(e) => setQuickForm({ ...quickForm, numero_departamento: e.target.value })} />
+            </div>
+            <div>
+              <Label htmlFor="qCochera">Cochera</Label>
+              <Input id="qCochera" value={quickForm.numero_cochera} onChange={(e) => setQuickForm({ ...quickForm, numero_cochera: e.target.value })} />
+            </div>
+            <div>
+              <Label htmlFor="qProp">Propietario</Label>
+              <Input id="qProp" value={quickForm.propietario_nombre} onChange={(e) => setQuickForm({ ...quickForm, propietario_nombre: e.target.value })} />
+            </div>
+            <div>
+              <Label htmlFor="qEmail">Email</Label>
+              <Input id="qEmail" type="email" value={quickForm.propietario_email} onChange={(e) => setQuickForm({ ...quickForm, propietario_email: e.target.value })} />
+            </div>
+            <div>
+              <Label htmlFor="qTelefono">Telefono</Label>
+              <Input id="qTelefono" value={quickForm.telefono_propietario} onChange={(e) => setQuickForm({ ...quickForm, telefono_propietario: e.target.value })} />
+            </div>
+
+            <p className="mt-2 text-xs font-semibold uppercase text-muted-foreground">Cargador (opcional)</p>
+            <div>
+              <Label htmlFor="qOcpp">ID OCPP</Label>
+              <Input id="qOcpp" value={quickForm.ocpp_id} onChange={(e) => setQuickForm({ ...quickForm, ocpp_id: e.target.value })} />
+            </div>
+            <div>
+              <Label htmlFor="qEtiqueta">Etiqueta</Label>
+              <Input id="qEtiqueta" placeholder="Ej: Cochera 5" value={quickForm.etiqueta} onChange={(e) => setQuickForm({ ...quickForm, etiqueta: e.target.value })} />
+            </div>
+
+            <p className="mt-2 text-xs font-semibold uppercase text-muted-foreground">Tarjeta RFID (opcional)</p>
+            <div>
+              <Label htmlFor="qTag">ID Tag OCPP</Label>
+              <Input id="qTag" value={quickForm.id_tag_ocpp} onChange={(e) => setQuickForm({ ...quickForm, id_tag_ocpp: e.target.value })} />
+            </div>
+
+            <Button type="submit" className="mt-2">Crear todo</Button>
+          </form>
+        </DialogContent>
+      </Dialog>
+
       <Tabs defaultValue="cargadores">
         <TabsList>
           <TabsTrigger value="cargadores">Cargadores</TabsTrigger>
           <TabsTrigger value="sectores">Sectores</TabsTrigger>
           <TabsTrigger value="unidades">Unidades</TabsTrigger>
-          <TabsTrigger value="tarjetas">Tarjetas RFID / NFC</TabsTrigger>
           <TabsTrigger value="parametros">Parametros del edificio</TabsTrigger>
           <TabsTrigger value="tiempo-real">Tiempo real</TabsTrigger>
         </TabsList>
@@ -299,64 +587,7 @@ export default function AdminConsorcio() {
                   <span className="tabular-nums font-semibold text-foreground">{consumoTotalActualKw.toFixed(1)} kW</span>
                 </p>
               </div>
-              <Dialog open={cargadorOpen} onOpenChange={setCargadorOpen}>
-                <DialogTrigger asChild>
-                  <Button size="sm"><Plus className="h-4 w-4" />Agregar cargador</Button>
-                </DialogTrigger>
-                <DialogContent>
-                  <DialogHeader>
-                    <DialogTitle>Nuevo cargador</DialogTitle>
-                    <DialogDescription>El ID OCPP debe coincidir con el configurado en el equipo fisico.</DialogDescription>
-                  </DialogHeader>
-                  <form onSubmit={handleCreateCargador} className="flex flex-col gap-3">
-                    <div>
-                      <Label htmlFor="ocpp_id">ID OCPP</Label>
-                      <Input id="ocpp_id" required value={cargadorForm.ocpp_id} onChange={(e) => setCargadorForm({ ...cargadorForm, ocpp_id: e.target.value })} />
-                    </div>
-                    <div>
-                      <Label htmlFor="etiqueta">Etiqueta (identificacion)</Label>
-                      <Input id="etiqueta" placeholder="Ej: Cochera 5" value={cargadorForm.etiqueta} onChange={(e) => setCargadorForm({ ...cargadorForm, etiqueta: e.target.value })} />
-                    </div>
-                    <div>
-                      <Label htmlFor="vendor">Fabricante</Label>
-                      <Input id="vendor" value={cargadorForm.charge_point_vendor} onChange={(e) => setCargadorForm({ ...cargadorForm, charge_point_vendor: e.target.value })} />
-                    </div>
-                    <div>
-                      <Label htmlFor="model">Modelo</Label>
-                      <Input id="model" value={cargadorForm.charge_point_model} onChange={(e) => setCargadorForm({ ...cargadorForm, charge_point_model: e.target.value })} />
-                    </div>
-                    <div>
-                      <Label htmlFor="cargadorUf">Unidad funcional</Label>
-                      <select
-                        id="cargadorUf"
-                        value={cargadorForm.uf_id}
-                        onChange={(e) => setCargadorForm({ ...cargadorForm, uf_id: e.target.value })}
-                        className="flex h-10 w-full rounded-lg border border-border bg-white px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                      >
-                        <option value="">Sin asignar</option>
-                        {unidades.map((u) => (
-                          <option key={u.id} value={u.id}>{u.numero_departamento} - {u.propietario_nombre}</option>
-                        ))}
-                      </select>
-                    </div>
-                    <div>
-                      <Label htmlFor="cargadorSector">Sector / piso</Label>
-                      <select
-                        id="cargadorSector"
-                        value={cargadorForm.sector_id}
-                        onChange={(e) => setCargadorForm({ ...cargadorForm, sector_id: e.target.value })}
-                        className="flex h-10 w-full rounded-lg border border-border bg-white px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                      >
-                        <option value="">Sin sector (limite del edificio)</option>
-                        {sectores.map((s) => (
-                          <option key={s.id} value={s.id}>{s.nombre}</option>
-                        ))}
-                      </select>
-                    </div>
-                    <Button type="submit" className="mt-2">Agregar</Button>
-                  </form>
-                </DialogContent>
-              </Dialog>
+              <Button size="sm" onClick={() => openNewCargador()}><Plus className="h-4 w-4" />Agregar cargador</Button>
             </CardHeader>
             <CardContent>
               {cargadores.length === 0 ? (
@@ -463,63 +694,6 @@ export default function AdminConsorcio() {
               )}
             </CardContent>
           </Card>
-
-          <Dialog open={editCargador != null} onOpenChange={(open) => !open && setEditCargador(null)}>
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>Editar cargador</DialogTitle>
-                <DialogDescription>{editCargador?.ocpp_id}</DialogDescription>
-              </DialogHeader>
-              <form onSubmit={handleEditCargador} className="flex flex-col gap-3">
-                <div>
-                  <Label htmlFor="editEtiqueta">Etiqueta (identificacion)</Label>
-                  <Input
-                    id="editEtiqueta"
-                    placeholder="Ej: Cochera 5"
-                    value={editCargadorForm.etiqueta}
-                    onChange={(e) => setEditCargadorForm({ ...editCargadorForm, etiqueta: e.target.value })}
-                  />
-                </div>
-                <div>
-                  <Label htmlFor="editVendor">Fabricante</Label>
-                  <Input
-                    id="editVendor"
-                    value={editCargadorForm.charge_point_vendor}
-                    onChange={(e) => setEditCargadorForm({ ...editCargadorForm, charge_point_vendor: e.target.value })}
-                  />
-                </div>
-                <div>
-                  <Label htmlFor="editModel">Modelo</Label>
-                  <Input
-                    id="editModel"
-                    value={editCargadorForm.charge_point_model}
-                    onChange={(e) => setEditCargadorForm({ ...editCargadorForm, charge_point_model: e.target.value })}
-                  />
-                </div>
-                <Button type="submit" className="mt-2">Guardar cambios</Button>
-              </form>
-            </DialogContent>
-          </Dialog>
-
-          <Dialog open={qrOpen != null} onOpenChange={(open) => !open && setQrOpen(null)}>
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>QR de carga - {qrOpen?.etiqueta || qrOpen?.ocpp_id}</DialogTitle>
-                <DialogDescription>
-                  Imprimi y pega este codigo en el wallbox. El residente lo escanea, inicia sesion (si hace falta) y puede iniciar/detener la carga desde el celular.
-                </DialogDescription>
-              </DialogHeader>
-              <div className="flex flex-col items-center gap-4">
-                {qrDataUrl && <img src={qrDataUrl} alt={`QR ${qrOpen?.ocpp_id}`} className="h-64 w-64" />}
-                <p className="break-all text-center text-xs text-muted-foreground">
-                  {window.location.origin}/cargar/{qrOpen?.ocpp_id}
-                </p>
-                <a href={qrDataUrl} download={`qr-${qrOpen?.ocpp_id}.png`}>
-                  <Button variant="outline" size="sm"><Download className="h-4 w-4" />Descargar PNG</Button>
-                </a>
-              </div>
-            </DialogContent>
-          </Dialog>
         </TabsContent>
 
         <TabsContent value="sectores">
@@ -722,169 +896,161 @@ export default function AdminConsorcio() {
 
         <TabsContent value="unidades">
           <Card>
-            <CardHeader className="flex-row items-center justify-between">
+            <CardHeader className="flex-row flex-wrap items-center justify-between gap-3">
               <CardTitle>Unidades funcionales</CardTitle>
-              <Dialog open={unidadOpen} onOpenChange={setUnidadOpen}>
-                <DialogTrigger asChild>
-                  <Button size="sm"><Plus className="h-4 w-4" />Agregar unidad</Button>
-                </DialogTrigger>
-                <DialogContent>
-                  <DialogHeader>
-                    <DialogTitle>Nueva unidad funcional</DialogTitle>
-                  </DialogHeader>
-                  <form onSubmit={handleCreateUnidad} className="flex flex-col gap-3">
-                    <div>
-                      <Label htmlFor="depto">Departamento</Label>
-                      <Input id="depto" required value={unidadForm.numero_departamento} onChange={(e) => setUnidadForm({ ...unidadForm, numero_departamento: e.target.value })} />
-                    </div>
-                    <div>
-                      <Label htmlFor="cochera">Cochera</Label>
-                      <Input id="cochera" value={unidadForm.numero_cochera} onChange={(e) => setUnidadForm({ ...unidadForm, numero_cochera: e.target.value })} />
-                    </div>
-                    <div>
-                      <Label htmlFor="prop">Propietario</Label>
-                      <Input id="prop" value={unidadForm.propietario_nombre} onChange={(e) => setUnidadForm({ ...unidadForm, propietario_nombre: e.target.value })} />
-                    </div>
-                    <div>
-                      <Label htmlFor="propEmail">Email propietario</Label>
-                      <Input id="propEmail" type="email" value={unidadForm.propietario_email} onChange={(e) => setUnidadForm({ ...unidadForm, propietario_email: e.target.value })} />
-                    </div>
-                    <Button type="submit" className="mt-2">Agregar</Button>
-                  </form>
-                </DialogContent>
-              </Dialog>
+              <div className="flex gap-2">
+                <Dialog open={unidadOpen} onOpenChange={setUnidadOpen}>
+                  <DialogTrigger asChild>
+                    <Button size="sm" variant="outline"><Plus className="h-4 w-4" />Solo unidad</Button>
+                  </DialogTrigger>
+                  <DialogContent>
+                    <DialogHeader>
+                      <DialogTitle>Nueva unidad funcional</DialogTitle>
+                    </DialogHeader>
+                    <form onSubmit={handleCreateUnidad} className="flex flex-col gap-3">
+                      <div>
+                        <Label htmlFor="depto">Departamento</Label>
+                        <Input id="depto" required value={unidadForm.numero_departamento} onChange={(e) => setUnidadForm({ ...unidadForm, numero_departamento: e.target.value })} />
+                      </div>
+                      <div>
+                        <Label htmlFor="cochera">Cochera</Label>
+                        <Input id="cochera" value={unidadForm.numero_cochera} onChange={(e) => setUnidadForm({ ...unidadForm, numero_cochera: e.target.value })} />
+                      </div>
+                      <div>
+                        <Label htmlFor="prop">Propietario</Label>
+                        <Input id="prop" value={unidadForm.propietario_nombre} onChange={(e) => setUnidadForm({ ...unidadForm, propietario_nombre: e.target.value })} />
+                      </div>
+                      <div>
+                        <Label htmlFor="propEmail">Email propietario</Label>
+                        <Input id="propEmail" type="email" value={unidadForm.propietario_email} onChange={(e) => setUnidadForm({ ...unidadForm, propietario_email: e.target.value })} />
+                      </div>
+                      <div>
+                        <Label htmlFor="propTelefono">Telefono propietario</Label>
+                        <Input id="propTelefono" value={unidadForm.telefono_propietario} onChange={(e) => setUnidadForm({ ...unidadForm, telefono_propietario: e.target.value })} />
+                      </div>
+                      <Button type="submit" className="mt-2">Agregar</Button>
+                    </form>
+                  </DialogContent>
+                </Dialog>
+                <Button size="sm" onClick={() => setQuickOpen(true)}><Plus className="h-4 w-4" />Alta rapida</Button>
+              </div>
             </CardHeader>
             <CardContent>
               {unidades.length === 0 ? (
                 <p className="text-sm text-muted-foreground">No hay unidades funcionales cargadas todavia.</p>
               ) : (
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Depto</TableHead>
-                      <TableHead>Cochera</TableHead>
-                      <TableHead>Propietario</TableHead>
-                      <TableHead>Email</TableHead>
-                      <TableHead className="text-right">Acciones</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {unidades.map((u) => (
-                      <TableRow key={u.id}>
-                        <TableCell>{u.numero_departamento}</TableCell>
-                        <TableCell>{u.numero_cochera ?? '-'}</TableCell>
-                        <TableCell>{u.propietario_nombre}</TableCell>
-                        <TableCell className="text-muted-foreground">{u.propietario_email}</TableCell>
-                        <TableCell className="text-right">
-                          <Button size="sm" variant="destructive" onClick={() => handleDeleteUnidad(u.id)}>
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              )}
-            </CardContent>
-          </Card>
-        </TabsContent>
+                <div className="flex flex-col divide-y divide-border">
+                  {unidades.map((u) => {
+                    const isOpen = expandedUnidad === u.id;
+                    const misCargadores = cargadores.filter((c) => c.uf_id === u.id);
+                    const misTarjetas = tarjetas.filter((t) => t.uf_id === u.id);
+                    return (
+                      <div key={u.id} className="py-2">
+                        <button
+                          onClick={() => setExpandedUnidad(isOpen ? null : u.id)}
+                          className="flex w-full cursor-pointer items-center gap-3 rounded-lg px-2 py-2 text-left hover:bg-muted"
+                        >
+                          {isOpen ? <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />}
+                          <div className="flex-1">
+                            <p className="text-sm font-medium">
+                              {u.numero_departamento}{u.numero_cochera ? ` / ${u.numero_cochera}` : ''}
+                              <span className="ml-2 font-normal text-muted-foreground">{u.propietario_nombre}</span>
+                            </p>
+                            <p className="text-xs text-muted-foreground">{u.propietario_email}{u.telefono_propietario ? ` · ${u.telefono_propietario}` : ''}</p>
+                          </div>
+                          <span className="flex items-center gap-1 text-xs text-muted-foreground"><Zap className="h-3.5 w-3.5" />{misCargadores.length}</span>
+                          <span className="flex items-center gap-1 text-xs text-muted-foreground"><CreditCard className="h-3.5 w-3.5" />{misTarjetas.length}</span>
+                        </button>
 
-        <TabsContent value="tarjetas">
-          <Card>
-            <CardHeader className="flex-row items-center justify-between">
-              <CardTitle>Tarjetas RFID / NFC</CardTitle>
-              <Dialog open={tarjetaOpen} onOpenChange={setTarjetaOpen}>
-                <DialogTrigger asChild>
-                  <Button size="sm" disabled={unidades.length === 0}><Plus className="h-4 w-4" />Asignar tarjeta</Button>
-                </DialogTrigger>
-                <DialogContent>
-                  <DialogHeader>
-                    <DialogTitle>Asignar tarjeta</DialogTitle>
-                    <DialogDescription>Vincula un tag RFID o NFC (celular) a una unidad funcional.</DialogDescription>
-                  </DialogHeader>
-                  <form onSubmit={handleCreateTarjeta} className="flex flex-col gap-3">
-                    <div>
-                      <Label htmlFor="tag">ID Tag OCPP</Label>
-                      <Input id="tag" required value={tarjetaForm.id_tag_ocpp} onChange={(e) => setTarjetaForm({ ...tarjetaForm, id_tag_ocpp: e.target.value })} />
-                    </div>
-                    <div>
-                      <Label htmlFor="uf">Unidad funcional</Label>
-                      <select
-                        id="uf"
-                        required
-                        value={tarjetaForm.uf_id}
-                        onChange={(e) => setTarjetaForm({ ...tarjetaForm, uf_id: e.target.value })}
-                        className="flex h-10 w-full rounded-lg border border-border bg-white px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                      >
-                        <option value="">Selecciona una unidad</option>
-                        {unidades.map((u) => (
-                          <option key={u.id} value={u.id}>{u.numero_departamento} - {u.propietario_nombre}</option>
-                        ))}
-                      </select>
-                    </div>
-                    <div>
-                      <Label htmlFor="tarjetaCargador">Cargador (opcional)</Label>
-                      <select
-                        id="tarjetaCargador"
-                        value={tarjetaForm.cargador_id}
-                        onChange={(e) => setTarjetaForm({ ...tarjetaForm, cargador_id: e.target.value })}
-                        className="flex h-10 w-full rounded-lg border border-border bg-white px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                      >
-                        <option value="">Sin asignar</option>
-                        {cargadores.map((c) => (
-                          <option key={c.id} value={c.id}>{c.etiqueta || c.ocpp_id}</option>
-                        ))}
-                      </select>
-                    </div>
-                    <Button type="submit" className="mt-2">Vincular</Button>
-                  </form>
-                </DialogContent>
-              </Dialog>
-            </CardHeader>
-            <CardContent>
-              {tarjetas.length === 0 ? (
-                <p className="text-sm text-muted-foreground">No hay tarjetas asignadas todavia.</p>
-              ) : (
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>ID Tag</TableHead>
-                      <TableHead>Cargador asignado</TableHead>
-                      <TableHead>Activa</TableHead>
-                      <TableHead className="text-right">Acciones</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {tarjetas.map((t) => (
-                      <TableRow key={t.id}>
-                        <TableCell className="font-mono text-xs">{t.id_tag_ocpp}</TableCell>
-                        <TableCell>
-                          <select
-                            value={t.cargador_id ?? ''}
-                            onChange={(e) => handleAssignTarjetaCargador(t.id, e.target.value)}
-                            className="h-8 rounded-md border border-border bg-white px-2 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                          >
-                            <option value="">Sin asignar</option>
-                            {cargadores.map((c) => (
-                              <option key={c.id} value={c.id}>{c.etiqueta || c.ocpp_id}</option>
-                            ))}
-                          </select>
-                        </TableCell>
-                        <TableCell>
-                          <Switch checked={t.activa} onCheckedChange={() => toggleTarjeta(t.id, t.activa)} />
-                        </TableCell>
-                        <TableCell className="text-right">
-                          <Button size="sm" variant="destructive" onClick={() => handleDeleteTarjeta(t.id)}>
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
+                        {isOpen && (
+                          <div className="ml-7 mt-2 flex flex-col gap-4 rounded-lg border border-border bg-muted/40 p-3">
+                            <div className="flex justify-end gap-1">
+                              <Button size="sm" variant="outline" onClick={() => openEditUnidad(u)}><Pencil className="h-4 w-4" />Editar</Button>
+                              <Button size="sm" variant="destructive" onClick={() => handleDeleteUnidad(u.id)}><Trash2 className="h-4 w-4" />Borrar</Button>
+                            </div>
+
+                            <div>
+                              <div className="mb-2 flex items-center justify-between">
+                                <p className="text-xs font-semibold uppercase text-muted-foreground">Cargadores</p>
+                                <Button size="sm" variant="outline" onClick={() => openNewCargador(u.id)}><Plus className="h-4 w-4" />Agregar</Button>
+                              </div>
+                              {misCargadores.length === 0 ? (
+                                <p className="text-xs text-muted-foreground">Sin cargadores asignados.</p>
+                              ) : (
+                                <ul className="flex flex-col gap-1.5">
+                                  {misCargadores.map((c) => (
+                                    <li key={c.id} className="flex items-center justify-between rounded-md bg-white px-2.5 py-1.5 text-sm">
+                                      <span>{c.etiqueta || c.ocpp_id} <span className="font-mono text-xs text-muted-foreground">({c.ocpp_id})</span></span>
+                                      {c.sector_nombre && <Badge variant="muted">{c.sector_nombre}</Badge>}
+                                    </li>
+                                  ))}
+                                </ul>
+                              )}
+                            </div>
+
+                            <div>
+                              <div className="mb-2 flex items-center justify-between">
+                                <p className="text-xs font-semibold uppercase text-muted-foreground">Tarjetas RFID / NFC</p>
+                                <Button size="sm" variant="outline" onClick={() => openNewTarjeta(u.id)}><Plus className="h-4 w-4" />Agregar</Button>
+                              </div>
+                              {misTarjetas.length === 0 ? (
+                                <p className="text-xs text-muted-foreground">Sin tarjetas asignadas.</p>
+                              ) : (
+                                <ul className="flex flex-col gap-1.5">
+                                  {misTarjetas.map((t) => (
+                                    <li key={t.id} className="flex items-center justify-between rounded-md bg-white px-2.5 py-1.5 text-sm">
+                                      <span className="font-mono text-xs">{t.id_tag_ocpp}</span>
+                                      <div className="flex items-center gap-2">
+                                        <Switch checked={t.activa} onCheckedChange={() => toggleTarjeta(t.id, t.activa)} />
+                                        <Button size="sm" variant="destructive" onClick={() => handleDeleteTarjeta(t.id)}>
+                                          <Trash2 className="h-3.5 w-3.5" />
+                                        </Button>
+                                      </div>
+                                    </li>
+                                  ))}
+                                </ul>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
               )}
             </CardContent>
           </Card>
+
+          <Dialog open={editUnidad != null} onOpenChange={(open) => !open && setEditUnidad(null)}>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Editar unidad</DialogTitle>
+              </DialogHeader>
+              <form onSubmit={handleEditUnidad} className="flex flex-col gap-3">
+                <div>
+                  <Label htmlFor="editDepto">Departamento</Label>
+                  <Input id="editDepto" value={editUnidadForm.numero_departamento} onChange={(e) => setEditUnidadForm({ ...editUnidadForm, numero_departamento: e.target.value })} />
+                </div>
+                <div>
+                  <Label htmlFor="editCochera">Cochera</Label>
+                  <Input id="editCochera" value={editUnidadForm.numero_cochera} onChange={(e) => setEditUnidadForm({ ...editUnidadForm, numero_cochera: e.target.value })} />
+                </div>
+                <div>
+                  <Label htmlFor="editProp">Propietario</Label>
+                  <Input id="editProp" value={editUnidadForm.propietario_nombre} onChange={(e) => setEditUnidadForm({ ...editUnidadForm, propietario_nombre: e.target.value })} />
+                </div>
+                <div>
+                  <Label htmlFor="editPropEmail">Email propietario</Label>
+                  <Input id="editPropEmail" type="email" value={editUnidadForm.propietario_email} onChange={(e) => setEditUnidadForm({ ...editUnidadForm, propietario_email: e.target.value })} />
+                </div>
+                <div>
+                  <Label htmlFor="editPropTelefono">Telefono propietario</Label>
+                  <Input id="editPropTelefono" value={editUnidadForm.telefono_propietario} onChange={(e) => setEditUnidadForm({ ...editUnidadForm, telefono_propietario: e.target.value })} />
+                </div>
+                <Button type="submit" className="mt-2">Guardar cambios</Button>
+              </form>
+            </DialogContent>
+          </Dialog>
         </TabsContent>
 
         <TabsContent value="parametros">
