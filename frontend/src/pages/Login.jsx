@@ -35,7 +35,7 @@ export default function Login() {
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black">
         <video
           className="h-full w-full object-contain"
-          src="/intro.mp4"
+          src="/intromob.mp4"
           autoPlay
           muted
           playsInline
