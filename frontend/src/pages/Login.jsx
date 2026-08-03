@@ -12,6 +12,7 @@ export default function Login() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [showIntro, setShowIntro] = useState(true);
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -27,6 +28,27 @@ export default function Login() {
     } finally {
       setLoading(false);
     }
+  }
+
+  if (showIntro) {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black">
+        <video
+          className="h-full w-full object-contain"
+          src="/intro.mp4"
+          autoPlay
+          muted
+          playsInline
+          onEnded={() => setShowIntro(false)}
+        />
+        <button
+          onClick={() => setShowIntro(false)}
+          className="absolute right-4 top-4 cursor-pointer rounded-lg bg-white/10 px-3 py-1.5 text-sm text-white backdrop-blur transition-colors hover:bg-white/20"
+        >
+          Saltar
+        </button>
+      </div>
+    );
   }
 
   return (
