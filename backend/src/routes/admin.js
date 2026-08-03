@@ -45,9 +45,11 @@ router.put('/consorcios/:id', async (req, res) => {
 // Cargadores
 router.get('/consorcios/:id/cargadores', async (req, res) => {
   const result = await pool.query(
-    `SELECT c.*, uf.numero_departamento AS uf_numero_departamento, uf.numero_cochera AS uf_numero_cochera
+    `SELECT c.*, uf.numero_departamento AS uf_numero_departamento, uf.numero_cochera AS uf_numero_cochera,
+            s.nombre AS sector_nombre
      FROM cargadores c
      LEFT JOIN unidades_funcionales uf ON uf.id = c.uf_id
+     LEFT JOIN sectores s ON s.id = c.sector_id
      WHERE c.consorcio_id = $1
      ORDER BY c.etiqueta NULLS LAST, c.ocpp_id`,
     [req.params.id],
@@ -56,7 +58,7 @@ router.get('/consorcios/:id/cargadores', async (req, res) => {
 });
 
 router.post('/consorcios/:id/cargadores', async (req, res) => {
-  const { ocpp_id, etiqueta, charge_point_vendor, charge_point_model, uf_id } = req.body ?? {};
+  const { ocpp_id, etiqueta, charge_point_vendor, charge_point_model, uf_id, sector_id } = req.body ?? {};
   if (!ocpp_id) {
     return res.status(400).json({ error: 'ocpp_id es requerido.' });
   }
@@ -69,11 +71,20 @@ router.post('/consorcios/:id/cargadores', async (req, res) => {
       return res.status(404).json({ error: 'Unidad funcional no encontrada en este consorcio.' });
     }
   }
+  if (sector_id) {
+    const sector = await pool.query(
+      'SELECT id FROM sectores WHERE id = $1 AND consorcio_id = $2',
+      [sector_id, req.params.id],
+    );
+    if (sector.rowCount === 0) {
+      return res.status(404).json({ error: 'Sector no encontrado en este consorcio.' });
+    }
+  }
   try {
     const result = await pool.query(
-      `INSERT INTO cargadores (ocpp_id, etiqueta, charge_point_vendor, charge_point_model, consorcio_id, uf_id)
-       VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-      [ocpp_id, etiqueta, charge_point_vendor, charge_point_model, req.params.id, uf_id ?? null],
+      `INSERT INTO cargadores (ocpp_id, etiqueta, charge_point_vendor, charge_point_model, consorcio_id, uf_id, sector_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+      [ocpp_id, etiqueta, charge_point_vendor, charge_point_model, req.params.id, uf_id ?? null, sector_id ?? null],
     );
     res.status(201).json(result.rows[0]);
   } catch (err) {
@@ -85,16 +96,29 @@ router.post('/consorcios/:id/cargadores', async (req, res) => {
 });
 
 router.put('/cargadores/:id', async (req, res) => {
-  const { etiqueta, charge_point_vendor, charge_point_model, uf_id } = req.body ?? {};
-  if (uf_id) {
+  const { etiqueta, charge_point_vendor, charge_point_model, uf_id, sector_id } = req.body ?? {};
+  let consorcioId = null;
+  if (uf_id || sector_id) {
     const cargador = await pool.query('SELECT consorcio_id FROM cargadores WHERE id = $1', [req.params.id]);
     if (cargador.rowCount === 0) return res.status(404).json({ error: 'Cargador no encontrado.' });
+    consorcioId = cargador.rows[0].consorcio_id;
+  }
+  if (uf_id) {
     const uf = await pool.query(
       'SELECT id FROM unidades_funcionales WHERE id = $1 AND consorcio_id = $2',
-      [uf_id, cargador.rows[0].consorcio_id],
+      [uf_id, consorcioId],
     );
     if (uf.rowCount === 0) {
       return res.status(404).json({ error: 'Unidad funcional no encontrada en este consorcio.' });
+    }
+  }
+  if (sector_id) {
+    const sector = await pool.query(
+      'SELECT id FROM sectores WHERE id = $1 AND consorcio_id = $2',
+      [sector_id, consorcioId],
+    );
+    if (sector.rowCount === 0) {
+      return res.status(404).json({ error: 'Sector no encontrado en este consorcio.' });
     }
   }
   const result = await pool.query(
@@ -102,10 +126,12 @@ router.put('/cargadores/:id', async (req, res) => {
        etiqueta = COALESCE($1, etiqueta),
        charge_point_vendor = COALESCE($2, charge_point_vendor),
        charge_point_model = COALESCE($3, charge_point_model),
-       uf_id = CASE WHEN $4 THEN $5::int ELSE uf_id END
-     WHERE id = $6 RETURNING *`,
+       uf_id = CASE WHEN $4 THEN $5::int ELSE uf_id END,
+       sector_id = CASE WHEN $6 THEN $7::int ELSE sector_id END
+     WHERE id = $8 RETURNING *`,
     [etiqueta ?? null, charge_point_vendor ?? null, charge_point_model ?? null,
-      'uf_id' in (req.body ?? {}), uf_id ?? null, req.params.id],
+      'uf_id' in (req.body ?? {}), uf_id ?? null,
+      'sector_id' in (req.body ?? {}), sector_id ?? null, req.params.id],
   );
   if (result.rowCount === 0) return res.status(404).json({ error: 'Cargador no encontrado.' });
   res.json(result.rows[0]);
@@ -114,6 +140,46 @@ router.put('/cargadores/:id', async (req, res) => {
 router.delete('/cargadores/:id', async (req, res) => {
   const result = await pool.query('DELETE FROM cargadores WHERE id = $1', [req.params.id]);
   if (result.rowCount === 0) return res.status(404).json({ error: 'Cargador no encontrado.' });
+  res.status(204).end();
+});
+
+// Sectores (pisos/subsuelos con circuito y balanceo independiente)
+router.get('/consorcios/:id/sectores', async (req, res) => {
+  const result = await pool.query(
+    'SELECT * FROM sectores WHERE consorcio_id = $1 ORDER BY nombre',
+    [req.params.id],
+  );
+  res.json(result.rows);
+});
+
+router.post('/consorcios/:id/sectores', async (req, res) => {
+  const { nombre, limite_amperios_totales } = req.body ?? {};
+  if (!nombre) {
+    return res.status(400).json({ error: 'nombre es requerido.' });
+  }
+  const result = await pool.query(
+    'INSERT INTO sectores (consorcio_id, nombre, limite_amperios_totales) VALUES ($1,$2,$3) RETURNING *',
+    [req.params.id, nombre, limite_amperios_totales ?? null],
+  );
+  res.status(201).json(result.rows[0]);
+});
+
+router.put('/sectores/:id', async (req, res) => {
+  const { nombre, limite_amperios_totales } = req.body ?? {};
+  const result = await pool.query(
+    `UPDATE sectores SET
+       nombre = COALESCE($1, nombre),
+       limite_amperios_totales = COALESCE($2, limite_amperios_totales)
+     WHERE id = $3 RETURNING *`,
+    [nombre ?? null, limite_amperios_totales ?? null, req.params.id],
+  );
+  if (result.rowCount === 0) return res.status(404).json({ error: 'Sector no encontrado.' });
+  res.json(result.rows[0]);
+});
+
+router.delete('/sectores/:id', async (req, res) => {
+  const result = await pool.query('DELETE FROM sectores WHERE id = $1', [req.params.id]);
+  if (result.rowCount === 0) return res.status(404).json({ error: 'Sector no encontrado.' });
   res.status(204).end();
 });
 

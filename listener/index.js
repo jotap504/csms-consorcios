@@ -57,12 +57,17 @@ async function getConsorcioIdForStation(stationId) {
   return cargador.rows[0]?.consorcio_id ?? null;
 }
 
-async function getActiveConsorcioForStation(stationId) {
+// Grupo de balanceo activo de una estacion que ya tiene sesion abierta:
+// si el cargador tiene sector_id, el grupo es ese sector; si no, el consorcio.
+async function getActiveGroupForStation(stationId) {
   const r = await pool.query(
-    'SELECT consorcio_id FROM liquidacion_sesiones WHERE cargador_ocpp_id = $1 AND fecha_fin IS NULL LIMIT 1',
+    `SELECT ca.consorcio_id, ca.sector_id FROM liquidacion_sesiones ls
+     JOIN cargadores ca ON ca.ocpp_id = ls.cargador_ocpp_id
+     WHERE ls.cargador_ocpp_id = $1 AND ls.fecha_fin IS NULL LIMIT 1`,
     [stationId],
   );
-  return r.rows[0]?.consorcio_id ?? null;
+  if (r.rowCount === 0) return null;
+  return { consorcioId: r.rows[0].consorcio_id, sectorId: r.rows[0].sector_id };
 }
 
 async function setCargadorEstado(ocppId, ampsAsignados, enCola) {
@@ -110,27 +115,44 @@ async function pushChargingProfile(ocppId, maxAmps) {
   }
 }
 
-// Reparte limite_amperios_totales del consorcio en partes iguales entre los
-// cargadores con una sesion activa, respetando un piso de MIN_AMPS por
-// cargador. Si entran mas sesiones de las que el limite alcanza a cubrir con
-// el piso, las mas nuevas (por fecha_inicio, FIFO) quedan "en cola" con 0A
-// hasta que se libera un cupo (otra sesion termina y se vuelve a llamar aca).
-async function rebalanceConsorcio(consorcioId) {
+// Reparte el limite de amperios de un GRUPO (un sector especifico si el
+// cargador pertenece a uno, o el consorcio entero para los que no tienen
+// sector asignado) en partes iguales entre los cargadores con sesion activa
+// en ese grupo, respetando un piso de MIN_AMPS por cargador. Si entran mas
+// sesiones de las que el limite alcanza a cubrir con el piso, las mas nuevas
+// (por fecha_inicio, FIFO) quedan "en cola" con 0A hasta que se libera un
+// cupo (otra sesion del mismo grupo termina y se vuelve a llamar aca).
+//
+// Cada sector tiene su propio circuito/balanceo independiente del resto del
+// edificio (ej: 3 subsuelos con acometidas separadas) - por eso el pool de
+// amperios NUNCA se comparte entre sectores distintos ni entre un sector y
+// el resto del consorcio sin sector.
+async function rebalanceGroup({ consorcioId, sectorId }) {
   if (consorcioId == null) return;
 
-  const consorcio = await pool.query(
-    'SELECT limite_amperios_totales FROM consorcios WHERE id = $1',
-    [consorcioId],
-  );
-  const limite = consorcio.rows[0]?.limite_amperios_totales;
+  let limite;
+  if (sectorId != null) {
+    const sector = await pool.query('SELECT limite_amperios_totales FROM sectores WHERE id = $1', [sectorId]);
+    limite = sector.rows[0]?.limite_amperios_totales;
+  } else {
+    const consorcio = await pool.query('SELECT limite_amperios_totales FROM consorcios WHERE id = $1', [consorcioId]);
+    limite = consorcio.rows[0]?.limite_amperios_totales;
+  }
   if (!limite) return; // sin limite configurado, no hay nada para repartir
 
   const activos = await pool.query(
-    `SELECT DISTINCT ON (cargador_ocpp_id) cargador_ocpp_id, fecha_inicio
-     FROM liquidacion_sesiones
-     WHERE consorcio_id = $1 AND fecha_fin IS NULL
-     ORDER BY cargador_ocpp_id, fecha_inicio ASC`,
-    [consorcioId],
+    sectorId != null
+      ? `SELECT DISTINCT ON (ls.cargador_ocpp_id) ls.cargador_ocpp_id, ls.fecha_inicio
+         FROM liquidacion_sesiones ls
+         JOIN cargadores ca ON ca.ocpp_id = ls.cargador_ocpp_id
+         WHERE ca.sector_id = $1 AND ls.fecha_fin IS NULL
+         ORDER BY ls.cargador_ocpp_id, ls.fecha_inicio ASC`
+      : `SELECT DISTINCT ON (ls.cargador_ocpp_id) ls.cargador_ocpp_id, ls.fecha_inicio
+         FROM liquidacion_sesiones ls
+         JOIN cargadores ca ON ca.ocpp_id = ls.cargador_ocpp_id
+         WHERE ca.consorcio_id = $1 AND ca.sector_id IS NULL AND ls.fecha_fin IS NULL
+         ORDER BY ls.cargador_ocpp_id, ls.fecha_inicio ASC`,
+    [sectorId != null ? sectorId : consorcioId],
   );
   const ordenados = activos.rows
     .sort((a, b) => new Date(a.fecha_inicio) - new Date(b.fecha_inicio))
@@ -142,8 +164,9 @@ async function rebalanceConsorcio(consorcioId) {
   const enCola = ordenados.slice(maxCupos);
   const perAmps = conCupo.length > 0 ? Math.floor(limite / conCupo.length) : 0;
 
+  const grupoLabel = sectorId != null ? `sector=${sectorId}` : `consorcio=${consorcioId}`;
   console.log(
-    `[Balanceador] consorcio=${consorcioId} activos=${ordenados.length} cupos=${maxCupos} -> `
+    `[Balanceador] ${grupoLabel} activos=${ordenados.length} cupos=${maxCupos} -> `
     + `${conCupo.length}x${perAmps}A, ${enCola.length} en cola`,
   );
 
@@ -158,14 +181,14 @@ async function handleStarted(context, payload) {
   const transactionId = payload.transactionInfo.transactionId;
 
   const cargador = await pool.query(
-    'SELECT id, consorcio_id FROM cargadores WHERE ocpp_id = $1',
+    'SELECT id, consorcio_id, sector_id FROM cargadores WHERE ocpp_id = $1',
     [stationId],
   );
   if (cargador.rowCount === 0) {
     console.warn(`[Started] Cargador desconocido para el sistema SaaS: ${stationId}, se ignora la sesion.`);
     return;
   }
-  const { consorcio_id: consorcioId } = cargador.rows[0];
+  const { consorcio_id: consorcioId, sector_id: sectorId } = cargador.rows[0];
 
   const consorcio = await pool.query(
     'SELECT costo_kwh_electricidad FROM consorcios WHERE id = $1',
@@ -195,13 +218,13 @@ async function handleStarted(context, payload) {
     [String(transactionId), consorcioId, ufId, stationId, payload.timestamp, precioKwh],
   );
 
-  openSessions.set(sessionKey(stationId, transactionId), { startWh, precioKwh, consorcioId });
+  openSessions.set(sessionKey(stationId, transactionId), { startWh, precioKwh, consorcioId, sectorId });
   await recordLectura(stationId, transactionId, consorcioId, payload.timestamp, {
     wh: startWh,
     powerKw: powerKw(payload.meterValue),
   });
   console.log(`[Started] ${stationId} tx=${transactionId} uf=${ufId ?? '-'} precioKwh=${precioKwh}`);
-  await rebalanceConsorcio(consorcioId);
+  await rebalanceGroup({ consorcioId, sectorId });
 }
 
 async function handleUpdated(context, payload) {
@@ -229,12 +252,14 @@ async function handleEnded(context, payload) {
   const transactionId = payload.transactionInfo.transactionId;
   const key = sessionKey(stationId, transactionId);
 
-  let { startWh, precioKwh, consorcioId } = openSessions.get(key) ?? {};
+  let { startWh, precioKwh, consorcioId, sectorId } = openSessions.get(key) ?? {};
   if (startWh === undefined) {
     console.warn(`[Ended] No hay estado en memoria para ${key}; se intenta recuperar de la DB.`);
     const row = await pool.query(
-      `SELECT precio_kwh_aplicado FROM liquidacion_sesiones
-       WHERE transaction_id_ocpp = $1 AND cargador_ocpp_id = $2 AND fecha_fin IS NULL`,
+      `SELECT ls.precio_kwh_aplicado, ca.consorcio_id, ca.sector_id
+       FROM liquidacion_sesiones ls
+       JOIN cargadores ca ON ca.ocpp_id = ls.cargador_ocpp_id
+       WHERE ls.transaction_id_ocpp = $1 AND ls.cargador_ocpp_id = $2 AND ls.fecha_fin IS NULL`,
       [String(transactionId), stationId],
     );
     if (row.rowCount === 0) {
@@ -243,7 +268,8 @@ async function handleEnded(context, payload) {
     }
     precioKwh = row.rows[0].precio_kwh_aplicado;
     startWh = 0;
-    consorcioId = await getConsorcioIdForStation(stationId);
+    consorcioId = row.rows[0].consorcio_id;
+    sectorId = row.rows[0].sector_id;
   }
 
   const endWh = energyWh(payload.meterValue) ?? startWh;
@@ -267,7 +293,7 @@ async function handleEnded(context, payload) {
 
   openSessions.delete(key);
   console.log(`[Ended] ${stationId} tx=${transactionId} kwh=${kwh.toFixed(3)} monto=${monto.toFixed(2)}`);
-  await rebalanceConsorcio(consorcioId);
+  await rebalanceGroup({ consorcioId, sectorId });
 }
 
 async function handleTransactionEvent(context, payload) {
@@ -288,10 +314,11 @@ async function handleTransactionEvent(context, payload) {
 // we restore its fair share instead of yanking an active car down to 6A.
 async function handleBootNotification(context) {
   const stationId = context.ocppConnectionName;
-  const activeConsorcioId = await getActiveConsorcioForStation(stationId);
-  if (activeConsorcioId != null) {
-    console.log(`[Boot] ${stationId} reconecto con sesion activa, rebalanceando consorcio ${activeConsorcioId}`);
-    await rebalanceConsorcio(activeConsorcioId);
+  const activeGroup = await getActiveGroupForStation(stationId);
+  if (activeGroup != null) {
+    const grupoLabel = activeGroup.sectorId != null ? `sector ${activeGroup.sectorId}` : `consorcio ${activeGroup.consorcioId}`;
+    console.log(`[Boot] ${stationId} reconecto con sesion activa, rebalanceando ${grupoLabel}`);
+    await rebalanceGroup(activeGroup);
   } else {
     console.log(`[Boot] ${stationId} conecto sin sesion activa, aplicando piso de ${MIN_AMPS}A`);
     await setCargadorEstado(stationId, MIN_AMPS, false);
@@ -346,14 +373,18 @@ async function main() {
   console.log(`Escuchando eventos TransactionEvent/BootNotification/StatusNotification en cola "${QUEUE}"...`);
 
   // Safety net: re-balance periodically in case a Started/Ended event was
-  // missed (e.g. listener was briefly down) and the last pushed profile is stale.
+  // missed (e.g. listener was briefly down) and the last pushed profile is
+  // stale. Groups by (consorcio, sector) so cada sector se rebalancea aparte.
   setInterval(async () => {
     try {
       const result = await pool.query(
-        'SELECT DISTINCT consorcio_id FROM liquidacion_sesiones WHERE fecha_fin IS NULL',
+        `SELECT DISTINCT ca.consorcio_id, ca.sector_id
+         FROM liquidacion_sesiones ls
+         JOIN cargadores ca ON ca.ocpp_id = ls.cargador_ocpp_id
+         WHERE ls.fecha_fin IS NULL`,
       );
-      for (const { consorcio_id: consorcioId } of result.rows) {
-        await rebalanceConsorcio(consorcioId);
+      for (const { consorcio_id: consorcioId, sector_id: sectorId } of result.rows) {
+        await rebalanceGroup({ consorcioId, sectorId });
       }
     } catch (err) {
       console.error('Error en el balanceo periodico:', err);

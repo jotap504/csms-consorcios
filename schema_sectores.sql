@@ -1,0 +1,9 @@
+CREATE TABLE IF NOT EXISTS sectores (
+  id SERIAL PRIMARY KEY,
+  consorcio_id INTEGER NOT NULL REFERENCES consorcios(id) ON DELETE CASCADE,
+  nombre VARCHAR(255) NOT NULL,
+  limite_amperios_totales INTEGER,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE cargadores ADD COLUMN IF NOT EXISTS sector_id INTEGER REFERENCES sectores(id) ON DELETE SET NULL;

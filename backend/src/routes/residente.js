@@ -53,13 +53,13 @@ router.get('/cargadores/:ocppId', async (req, res) => {
 
 router.get('/cargadores/:ocppId/estado', async (req, res) => {
   const own = await pool.query(
-    'SELECT consorcio_id FROM cargadores WHERE ocpp_id = $1 AND uf_id = $2',
+    'SELECT consorcio_id, sector_id FROM cargadores WHERE ocpp_id = $1 AND uf_id = $2',
     [req.params.ocppId, req.user.ufId],
   );
   if (own.rowCount === 0) {
     return res.status(404).json({ error: 'Este cargador no esta asignado a tu unidad.' });
   }
-  const { consorcio_id: consorcioId } = own.rows[0];
+  const { consorcio_id: consorcioId, sector_id: sectorId } = own.rows[0];
 
   const estadoActual = await pool.query(
     'SELECT amps_asignados, en_cola, conectado, status_ocpp FROM cargador_estado_actual WHERE cargador_ocpp_id = $1',
@@ -85,9 +85,12 @@ router.get('/cargadores/:ocppId/estado', async (req, res) => {
     const cola = await pool.query(
       `SELECT ls.cargador_ocpp_id FROM liquidacion_sesiones ls
        JOIN cargador_estado_actual ce ON ce.cargador_ocpp_id = ls.cargador_ocpp_id
-       WHERE ls.consorcio_id = $1 AND ls.fecha_fin IS NULL AND ce.en_cola = TRUE
+       JOIN cargadores ca ON ca.ocpp_id = ls.cargador_ocpp_id
+       WHERE ls.fecha_fin IS NULL AND ce.en_cola = TRUE
+         AND ca.consorcio_id = $1
+         AND (($2::int IS NOT NULL AND ca.sector_id = $2) OR ($2::int IS NULL AND ca.sector_id IS NULL))
        ORDER BY ls.fecha_inicio ASC`,
-      [consorcioId],
+      [consorcioId, sectorId],
     );
     const idx = cola.rows.findIndex((r) => r.cargador_ocpp_id === req.params.ocppId);
     posicionEnCola = idx >= 0 ? idx + 1 : null;
@@ -150,28 +153,34 @@ router.get('/cargadores/:ocppId/historial', async (req, res) => {
 // tocarian" - no reserva nada, solo informa antes de arrancar de verdad.
 router.get('/cargadores/:ocppId/disponibilidad', async (req, res) => {
   const own = await pool.query(
-    'SELECT consorcio_id FROM cargadores WHERE ocpp_id = $1 AND uf_id = $2',
+    'SELECT consorcio_id, sector_id FROM cargadores WHERE ocpp_id = $1 AND uf_id = $2',
     [req.params.ocppId, req.user.ufId],
   );
   if (own.rowCount === 0) {
     return res.status(404).json({ error: 'Este cargador no esta asignado a tu unidad.' });
   }
-  const { consorcio_id: consorcioId } = own.rows[0];
+  const { consorcio_id: consorcioId, sector_id: sectorId } = own.rows[0];
 
-  const consorcio = await pool.query(
-    'SELECT limite_amperios_totales FROM consorcios WHERE id = $1',
-    [consorcioId],
-  );
-  const limite = consorcio.rows[0]?.limite_amperios_totales;
+  let limite;
+  if (sectorId != null) {
+    const sector = await pool.query('SELECT limite_amperios_totales FROM sectores WHERE id = $1', [sectorId]);
+    limite = sector.rows[0]?.limite_amperios_totales;
+  } else {
+    const consorcio = await pool.query('SELECT limite_amperios_totales FROM consorcios WHERE id = $1', [consorcioId]);
+    limite = consorcio.rows[0]?.limite_amperios_totales;
+  }
   if (!limite) {
     return res.json({ disponible: true, amps_estimados: null });
   }
 
   const MIN_AMPS = 6;
   const activos = await pool.query(
-    `SELECT COUNT(DISTINCT cargador_ocpp_id) AS n FROM liquidacion_sesiones
-     WHERE consorcio_id = $1 AND fecha_fin IS NULL AND cargador_ocpp_id != $2`,
-    [consorcioId, req.params.ocppId],
+    `SELECT COUNT(DISTINCT ls.cargador_ocpp_id) AS n FROM liquidacion_sesiones ls
+     JOIN cargadores ca ON ca.ocpp_id = ls.cargador_ocpp_id
+     WHERE ls.fecha_fin IS NULL AND ls.cargador_ocpp_id != $1
+       AND ca.consorcio_id = $2
+       AND (($3::int IS NOT NULL AND ca.sector_id = $3) OR ($3::int IS NULL AND ca.sector_id IS NULL))`,
+    [req.params.ocppId, consorcioId, sectorId],
   );
   const activeCount = Number(activos.rows[0].n);
   const maxCupos = Math.floor(limite / MIN_AMPS);

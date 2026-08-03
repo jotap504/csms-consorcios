@@ -34,9 +34,15 @@ export default function AdminConsorcio() {
   const [cargadores, setCargadores] = useState([]);
   const [unidades, setUnidades] = useState([]);
   const [tarjetas, setTarjetas] = useState([]);
+  const [sectores, setSectores] = useState([]);
 
   const [cargadorOpen, setCargadorOpen] = useState(false);
-  const [cargadorForm, setCargadorForm] = useState({ ocpp_id: '', etiqueta: '', charge_point_vendor: '', charge_point_model: '', uf_id: '' });
+  const [cargadorForm, setCargadorForm] = useState({ ocpp_id: '', etiqueta: '', charge_point_vendor: '', charge_point_model: '', uf_id: '', sector_id: '' });
+
+  const [sectorOpen, setSectorOpen] = useState(false);
+  const [sectorForm, setSectorForm] = useState({ nombre: '', limite_amperios_totales: '' });
+  const [editSector, setEditSector] = useState(null);
+  const [editSectorForm, setEditSectorForm] = useState({ nombre: '', limite_amperios_totales: '' });
 
   const [unidadOpen, setUnidadOpen] = useState(false);
   const [unidadForm, setUnidadForm] = useState({ numero_departamento: '', numero_cochera: '', propietario_nombre: '', propietario_email: '' });
@@ -67,11 +73,12 @@ export default function AdminConsorcio() {
   const [paramsForm, setParamsForm] = useState({ limite_amperios_totales: '', costo_kwh_electricidad: '' });
 
   async function loadAll() {
-    const [c, ca, u, t] = await Promise.all([
+    const [c, ca, u, t, s] = await Promise.all([
       api.get(`/admin/consorcios/${id}`),
       api.get(`/admin/consorcios/${id}/cargadores`),
       api.get(`/admin/consorcios/${id}/unidades`),
       api.get(`/admin/consorcios/${id}/tarjetas`),
+      api.get(`/admin/consorcios/${id}/sectores`),
     ]);
     setConsorcio(c.data);
     setParamsForm({
@@ -81,6 +88,7 @@ export default function AdminConsorcio() {
     setCargadores(ca.data);
     setUnidades(u.data);
     setTarjetas(t.data);
+    setSectores(s.data);
   }
 
   useEffect(() => {
@@ -106,9 +114,10 @@ export default function AdminConsorcio() {
     await api.post(`/admin/consorcios/${id}/cargadores`, {
       ...cargadorForm,
       uf_id: cargadorForm.uf_id ? Number(cargadorForm.uf_id) : null,
+      sector_id: cargadorForm.sector_id ? Number(cargadorForm.sector_id) : null,
     });
     setCargadorOpen(false);
-    setCargadorForm({ ocpp_id: '', etiqueta: '', charge_point_vendor: '', charge_point_model: '', uf_id: '' });
+    setCargadorForm({ ocpp_id: '', etiqueta: '', charge_point_vendor: '', charge_point_model: '', uf_id: '', sector_id: '' });
     loadAll();
   }
 
@@ -120,6 +129,11 @@ export default function AdminConsorcio() {
 
   async function handleAssignCargadorUf(cargadorId, ufId) {
     await api.put(`/admin/cargadores/${cargadorId}`, { uf_id: ufId ? Number(ufId) : null });
+    loadAll();
+  }
+
+  async function handleAssignCargadorSector(cargadorId, sectorId) {
+    await api.put(`/admin/cargadores/${cargadorId}`, { sector_id: sectorId ? Number(sectorId) : null });
     loadAll();
   }
 
@@ -136,6 +150,41 @@ export default function AdminConsorcio() {
     e.preventDefault();
     await api.put(`/admin/cargadores/${editCargador.id}`, editCargadorForm);
     setEditCargador(null);
+    loadAll();
+  }
+
+  async function handleCreateSector(e) {
+    e.preventDefault();
+    await api.post(`/admin/consorcios/${id}/sectores`, {
+      nombre: sectorForm.nombre,
+      limite_amperios_totales: sectorForm.limite_amperios_totales === '' ? null : Number(sectorForm.limite_amperios_totales),
+    });
+    setSectorOpen(false);
+    setSectorForm({ nombre: '', limite_amperios_totales: '' });
+    loadAll();
+  }
+
+  function openEditSector(s) {
+    setEditSector(s);
+    setEditSectorForm({
+      nombre: s.nombre ?? '',
+      limite_amperios_totales: s.limite_amperios_totales ?? '',
+    });
+  }
+
+  async function handleEditSector(e) {
+    e.preventDefault();
+    await api.put(`/admin/sectores/${editSector.id}`, {
+      nombre: editSectorForm.nombre,
+      limite_amperios_totales: editSectorForm.limite_amperios_totales === '' ? null : Number(editSectorForm.limite_amperios_totales),
+    });
+    setEditSector(null);
+    loadAll();
+  }
+
+  async function handleDeleteSector(sectorId) {
+    if (!confirm('Borrar este sector? Los cargadores asignados quedan sin sector (usan el limite del edificio).')) return;
+    await api.delete(`/admin/sectores/${sectorId}`);
     loadAll();
   }
 
@@ -226,6 +275,7 @@ export default function AdminConsorcio() {
       <Tabs defaultValue="cargadores">
         <TabsList>
           <TabsTrigger value="cargadores">Cargadores</TabsTrigger>
+          <TabsTrigger value="sectores">Sectores</TabsTrigger>
           <TabsTrigger value="unidades">Unidades</TabsTrigger>
           <TabsTrigger value="tarjetas">Tarjetas RFID / NFC</TabsTrigger>
           <TabsTrigger value="parametros">Parametros del edificio</TabsTrigger>
@@ -283,6 +333,20 @@ export default function AdminConsorcio() {
                         ))}
                       </select>
                     </div>
+                    <div>
+                      <Label htmlFor="cargadorSector">Sector / piso</Label>
+                      <select
+                        id="cargadorSector"
+                        value={cargadorForm.sector_id}
+                        onChange={(e) => setCargadorForm({ ...cargadorForm, sector_id: e.target.value })}
+                        className="flex h-10 w-full rounded-lg border border-border bg-white px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      >
+                        <option value="">Sin sector (limite del edificio)</option>
+                        {sectores.map((s) => (
+                          <option key={s.id} value={s.id}>{s.nombre}</option>
+                        ))}
+                      </select>
+                    </div>
                     <Button type="submit" className="mt-2">Agregar</Button>
                   </form>
                 </DialogContent>
@@ -298,6 +362,7 @@ export default function AdminConsorcio() {
                       <TableHead>Identificacion</TableHead>
                       <TableHead>ID OCPP</TableHead>
                       <TableHead>Unidad asignada</TableHead>
+                      <TableHead>Sector</TableHead>
                       <TableHead>Estado</TableHead>
                       <TableHead className="text-right">Conectado hace</TableHead>
                       <TableHead className="text-right">Consumo actual</TableHead>
@@ -323,6 +388,18 @@ export default function AdminConsorcio() {
                             <option value="">Sin asignar</option>
                             {unidades.map((u) => (
                               <option key={u.id} value={u.id}>{u.numero_departamento}{u.numero_cochera ? ` / ${u.numero_cochera}` : ''}</option>
+                            ))}
+                          </select>
+                        </TableCell>
+                        <TableCell>
+                          <select
+                            value={c.sector_id ?? ''}
+                            onChange={(e) => handleAssignCargadorSector(c.id, e.target.value)}
+                            className="h-8 rounded-md border border-border bg-white px-2 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                          >
+                            <option value="">Sin sector</option>
+                            {sectores.map((s) => (
+                              <option key={s.id} value={s.id}>{s.nombre}</option>
                             ))}
                           </select>
                         </TableCell>
@@ -435,6 +512,114 @@ export default function AdminConsorcio() {
                   <Button variant="outline" size="sm"><Download className="h-4 w-4" />Descargar PNG</Button>
                 </a>
               </div>
+            </DialogContent>
+          </Dialog>
+        </TabsContent>
+
+        <TabsContent value="sectores">
+          <Card>
+            <CardHeader className="flex-row flex-wrap items-center justify-between gap-3">
+              <div>
+                <CardTitle>Sectores / pisos</CardTitle>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Cada sector tiene su propio limite de amperios y se balancea de forma independiente del resto del edificio
+                  (util para subsuelos o alas con acometidas electricas separadas). Los cargadores sin sector usan el limite general del edificio.
+                </p>
+              </div>
+              <Dialog open={sectorOpen} onOpenChange={setSectorOpen}>
+                <DialogTrigger asChild>
+                  <Button size="sm"><Plus className="h-4 w-4" />Agregar sector</Button>
+                </DialogTrigger>
+                <DialogContent>
+                  <DialogHeader>
+                    <DialogTitle>Nuevo sector</DialogTitle>
+                    <DialogDescription>Ej: "Subsuelo 1", "Ala Norte".</DialogDescription>
+                  </DialogHeader>
+                  <form onSubmit={handleCreateSector} className="flex flex-col gap-3">
+                    <div>
+                      <Label htmlFor="sectorNombre">Nombre</Label>
+                      <Input id="sectorNombre" required value={sectorForm.nombre} onChange={(e) => setSectorForm({ ...sectorForm, nombre: e.target.value })} />
+                    </div>
+                    <div>
+                      <Label htmlFor="sectorLimite">Limite de amperios de este sector</Label>
+                      <Input
+                        id="sectorLimite"
+                        type="number"
+                        min="0"
+                        value={sectorForm.limite_amperios_totales}
+                        onChange={(e) => setSectorForm({ ...sectorForm, limite_amperios_totales: e.target.value })}
+                      />
+                    </div>
+                    <Button type="submit" className="mt-2">Agregar</Button>
+                  </form>
+                </DialogContent>
+              </Dialog>
+            </CardHeader>
+            <CardContent>
+              {sectores.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No hay sectores creados. Todos los cargadores comparten el limite general del edificio.</p>
+              ) : (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Nombre</TableHead>
+                      <TableHead className="text-right">Limite (A)</TableHead>
+                      <TableHead className="text-right">Cargadores asignados</TableHead>
+                      <TableHead className="text-right">Acciones</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {sectores.map((s) => (
+                      <TableRow key={s.id}>
+                        <TableCell className="font-medium">{s.nombre}</TableCell>
+                        <TableCell className="tabular-nums text-right">{s.limite_amperios_totales ?? '-'}</TableCell>
+                        <TableCell className="tabular-nums text-right">
+                          {cargadores.filter((c) => c.sector_id === s.id).length}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <div className="flex justify-end gap-1">
+                            <Button size="sm" variant="outline" onClick={() => openEditSector(s)} title="Editar">
+                              <Pencil className="h-4 w-4" />
+                            </Button>
+                            <Button size="sm" variant="destructive" onClick={() => handleDeleteSector(s.id)} title="Borrar">
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
+            </CardContent>
+          </Card>
+
+          <Dialog open={editSector != null} onOpenChange={(open) => !open && setEditSector(null)}>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Editar sector</DialogTitle>
+              </DialogHeader>
+              <form onSubmit={handleEditSector} className="flex flex-col gap-3">
+                <div>
+                  <Label htmlFor="editSectorNombre">Nombre</Label>
+                  <Input
+                    id="editSectorNombre"
+                    value={editSectorForm.nombre}
+                    onChange={(e) => setEditSectorForm({ ...editSectorForm, nombre: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="editSectorLimite">Limite de amperios de este sector</Label>
+                  <Input
+                    id="editSectorLimite"
+                    type="number"
+                    min="0"
+                    value={editSectorForm.limite_amperios_totales}
+                    onChange={(e) => setEditSectorForm({ ...editSectorForm, limite_amperios_totales: e.target.value })}
+                  />
+                </div>
+                <Button type="submit" className="mt-2">Guardar cambios</Button>
+              </form>
             </DialogContent>
           </Dialog>
         </TabsContent>
