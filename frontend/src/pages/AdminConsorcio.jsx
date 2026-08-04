@@ -27,7 +27,7 @@ function navItemsFor(rol) {
   ];
 }
 
-const EMPTY_CARGADOR_FORM = { ocpp_id: '', etiqueta: '', charge_point_vendor: '', charge_point_model: '', uf_id: '', sector_id: '' };
+const EMPTY_CARGADOR_FORM = { ocpp_id: '', etiqueta: '', charge_point_vendor: '', charge_point_model: '', uf_id: '', sector_id: '', ocpp_version: '2.0.1' };
 const EMPTY_TARJETA_FORM = { id_tag_ocpp: '', uf_id: '', cargador_id: '' };
 const EMPTY_UNIDAD_FORM = { numero_departamento: '', numero_cochera: '', propietario_nombre: '', propietario_email: '', telefono_propietario: '' };
 const EMPTY_QUICK_FORM = {
@@ -94,7 +94,7 @@ export default function AdminConsorcio() {
   }
 
   const [editCargador, setEditCargador] = useState(null); // cargador row being edited, or null
-  const [editCargadorForm, setEditCargadorForm] = useState({ etiqueta: '', charge_point_vendor: '', charge_point_model: '' });
+  const [editCargadorForm, setEditCargadorForm] = useState({ etiqueta: '', charge_point_vendor: '', charge_point_model: '', ocpp_version: '2.0.1' });
 
   const [paramsForm, setParamsForm] = useState({ limite_amperios_totales: '', costo_kwh_electricidad: '' });
 
@@ -174,6 +174,7 @@ export default function AdminConsorcio() {
       etiqueta: c.etiqueta ?? '',
       charge_point_vendor: c.charge_point_vendor ?? '',
       charge_point_model: c.charge_point_model ?? '',
+      ocpp_version: c.ocpp_version ?? '2.0.1',
     });
   }
 
@@ -446,6 +447,18 @@ export default function AdminConsorcio() {
               <Input id="model" value={cargadorForm.charge_point_model} onChange={(e) => setCargadorForm({ ...cargadorForm, charge_point_model: e.target.value })} />
             </div>
             <div>
+              <Label htmlFor="ocppVersion">Version OCPP</Label>
+              <select
+                id="ocppVersion"
+                value={cargadorForm.ocpp_version}
+                onChange={(e) => setCargadorForm({ ...cargadorForm, ocpp_version: e.target.value })}
+                className="flex h-10 w-full rounded-lg border border-border bg-white px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <option value="2.0.1">2.0.1</option>
+                <option value="1.6">1.6J</option>
+              </select>
+            </div>
+            <div>
               <Label htmlFor="cargadorUf">Unidad funcional</Label>
               <select
                 id="cargadorUf"
@@ -509,6 +522,18 @@ export default function AdminConsorcio() {
                 value={editCargadorForm.charge_point_model}
                 onChange={(e) => setEditCargadorForm({ ...editCargadorForm, charge_point_model: e.target.value })}
               />
+            </div>
+            <div>
+              <Label htmlFor="editOcppVersion">Version OCPP</Label>
+              <select
+                id="editOcppVersion"
+                value={editCargadorForm.ocpp_version}
+                onChange={(e) => setEditCargadorForm({ ...editCargadorForm, ocpp_version: e.target.value })}
+                className="flex h-10 w-full rounded-lg border border-border bg-white px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <option value="2.0.1">2.0.1</option>
+                <option value="1.6">1.6J</option>
+              </select>
             </div>
             <Button type="submit" className="mt-2">Guardar cambios</Button>
           </form>

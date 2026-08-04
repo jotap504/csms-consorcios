@@ -64,7 +64,7 @@ router.get('/consorcios/:id/cargadores', async (req, res) => {
 });
 
 router.post('/consorcios/:id/cargadores', async (req, res) => {
-  const { ocpp_id, etiqueta, charge_point_vendor, charge_point_model, uf_id, sector_id } = req.body ?? {};
+  const { ocpp_id, etiqueta, charge_point_vendor, charge_point_model, uf_id, sector_id, ocpp_version } = req.body ?? {};
   if (!ocpp_id) {
     return res.status(400).json({ error: 'ocpp_id es requerido.' });
   }
@@ -88,9 +88,9 @@ router.post('/consorcios/:id/cargadores', async (req, res) => {
   }
   try {
     const result = await pool.query(
-      `INSERT INTO cargadores (ocpp_id, etiqueta, charge_point_vendor, charge_point_model, consorcio_id, uf_id, sector_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-      [ocpp_id, etiqueta, charge_point_vendor, charge_point_model, req.params.id, uf_id ?? null, sector_id ?? null],
+      `INSERT INTO cargadores (ocpp_id, etiqueta, charge_point_vendor, charge_point_model, consorcio_id, uf_id, sector_id, ocpp_version)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+      [ocpp_id, etiqueta, charge_point_vendor, charge_point_model, req.params.id, uf_id ?? null, sector_id ?? null, ocpp_version === '1.6' ? '1.6' : '2.0.1'],
     );
     res.status(201).json(result.rows[0]);
   } catch (err) {
@@ -102,7 +102,7 @@ router.post('/consorcios/:id/cargadores', async (req, res) => {
 });
 
 router.put('/cargadores/:id', async (req, res) => {
-  const { etiqueta, charge_point_vendor, charge_point_model, uf_id, sector_id } = req.body ?? {};
+  const { etiqueta, charge_point_vendor, charge_point_model, uf_id, sector_id, ocpp_version } = req.body ?? {};
   let consorcioId = null;
   if (uf_id || sector_id) {
     const cargador = await pool.query('SELECT consorcio_id FROM cargadores WHERE id = $1', [req.params.id]);
@@ -133,11 +133,13 @@ router.put('/cargadores/:id', async (req, res) => {
        charge_point_vendor = COALESCE($2, charge_point_vendor),
        charge_point_model = COALESCE($3, charge_point_model),
        uf_id = CASE WHEN $4 THEN $5::int ELSE uf_id END,
-       sector_id = CASE WHEN $6 THEN $7::int ELSE sector_id END
+       sector_id = CASE WHEN $6 THEN $7::int ELSE sector_id END,
+       ocpp_version = COALESCE($9, ocpp_version)
      WHERE id = $8 RETURNING *`,
     [etiqueta ?? null, charge_point_vendor ?? null, charge_point_model ?? null,
       'uf_id' in (req.body ?? {}), uf_id ?? null,
-      'sector_id' in (req.body ?? {}), sector_id ?? null, req.params.id],
+      'sector_id' in (req.body ?? {}), sector_id ?? null, req.params.id,
+      ocpp_version === '1.6' || ocpp_version === '2.0.1' ? ocpp_version : null],
   );
   if (result.rowCount === 0) return res.status(404).json({ error: 'Cargador no encontrado.' });
   res.json(result.rows[0]);
