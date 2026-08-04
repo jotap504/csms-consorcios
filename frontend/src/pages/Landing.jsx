@@ -55,7 +55,7 @@ function HeroGraphic() {
           />
         ))}
       </svg>
-      <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 rounded-full border border-[var(--lp-border)] bg-white/90 px-4 py-1.5 text-xs font-medium text-[var(--lp-fg)] shadow-sm backdrop-blur">
+      <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 rounded-full border border-[var(--lp-border)] bg-white px-4 py-1.5 text-xs font-medium text-[var(--lp-fg)] shadow-sm">
         Balanceo dinamico en tiempo real
       </div>
     </div>
@@ -72,7 +72,7 @@ function Nav() {
     { href: '#contacto', label: 'Contacto' },
   ];
   return (
-    <header className="sticky top-0 z-40 border-b border-[var(--lp-border)] bg-white/80 backdrop-blur-md">
+    <header className="sticky top-0 z-40 border-b border-[var(--lp-border)] bg-white/95">
       <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
         <a href="#inicio" className="lp-heading text-lg font-bold tracking-tight">BILON</a>
         <nav className="hidden items-center gap-8 md:flex">
