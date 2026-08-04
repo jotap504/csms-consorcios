@@ -276,7 +276,7 @@ ${rawContent.slice(0, 40000)}`;
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'anthropic/claude-3.5-sonnet',
+        model: 'anthropic/claude-sonnet-5',
         messages: [{ role: 'user', content: prompt }],
         temperature: 0,
       }),

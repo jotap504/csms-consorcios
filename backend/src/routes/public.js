@@ -54,7 +54,7 @@ router.post('/chat', async (req, res) => {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'anthropic/claude-3.5-sonnet',
+        model: 'anthropic/claude-sonnet-5',
         messages: [{ role: 'system', content: SYSTEM_PROMPT }, ...cleaned],
         temperature: 0.4,
         max_tokens: 400,
