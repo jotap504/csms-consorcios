@@ -1,4 +1,5 @@
 import { Routes, Route, Navigate } from 'react-router-dom';
+import Landing from '@/pages/Landing';
 import Login from '@/pages/Login';
 import ForgotPassword from '@/pages/ForgotPassword';
 import ResetPassword from '@/pages/ResetPassword';
@@ -16,10 +17,16 @@ function RootRedirect() {
   return <Navigate to={session ? homeForRole(session.rol) : '/login'} replace />;
 }
 
+function Root() {
+  const session = getSession();
+  if (session) return <Navigate to={homeForRole(session.rol)} replace />;
+  return <Landing />;
+}
+
 export default function App() {
   return (
     <Routes>
-      <Route path="/" element={<RootRedirect />} />
+      <Route path="/" element={<Root />} />
       <Route path="/login" element={<Login />} />
       <Route path="/forgot-password" element={<ForgotPassword />} />
       <Route path="/reset-password" element={<ResetPassword />} />

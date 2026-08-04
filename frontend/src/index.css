@@ -1,4 +1,5 @@
 @import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&family=Fira+Sans:wght@300;400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=Inter:wght@300;400;500;600;700&display=swap');
 @import 'tailwindcss';
 
 @theme {
@@ -93,4 +94,57 @@
 
 .anim-zap-charging {
   animation: zap-flicker 2.4s infinite, zap-glow 1.5s ease-in-out infinite;
+}
+
+/* --- Landing page (BILON) --- */
+.landing {
+  --lp-bg: #ffffff;
+  --lp-fg: #0a0a0a;
+  --lp-muted: #6b7280;
+  --lp-border: #e5e7eb;
+  --lp-surface: #f7f8fa;
+  --lp-blue: #0066ff;
+  --lp-green: #10b981;
+  font-family: 'Inter', var(--font-sans);
+  background: var(--lp-bg);
+  color: var(--lp-fg);
+}
+
+.landing h1, .landing h2, .landing h3, .landing .lp-heading {
+  font-family: 'Outfit', var(--font-sans);
+}
+
+@keyframes lp-pulse-line {
+  0% { stroke-dashoffset: 240; opacity: 0.2; }
+  50% { opacity: 1; }
+  100% { stroke-dashoffset: 0; opacity: 0.2; }
+}
+
+.lp-energy-line {
+  stroke-dasharray: 8 6;
+  animation: lp-pulse-line 3.2s linear infinite;
+}
+
+@keyframes lp-node-glow {
+  0%, 100% { filter: drop-shadow(0 0 2px currentColor); opacity: 0.7; }
+  50% { filter: drop-shadow(0 0 10px currentColor); opacity: 1; }
+}
+
+.lp-node {
+  animation: lp-node-glow 2.4s ease-in-out infinite;
+}
+
+@keyframes lp-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-10px); }
+}
+
+.lp-float {
+  animation: lp-float 6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lp-energy-line, .lp-node, .lp-float {
+    animation: none !important;
+  }
 }
