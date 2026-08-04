@@ -117,8 +117,8 @@ export default function EnergyFlowDiagram() {
         </div>
         <div className="h-2.5 w-full overflow-hidden rounded-full bg-[var(--lp-surface)]">
           <motion.div
-            className="h-full rounded-full"
-            animate={{ width: `${demand}%`, backgroundColor: gaugeColor }}
+            className="h-full w-full origin-left rounded-full"
+            animate={{ scaleX: demand / 100, backgroundColor: gaugeColor }}
             transition={{ duration: CYCLE_MS / 1000 - 0.3, ease: 'easeInOut' }}
           />
         </div>
