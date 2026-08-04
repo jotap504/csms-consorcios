@@ -1,4 +1,5 @@
 const express = require('express');
+const bcrypt = require('bcryptjs');
 const { pool } = require('../db');
 const { authenticate, requireRole } = require('../auth/middleware');
 const { generateToken } = require('../lib/tokens');
@@ -175,9 +176,12 @@ router.get('/proveedores', async (_req, res) => {
 });
 
 router.post('/proveedores', async (req, res) => {
-  const { nombre_empresa, email_contacto } = req.body ?? {};
-  if (!nombre_empresa || !email_contacto) {
-    return res.status(400).json({ error: 'nombre_empresa y email_contacto son requeridos.' });
+  const { nombre_empresa, email_contacto, password } = req.body ?? {};
+  if (!nombre_empresa || !email_contacto || !password) {
+    return res.status(400).json({ error: 'nombre_empresa, email_contacto y password son requeridos.' });
+  }
+  if (password.length < 8) {
+    return res.status(400).json({ error: 'La contrasena debe tener al menos 8 caracteres.' });
   }
 
   const client = await pool.connect();
@@ -190,25 +194,15 @@ router.post('/proveedores', async (req, res) => {
     );
     const proveedor = proveedorResult.rows[0];
 
-    const inviteToken = generateToken();
-    const inviteExpires = new Date(Date.now() + INVITE_TOKEN_TTL_MS);
+    const passwordHash = await bcrypt.hash(password, 10);
     await client.query(
-      `INSERT INTO usuarios (email, rol, proveedor_id, reset_token, reset_token_expires)
-       VALUES ($1, 'proveedor', $2, $3, $4)
-       ON CONFLICT (email) DO NOTHING`,
-      [email_contacto, proveedor.id, inviteToken, inviteExpires],
+      `INSERT INTO usuarios (email, rol, proveedor_id, password_hash)
+       VALUES ($1, 'proveedor', $2, $3)
+       ON CONFLICT (email) DO UPDATE SET password_hash = $3, proveedor_id = $2, rol = 'proveedor'`,
+      [email_contacto, proveedor.id, passwordHash],
     );
 
     await client.query('COMMIT');
-
-    await sendMail({
-      to: email_contacto,
-      subject: `Acceso a CSMS - ${nombre_empresa}`,
-      html: `<p>Se creo una cuenta de proveedor/tester para ${nombre_empresa}.</p>
-             <p>Elegi tu contrasena para empezar (link valido 7 dias):</p>
-             <p><a href="${FRONTEND_URL}/reset-password?token=${inviteToken}">${FRONTEND_URL}/reset-password?token=${inviteToken}</a></p>`,
-    });
-
     res.status(201).json(proveedor);
   } catch (err) {
     await client.query('ROLLBACK');

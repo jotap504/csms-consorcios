@@ -24,7 +24,7 @@ export default function SuperAdminDashboard() {
     costo_kwh_electricidad: '', plan_id: '',
   });
   const [provOpen, setProvOpen] = useState(false);
-  const [provForm, setProvForm] = useState({ nombre_empresa: '', email_contacto: '' });
+  const [provForm, setProvForm] = useState({ nombre_empresa: '', email_contacto: '', password: '' });
   const [provDetail, setProvDetail] = useState(null);
   const [provTests, setProvTests] = useState([]);
 
@@ -69,7 +69,7 @@ export default function SuperAdminDashboard() {
     e.preventDefault();
     await api.post('/superadmin/proveedores', provForm);
     setProvOpen(false);
-    setProvForm({ nombre_empresa: '', email_contacto: '' });
+    setProvForm({ nombre_empresa: '', email_contacto: '', password: '' });
     loadAll();
   }
 
@@ -235,7 +235,7 @@ export default function SuperAdminDashboard() {
             <DialogContent>
               <DialogHeader>
                 <DialogTitle>Nuevo proveedor</DialogTitle>
-                <DialogDescription>Le llega un mail para elegir su contraseña de acceso.</DialogDescription>
+                <DialogDescription>Le das el usuario y contraseña vos mismo (no se manda mail).</DialogDescription>
               </DialogHeader>
               <form onSubmit={handleCreateProveedor} className="flex flex-col gap-3">
                 <div>
@@ -243,8 +243,12 @@ export default function SuperAdminDashboard() {
                   <Input id="prov_nombre" required value={provForm.nombre_empresa} onChange={(e) => setProvForm({ ...provForm, nombre_empresa: e.target.value })} />
                 </div>
                 <div>
-                  <Label htmlFor="prov_email">Email de contacto</Label>
+                  <Label htmlFor="prov_email">Email (usuario de acceso)</Label>
                   <Input id="prov_email" type="email" required value={provForm.email_contacto} onChange={(e) => setProvForm({ ...provForm, email_contacto: e.target.value })} />
+                </div>
+                <div>
+                  <Label htmlFor="prov_password">Contraseña</Label>
+                  <Input id="prov_password" type="text" required minLength={8} placeholder="Minimo 8 caracteres" value={provForm.password} onChange={(e) => setProvForm({ ...provForm, password: e.target.value })} />
                 </div>
                 <Button type="submit" className="mt-2">Crear proveedor</Button>
               </form>
