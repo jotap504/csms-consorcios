@@ -347,7 +347,7 @@ async function endSession({ stationId, transactionId, timestamp, endWh: endWhInp
 }
 
 async function handleTransactionEvent(context, payload) {
-  const stationId = context.ocppConnectionName;
+  const stationId = context.ocppConnectionName ?? context.stationId;
   const transactionId = payload.transactionInfo.transactionId;
   switch (payload.eventType) {
     case 'Started':
