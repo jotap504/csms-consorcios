@@ -98,6 +98,10 @@
 
 /* --- Landing page (BILON) --- */
 .landing {
+  /* Chrome/Blink "scroll anchoring" latches onto the animated hero graphic
+     (filter/transform changes read as layout shifts) and keeps forcing the
+     scroll position back to it on mobile - this opts the whole page out. */
+  overflow-anchor: none;
   --lp-bg: #ffffff;
   --lp-fg: #0a0a0a;
   --lp-muted: #6b7280;
