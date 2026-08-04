@@ -187,6 +187,15 @@
 .lp-hero-delay-3 { animation-delay: 0.6s; }
 .lp-hero-delay-4 { animation-delay: 0.8s; }
 
+@keyframes lp-hero-bg-pan {
+  0%, 100% { transform: scale(1.08) translate(0, 0); }
+  50% { transform: scale(1.16) translate(-1%, -1%); }
+}
+
+.lp-hero-bg-pan {
+  animation: lp-hero-bg-pan 24s ease-in-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .lp-energy-line, .lp-node, .lp-float {
     animation: none !important;
@@ -195,5 +204,8 @@
     animation: none !important;
     opacity: 1;
     transform: none;
+  }
+  .lp-hero-bg-pan {
+    animation: none !important;
   }
 }
