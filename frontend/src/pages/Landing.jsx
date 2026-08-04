@@ -566,7 +566,7 @@ function Footer() {
 function ChatWidget() {
   const [open, setOpen] = useState(false);
   const [messages, setMessages] = useState([
-    { role: 'assistant', content: 'Hola! Soy el asistente de BILON. Contame sobre tu edificio y te ayudo a ver si nuestra solucion encaja.' },
+    { role: 'assistant', content: 'Hola! Soy Jimena, CEO de BILON y ademas la rompo toda al padel. Pero si viniste aca es para hablar de vehiculos electricos, o no? Contame como te llamas y cual es tu consulta.' },
   ]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
