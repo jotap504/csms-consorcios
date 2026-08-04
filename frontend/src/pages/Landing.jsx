@@ -29,11 +29,27 @@ function Reveal({ children, className = '', delay = 0 }) {
   );
 }
 
-// --- Hero graphic: a building's floors (each with a wallbox + car) wired to
-// a central EVMS hub, energy pulses traveling along the connectors. Real
-// icons instead of empty boxes, so the diagram reads on its own.
+// --- Hero graphic: 5 wallboxes wired to a central EVMS hub. Cycles through
+// the DLM story - 3 cars sharing 33% each, a 4th arrives and all drop to
+// 25%, a 5th arrives and gets queued instead of dropping everyone further.
+// Only opacity/color transitions (no layout-affecting properties - see the
+// horizontal-overflow bug this page already shipped once from an animation
+// that touched layout).
+const HERO_STEPS = [
+  { active: 3, queued: false, pct: 33 },
+  { active: 4, queued: false, pct: 25 },
+  { active: 4, queued: true, pct: 25 },
+];
+const HERO_CYCLE_MS = 2600;
+
 function HeroGraphic() {
-  const floors = [5, 4, 3, 2, 1];
+  const [step, setStep] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setStep((s) => (s + 1) % HERO_STEPS.length), HERO_CYCLE_MS);
+    return () => clearInterval(id);
+  }, []);
+  const { active, queued, pct } = HERO_STEPS[step];
+
   return (
     <div className="relative mx-auto w-full max-w-md lp-float">
       <div className="flex items-stretch gap-3 sm:gap-5">
@@ -41,16 +57,34 @@ function HeroGraphic() {
           <div className="mb-1 flex items-center gap-1.5 px-1.5 text-[10px] font-semibold text-[var(--lp-muted)]">
             <Building2 className="h-3.5 w-3.5" /> Edificio
           </div>
-          {floors.map((n, i) => (
-            <div key={n} className="flex items-center gap-2 rounded-lg bg-[var(--lp-surface)] px-2.5 py-2">
-              <PlugZap className="h-4 w-4 shrink-0 text-[var(--lp-blue)] lp-node" style={{ animationDelay: `${i * 0.3}s` }} />
-              <Car className="h-4 w-4 shrink-0 text-[var(--lp-fg)]" />
-              <span className="ml-auto text-[10px] font-medium text-[var(--lp-muted)]">P{n}</span>
-              <div className="w-5 sm:w-8">
-                <FlowLine />
+          {[0, 1, 2, 3, 4].map((i) => {
+            const isQueuedSlot = queued && i === active;
+            const isCharging = i < active;
+            return (
+              <div
+                key={i}
+                className={`flex items-center gap-2 rounded-lg px-2.5 py-2 transition-colors duration-500 ${
+                  isQueuedSlot ? 'bg-amber-50' : 'bg-[var(--lp-surface)]'
+                } ${!isCharging && !isQueuedSlot ? 'opacity-40' : ''}`}
+              >
+                <PlugZap
+                  className={`h-4 w-4 shrink-0 transition-colors duration-500 ${
+                    isCharging ? 'text-[var(--lp-blue)] lp-node' : isQueuedSlot ? 'text-amber-500' : 'text-[var(--lp-muted)]'
+                  }`}
+                  style={isCharging ? { animationDelay: `${i * 0.3}s` } : undefined}
+                />
+                <Car className={`h-4 w-4 shrink-0 transition-colors duration-500 ${isQueuedSlot ? 'text-amber-600' : 'text-[var(--lp-fg)]'}`} />
+                <span className="text-[10px] font-medium text-[var(--lp-muted)]">WB{i + 1}</span>
+                <span className="ml-auto min-w-[52px] text-right text-[10px] font-bold">
+                  {isCharging && <span className="text-[var(--lp-blue)]">{pct}%</span>}
+                  {isQueuedSlot && <span className="text-amber-600">En cola</span>}
+                </span>
+                <div className="w-5 sm:w-8">
+                  <FlowLine />
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
         <div className="flex shrink-0 flex-col items-center justify-center gap-1 self-center rounded-full border-2 border-[var(--lp-blue)] bg-white p-4 shadow-md lp-node text-[var(--lp-blue)]">
           <Cpu className="h-7 w-7" />
@@ -78,7 +112,9 @@ function Nav() {
   return (
     <header className="sticky top-0 z-40 border-b border-[var(--lp-border)] bg-white/95">
       <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
-        <a href="#inicio" className="lp-heading text-lg font-bold tracking-tight">BILON</a>
+        <a href="#inicio" className="flex items-center">
+          <img src="/logo.png" alt="BILON Smart Buildings" className="h-8 w-auto" />
+        </a>
         <nav className="hidden items-center gap-8 md:flex">
           {links.map((l) => (
             <a key={l.href} href={l.href} className="text-sm text-[var(--lp-muted)] transition-colors hover:text-[var(--lp-fg)]">
