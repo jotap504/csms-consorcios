@@ -15,7 +15,7 @@ function lerpColor(a, b, t) {
 
 function FlowLine({ vertical = false }) {
   return (
-    <div className={vertical ? 'relative h-10 w-0.5 bg-[var(--lp-border)]' : 'relative h-0.5 flex-1 bg-[var(--lp-border)]'}>
+    <div className={vertical ? 'relative h-10 w-0.5 overflow-hidden bg-[var(--lp-border)]' : 'relative h-0.5 flex-1 overflow-hidden bg-[var(--lp-border)]'}>
       <div
         className={
           vertical
