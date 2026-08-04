@@ -590,9 +590,9 @@ function ChatWidget() {
   }
 
   return (
-    <div className="fixed bottom-6 right-6 z-50">
+    <div className="fixed bottom-4 right-4 z-50 sm:bottom-6 sm:right-6">
       {open && (
-        <div className="mb-3 flex h-[28rem] w-80 flex-col overflow-hidden rounded-2xl border border-[var(--lp-border)] bg-white shadow-2xl">
+        <div className="mb-3 flex h-[min(28rem,70dvh)] w-[min(20rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-2xl border border-[var(--lp-border)] bg-white shadow-2xl">
           <div className="flex items-center justify-between border-b border-[var(--lp-border)] bg-[var(--lp-fg)] px-4 py-3">
             <span className="text-sm font-semibold text-white">Asistente BILON</span>
             <button type="button" onClick={() => setOpen(false)} className="cursor-pointer text-white/80 hover:text-white" aria-label="Cerrar chat">
