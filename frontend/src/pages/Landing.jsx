@@ -7,6 +7,7 @@ import {
   Wallet, Settings2, FileText, PlugZap, Menu, PlayCircle,
 } from 'lucide-react';
 import { api } from '@/lib/api';
+import EnergyFlowDiagram from '@/components/landing/EnergyFlowDiagram';
 
 const fadeUp = {
   hidden: { opacity: 0, y: 24 },
@@ -236,6 +237,26 @@ function Solution() {
             </Reveal>
           ))}
         </div>
+      </div>
+    </section>
+  );
+}
+
+function LiveDemo() {
+  return (
+    <section className="bg-[var(--lp-surface)] px-6 py-24">
+      <div className="mx-auto max-w-4xl">
+        <Reveal>
+          <h2 className="lp-heading text-center text-3xl font-bold tracking-tight text-[var(--lp-fg)] md:text-4xl">
+            El balanceo de carga, en accion
+          </h2>
+          <p className="mx-auto mt-4 max-w-xl text-center text-[var(--lp-muted)]">
+            Mira como el sistema reparte la energia disponible en tiempo real, sin superar nunca la capacidad del edificio.
+          </p>
+        </Reveal>
+        <Reveal delay={0.1} className="mt-12">
+          <EnergyFlowDiagram />
+        </Reveal>
       </div>
     </section>
   );
@@ -621,6 +642,7 @@ export default function Landing() {
       <Hero />
       <Problem />
       <Solution />
+      <LiveDemo />
       <HowItWorks />
       <Benefits />
       <Platform />

@@ -143,6 +143,22 @@
   animation: lp-float 6s ease-in-out infinite;
 }
 
+@keyframes lp-flow-h {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(1000%); }
+}
+
+@keyframes lp-flow-v {
+  from { transform: translateY(-100%); }
+  to { transform: translateY(1000%); }
+}
+
+@keyframes lp-chevron-drop {
+  0% { transform: translateY(-6px); opacity: 0; }
+  30% { opacity: 1; }
+  100% { transform: translateY(18px); opacity: 0; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .lp-energy-line, .lp-node, .lp-float {
     animation: none !important;
