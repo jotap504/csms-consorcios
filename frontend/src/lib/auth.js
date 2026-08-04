@@ -1,6 +1,6 @@
-export function saveSession({ token, rol, consorcioId, ufId }) {
+export function saveSession({ token, rol, consorcioId, ufId, proveedorId }) {
   localStorage.setItem('csms_token', token);
-  localStorage.setItem('csms_user', JSON.stringify({ rol, consorcioId, ufId }));
+  localStorage.setItem('csms_user', JSON.stringify({ rol, consorcioId, ufId, proveedorId }));
 }
 
 export function getSession() {
@@ -25,6 +25,8 @@ export function homeForRole(rol) {
       return '/consorcio';
     case 'residente':
       return '/residente';
+    case 'proveedor':
+      return '/proveedor';
     default:
       return '/login';
   }

@@ -10,6 +10,7 @@ function signToken(user) {
       rol: user.rol,
       consorcioId: user.consorcio_id,
       ufId: user.uf_id,
+      proveedorId: user.proveedor_id,
     },
     SECRET,
     { expiresIn: '8h' },

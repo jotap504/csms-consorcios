@@ -54,7 +54,9 @@ function powerKw(meterValue) {
 
 async function getOcppVersion(stationId) {
   const r = await pool.query('SELECT ocpp_version FROM cargadores WHERE ocpp_id = $1', [stationId]);
-  return r.rows[0]?.ocpp_version ?? '2.0.1';
+  if (r.rowCount > 0) return r.rows[0].ocpp_version;
+  const p = await pool.query('SELECT ocpp_version FROM proveedor_cargadores WHERE ocpp_id = $1', [stationId]);
+  return p.rows[0]?.ocpp_version ?? '2.0.1';
 }
 
 async function recordLectura(stationId, transactionId, consorcioId, timestamp, whReading) {
@@ -253,6 +255,19 @@ async function startSession({ stationId, transactionId, idTag, timestamp, startW
     [stationId],
   );
   if (cargador.rowCount === 0) {
+    // Not a real (billed) consorcio charger - maybe a provider's test bench
+    // unit instead. Those get live status but never touch billing/DLM.
+    const proveedorCargador = await pool.query('SELECT 1 FROM proveedor_cargadores WHERE ocpp_id = $1', [stationId]);
+    if (proveedorCargador.rowCount > 0) {
+      await pool.query(
+        `INSERT INTO cargador_estado_actual (cargador_ocpp_id, conectado, transaction_id_ocpp, updated_at)
+         VALUES ($1, TRUE, $2, NOW())
+         ON CONFLICT (cargador_ocpp_id) DO UPDATE SET conectado = TRUE, transaction_id_ocpp = $2, updated_at = NOW()`,
+        [stationId, String(transactionId)],
+      );
+      console.log(`[Started][Proveedor] ${stationId} tx=${transactionId}`);
+      return;
+    }
     console.warn(`[Started] Cargador desconocido para el sistema SaaS: ${stationId}, se ignora la sesion.`);
     return;
   }
@@ -316,6 +331,16 @@ async function endSession({ stationId, transactionId, timestamp, endWh: endWhInp
       [String(transactionId), stationId],
     );
     if (row.rowCount === 0) {
+      const proveedorCargador = await pool.query('SELECT 1 FROM proveedor_cargadores WHERE ocpp_id = $1', [stationId]);
+      if (proveedorCargador.rowCount > 0) {
+        await pool.query(
+          `UPDATE cargador_estado_actual SET transaction_id_ocpp = NULL, conectado = FALSE, updated_at = NOW()
+           WHERE cargador_ocpp_id = $1`,
+          [stationId],
+        );
+        console.log(`[Ended][Proveedor] ${stationId} tx=${transactionId}`);
+        return;
+      }
       console.warn(`[Ended] No se encontro sesion abierta para ${key}, se ignora.`);
       return;
     }

@@ -8,6 +8,7 @@ import InstaladorHome from '@/pages/InstaladorHome';
 import AdminConsorcio from '@/pages/AdminConsorcio';
 import ConsorcioDashboard from '@/pages/ConsorcioDashboard';
 import ResidenteDashboard from '@/pages/ResidenteDashboard';
+import ProveedorDashboard from '@/pages/ProveedorDashboard';
 import CargarCarga from '@/pages/CargarCarga';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import { getSession, homeForRole } from '@/lib/auth';
@@ -67,6 +68,14 @@ export default function App() {
         element={
           <ProtectedRoute role="residente">
             <ResidenteDashboard />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/proveedor"
+        element={
+          <ProtectedRoute role="proveedor">
+            <ProveedorDashboard />
           </ProtectedRoute>
         }
       />

@@ -11,6 +11,7 @@ app.use('/superadmin', require('./routes/superadmin'));
 app.use('/admin', require('./routes/admin'));
 app.use('/consorcio', require('./routes/consorcio'));
 app.use('/residente', require('./routes/residente'));
+app.use('/proveedor', require('./routes/proveedor'));
 app.use('/medidor', require('./routes/medidor'));
 app.use('/public', require('./routes/public'));
 

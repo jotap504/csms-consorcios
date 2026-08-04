@@ -16,7 +16,7 @@ router.post('/login', async (req, res) => {
   }
 
   const result = await pool.query(
-    'SELECT id, email, password_hash, rol, consorcio_id, uf_id FROM usuarios WHERE email = $1 AND activo = TRUE',
+    'SELECT id, email, password_hash, rol, consorcio_id, uf_id, proveedor_id FROM usuarios WHERE email = $1 AND activo = TRUE',
     [email],
   );
   const user = result.rows[0];
@@ -30,6 +30,7 @@ router.post('/login', async (req, res) => {
     rol: user.rol,
     consorcioId: user.consorcio_id,
     ufId: user.uf_id,
+    proveedorId: user.proveedor_id,
   });
 });
 
