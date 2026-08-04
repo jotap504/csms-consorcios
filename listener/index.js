@@ -24,6 +24,12 @@ function sessionKey(stationId, transactionId) {
   return `${stationId}::${transactionId}`;
 }
 
+// sampledValue units live at sv.unitOfMeasure.unit in OCPP 2.0.1 but flat at
+// sv.unit in OCPP 1.6 - this reads whichever shape is present.
+function sampleUnit(sv) {
+  return sv.unitOfMeasure?.unit ?? sv.unit;
+}
+
 function energyWh(meterValue) {
   if (!Array.isArray(meterValue) || meterValue.length === 0) return null;
   const last = meterValue[meterValue.length - 1];
@@ -32,7 +38,7 @@ function energyWh(meterValue) {
   );
   if (!sample) return null;
   const value = Number(sample.value);
-  const unit = sample.unitOfMeasure?.unit;
+  const unit = sampleUnit(sample);
   return unit === 'kWh' ? value * 1000 : value;
 }
 
@@ -42,8 +48,13 @@ function powerKw(meterValue) {
   const sample = (last.sampledValue || []).find((sv) => sv.measurand === 'Power.Active.Import');
   if (!sample) return null;
   const value = Number(sample.value);
-  const unit = sample.unitOfMeasure?.unit;
+  const unit = sampleUnit(sample);
   return unit === 'W' ? value / 1000 : value;
+}
+
+async function getOcppVersion(stationId) {
+  const r = await pool.query('SELECT ocpp_version FROM cargadores WHERE ocpp_id = $1', [stationId]);
+  return r.rows[0]?.ocpp_version ?? '2.0.1';
 }
 
 async function recordLectura(stationId, transactionId, consorcioId, timestamp, whReading) {
@@ -83,24 +94,43 @@ async function setCargadorEstado(ocppId, ampsAsignados, enCola) {
 
 async function pushChargingProfile(ocppId, maxAmps) {
   const profileId = Date.now() % 1000000;
-  const url = `${CITRINEOS_REST_URL}/ocpp/2.0.1/smartcharging/setChargingProfile?identifier=${encodeURIComponent(ocppId)}&tenantId=1`;
-  const body = {
-    evseId: 0,
-    chargingProfile: {
-      id: profileId,
-      stackLevel: 0,
-      chargingProfilePurpose: 'ChargingStationMaxProfile',
-      chargingProfileKind: 'Absolute',
-      chargingSchedule: [
-        {
-          id: profileId,
+  const ocppVersion = await getOcppVersion(ocppId);
+  const is16 = ocppVersion === '1.6';
+  const url = is16
+    ? `${CITRINEOS_REST_URL}/ocpp/1.6/smartcharging/setChargingProfile?identifier=${encodeURIComponent(ocppId)}&tenantId=1`
+    : `${CITRINEOS_REST_URL}/ocpp/2.0.1/smartcharging/setChargingProfile?identifier=${encodeURIComponent(ocppId)}&tenantId=1`;
+  const body = is16
+    ? {
+      connectorId: 1,
+      csChargingProfiles: {
+        chargingProfileId: profileId,
+        stackLevel: 0,
+        chargingProfilePurpose: 'ChargingStationMaxProfile',
+        chargingProfileKind: 'Absolute',
+        chargingSchedule: {
           chargingRateUnit: 'A',
           startSchedule: new Date().toISOString(),
           chargingSchedulePeriod: [{ startPeriod: 0, limit: maxAmps }],
         },
-      ],
-    },
-  };
+      },
+    }
+    : {
+      evseId: 0,
+      chargingProfile: {
+        id: profileId,
+        stackLevel: 0,
+        chargingProfilePurpose: 'ChargingStationMaxProfile',
+        chargingProfileKind: 'Absolute',
+        chargingSchedule: [
+          {
+            id: profileId,
+            chargingRateUnit: 'A',
+            startSchedule: new Date().toISOString(),
+            chargingSchedulePeriod: [{ startPeriod: 0, limit: maxAmps }],
+          },
+        ],
+      },
+    };
   try {
     const res = await fetch(url, {
       method: 'POST',
@@ -214,10 +244,10 @@ async function rebalanceGroup({ consorcioId, sectorId }) {
   ]);
 }
 
-async function handleStarted(context, payload) {
-  const stationId = context.ocppConnectionName;
-  const transactionId = payload.transactionInfo.transactionId;
-
+// Core session lifecycle, shared between OCPP 2.0.1 (TransactionEvent) and
+// OCPP 1.6 (StartTransaction/MeterValues/StopTransaction) - each protocol's
+// handler normalizes its payload shape into these params before calling in.
+async function startSession({ stationId, transactionId, idTag, timestamp, startWh }) {
   const cargador = await pool.query(
     'SELECT id, consorcio_id, sector_id FROM cargadores WHERE ocpp_id = $1',
     [stationId],
@@ -235,7 +265,6 @@ async function handleStarted(context, payload) {
   const precioKwh = consorcio.rows[0]?.costo_kwh_electricidad ?? 0;
 
   let ufId = null;
-  const idTag = payload.idToken?.idToken;
   if (idTag) {
     const uf = await pool.query(
       `SELECT uf.id FROM unidades_funcionales uf
@@ -246,32 +275,23 @@ async function handleStarted(context, payload) {
     ufId = uf.rows[0]?.id ?? null;
   }
 
-  const startWh = energyWh(payload.meterValue) ?? 0;
-
   await pool.query(
     `INSERT INTO liquidacion_sesiones
       (transaction_id_ocpp, consorcio_id, uf_id, cargador_ocpp_id, fecha_inicio,
        kwh_consumidos, precio_kwh_aplicado, monto_total_expensa, liquidado_en_expensas)
      VALUES ($1, $2, $3, $4, $5, 0, $6, 0, FALSE)`,
-    [String(transactionId), consorcioId, ufId, stationId, payload.timestamp, precioKwh],
+    [String(transactionId), consorcioId, ufId, stationId, timestamp, precioKwh],
   );
 
   openSessions.set(sessionKey(stationId, transactionId), { startWh, precioKwh, consorcioId, sectorId });
-  await recordLectura(stationId, transactionId, consorcioId, payload.timestamp, {
-    wh: startWh,
-    powerKw: powerKw(payload.meterValue),
-  });
+  await recordLectura(stationId, transactionId, consorcioId, timestamp, { wh: startWh, powerKw: null });
   console.log(`[Started] ${stationId} tx=${transactionId} uf=${ufId ?? '-'} precioKwh=${precioKwh}`);
   await rebalanceGroup({ consorcioId, sectorId });
 }
 
-async function handleUpdated(context, payload) {
-  const stationId = context.ocppConnectionName;
-  const transactionId = payload.transactionInfo.transactionId;
-  const key = sessionKey(stationId, transactionId);
-
-  const wh = energyWh(payload.meterValue);
+async function updateSession({ stationId, transactionId, timestamp, wh, powerKw: pKw }) {
   if (wh == null) return; // no meter reading in this update, nothing to chart
+  const key = sessionKey(stationId, transactionId);
 
   let consorcioId = openSessions.get(key)?.consorcioId;
   if (consorcioId === undefined) {
@@ -279,15 +299,10 @@ async function handleUpdated(context, payload) {
   }
   if (consorcioId == null) return;
 
-  await recordLectura(stationId, transactionId, consorcioId, payload.timestamp, {
-    wh,
-    powerKw: powerKw(payload.meterValue),
-  });
+  await recordLectura(stationId, transactionId, consorcioId, timestamp, { wh, powerKw: pKw ?? null });
 }
 
-async function handleEnded(context, payload) {
-  const stationId = context.ocppConnectionName;
-  const transactionId = payload.transactionInfo.transactionId;
+async function endSession({ stationId, transactionId, timestamp, endWh: endWhInput }) {
   const key = sessionKey(stationId, transactionId);
 
   let { startWh, precioKwh, consorcioId, sectorId } = openSessions.get(key) ?? {};
@@ -310,23 +325,20 @@ async function handleEnded(context, payload) {
     sectorId = row.rows[0].sector_id;
   }
 
-  const endWh = energyWh(payload.meterValue) ?? startWh;
+  const endWh = endWhInput ?? startWh;
   const kwh = Math.max(0, (endWh - startWh) / 1000);
   const monto = kwh * precioKwh;
-  const periodo = payload.timestamp.slice(0, 7);
+  const periodo = timestamp.slice(0, 7);
 
   await pool.query(
     `UPDATE liquidacion_sesiones
      SET fecha_fin = $1, kwh_consumidos = $2, monto_total_expensa = $3, periodo_expensa = $4
      WHERE transaction_id_ocpp = $5 AND cargador_ocpp_id = $6 AND fecha_fin IS NULL`,
-    [payload.timestamp, kwh, monto, periodo, String(transactionId), stationId],
+    [timestamp, kwh, monto, periodo, String(transactionId), stationId],
   );
 
   if (consorcioId != null) {
-    await recordLectura(stationId, transactionId, consorcioId, payload.timestamp, {
-      wh: endWh,
-      powerKw: 0,
-    });
+    await recordLectura(stationId, transactionId, consorcioId, timestamp, { wh: endWh, powerKw: 0 });
   }
 
   openSessions.delete(key);
@@ -335,23 +347,94 @@ async function handleEnded(context, payload) {
 }
 
 async function handleTransactionEvent(context, payload) {
+  const stationId = context.ocppConnectionName;
+  const transactionId = payload.transactionInfo.transactionId;
   switch (payload.eventType) {
     case 'Started':
-      return handleStarted(context, payload);
+      return startSession({
+        stationId,
+        transactionId,
+        idTag: payload.idToken?.idToken,
+        timestamp: payload.timestamp,
+        startWh: energyWh(payload.meterValue) ?? 0,
+      });
     case 'Updated':
-      return handleUpdated(context, payload);
+      return updateSession({
+        stationId,
+        transactionId,
+        timestamp: payload.timestamp,
+        wh: energyWh(payload.meterValue),
+        powerKw: powerKw(payload.meterValue),
+      });
     case 'Ended':
-      return handleEnded(context, payload);
+      return endSession({
+        stationId,
+        transactionId,
+        timestamp: payload.timestamp,
+        endWh: energyWh(payload.meterValue),
+      });
     default:
       return;
   }
+}
+
+// OCPP 1.6: transactionId is assigned by the CSMS itself and only appears in
+// the StartTransaction.conf (the response), not in the station's request. We
+// stash the request's connectorId/idTag/meterStart here keyed by correlationId,
+// then pick it up when the matching response arrives with the assigned id.
+const pendingStarts16 = new Map();
+
+function pendingKey16(stationId, correlationId) {
+  return `${stationId}::${correlationId}`;
+}
+
+async function handleOcpp16StartRequest(context, payload) {
+  pendingStarts16.set(pendingKey16(context.stationId, context.correlationId), {
+    idTag: payload.idTag,
+    startWh: Number(payload.meterStart) || 0,
+    timestamp: payload.timestamp,
+  });
+}
+
+async function handleOcpp16StartResponse(context, payload) {
+  const key = pendingKey16(context.stationId, context.correlationId);
+  const pending = pendingStarts16.get(key);
+  pendingStarts16.delete(key);
+  if (!pending || payload.transactionId == null) return;
+  await startSession({
+    stationId: context.stationId,
+    transactionId: payload.transactionId,
+    idTag: pending.idTag,
+    timestamp: pending.timestamp,
+    startWh: pending.startWh,
+  });
+}
+
+async function handleOcpp16MeterValues(context, payload) {
+  if (payload.transactionId == null) return; // out-of-transaction reading, nothing to bill
+  await updateSession({
+    stationId: context.stationId,
+    transactionId: payload.transactionId,
+    timestamp: new Date().toISOString(),
+    wh: energyWh(payload.meterValue),
+    powerKw: powerKw(payload.meterValue),
+  });
+}
+
+async function handleOcpp16StopTransaction(context, payload) {
+  await endSession({
+    stationId: context.stationId,
+    transactionId: payload.transactionId,
+    timestamp: payload.timestamp,
+    endWh: payload.meterStop != null ? Number(payload.meterStop) : null,
+  });
 }
 
 // Fail-safe default: whenever a station (re)connects, cap it at the minimum
 // unless it's reconnecting mid-session (e.g. brief WiFi drop), in which case
 // we restore its fair share instead of yanking an active car down to 6A.
 async function handleBootNotification(context) {
-  const stationId = context.ocppConnectionName;
+  const stationId = context.ocppConnectionName ?? context.stationId;
   const activeGroup = await getActiveGroupForStation(stationId);
   if (activeGroup != null) {
     const grupoLabel = activeGroup.sectorId != null ? `sector ${activeGroup.sectorId}` : `consorcio ${activeGroup.consorcioId}`;
@@ -367,8 +450,8 @@ async function handleBootNotification(context) {
 // Reporta si hay un vehiculo fisicamente enchufado en el conector,
 // independiente de si ya esta autorizado/cargando (eso lo cubre TransactionEvent).
 async function handleStatusNotification(context, payload) {
-  const stationId = context.ocppConnectionName;
-  const status = payload.connectorStatus;
+  const stationId = context.ocppConnectionName ?? context.stationId;
+  const status = payload.connectorStatus ?? payload.status;
   const conectado = status === 'Occupied' ? true : status === 'Available' ? false : null;
 
   await pool.query(
@@ -407,8 +490,35 @@ async function main() {
     state: '1',
     action: 'StatusNotification',
   });
+  // OCPP 1.6 events - StartTransaction needs both the station's request (has
+  // connectorId/idTag, no transactionId yet) and the CSMS's own response
+  // (has the transactionId it just assigned) - see handleOcpp16Start*.
+  await channel.bindQueue(QUEUE, EXCHANGE, '', {
+    'x-match': 'all',
+    origin: 'cs',
+    state: '1',
+    action: 'StartTransaction',
+  });
+  await channel.bindQueue(QUEUE, EXCHANGE, '', {
+    'x-match': 'all',
+    origin: 'csms',
+    state: '2',
+    action: 'StartTransaction',
+  });
+  await channel.bindQueue(QUEUE, EXCHANGE, '', {
+    'x-match': 'all',
+    origin: 'cs',
+    state: '1',
+    action: 'StopTransaction',
+  });
+  await channel.bindQueue(QUEUE, EXCHANGE, '', {
+    'x-match': 'all',
+    origin: 'cs',
+    state: '1',
+    action: 'MeterValues',
+  });
 
-  console.log(`Escuchando eventos TransactionEvent/BootNotification/StatusNotification en cola "${QUEUE}"...`);
+  console.log(`Escuchando eventos OCPP 2.0.1 (TransactionEvent) y 1.6 (Start/Stop/MeterValues) en cola "${QUEUE}"...`);
 
   // Safety net: re-balance periodically in case a Started/Ended event was
   // missed (e.g. listener was briefly down) and the last pushed profile is
@@ -433,12 +543,26 @@ async function main() {
     if (!msg) return;
     try {
       const body = JSON.parse(msg.content.toString('utf-8'));
-      if (body.action === 'BootNotification') {
-        await handleBootNotification(body.context);
-      } else if (body.action === 'StatusNotification') {
-        await handleStatusNotification(body.context, body.payload);
-      } else {
-        await handleTransactionEvent(body.context, body.payload);
+      // Requests (from the station) use unprefixed keys; CSMS-originated
+      // responses (e.g. StartTransaction.conf, which carries the assigned
+      // transactionId) use the same shape but with an underscore prefix.
+      const isResponse = body.action === undefined && body._action !== undefined;
+      const action = isResponse ? body._action : body.action;
+      const context = isResponse ? body._context : body.context;
+      const payload = isResponse ? body._payload : body.payload;
+
+      if (action === 'BootNotification') {
+        await handleBootNotification(context);
+      } else if (action === 'StatusNotification') {
+        await handleStatusNotification(context, payload);
+      } else if (action === 'StartTransaction') {
+        await (isResponse ? handleOcpp16StartResponse(context, payload) : handleOcpp16StartRequest(context, payload));
+      } else if (action === 'StopTransaction') {
+        await handleOcpp16StopTransaction(context, payload);
+      } else if (action === 'MeterValues') {
+        await handleOcpp16MeterValues(context, payload);
+      } else if (action === 'TransactionEvent') {
+        await handleTransactionEvent(context, payload);
       }
       channel.ack(msg);
     } catch (err) {

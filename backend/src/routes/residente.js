@@ -193,7 +193,7 @@ router.get('/cargadores/:ocppId/disponibilidad', async (req, res) => {
 
 router.post('/cargadores/:ocppId/iniciar', async (req, res) => {
   const cargador = await pool.query(
-    'SELECT id FROM cargadores WHERE ocpp_id = $1 AND uf_id = $2',
+    'SELECT id, ocpp_version FROM cargadores WHERE ocpp_id = $1 AND uf_id = $2',
     [req.params.ocppId, req.user.ufId],
   );
   if (cargador.rowCount === 0) {
@@ -216,17 +216,18 @@ router.post('/cargadores/:ocppId/iniciar', async (req, res) => {
     return res.status(409).json({ error: 'Este cargador ya tiene una carga en curso.' });
   }
 
-  const remoteStartId = Date.now() % 1000000;
-  const url = `${CITRINEOS_REST_URL}/ocpp/2.0.1/evdriver/requestStartTransaction?identifier=${encodeURIComponent(req.params.ocppId)}&tenantId=1`;
+  const is16 = cargador.rows[0].ocpp_version === '1.6';
+  const url = is16
+    ? `${CITRINEOS_REST_URL}/ocpp/1.6/evdriver/remoteStartTransaction?identifier=${encodeURIComponent(req.params.ocppId)}&tenantId=1`
+    : `${CITRINEOS_REST_URL}/ocpp/2.0.1/evdriver/requestStartTransaction?identifier=${encodeURIComponent(req.params.ocppId)}&tenantId=1`;
+  const body = is16
+    ? { connectorId: 1, idTag: tarjeta.rows[0].id_tag_ocpp }
+    : { remoteStartId: Date.now() % 1000000, idToken: { idToken: tarjeta.rows[0].id_tag_ocpp, type: 'ISO14443' }, evseId: 1 };
   try {
     const citrineRes = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        remoteStartId,
-        idToken: { idToken: tarjeta.rows[0].id_tag_ocpp, type: 'ISO14443' },
-        evseId: 1,
-      }),
+      body: JSON.stringify(body),
     });
     const data = await citrineRes.json();
     const confirmation = Array.isArray(data) ? data[0] : data;
@@ -242,7 +243,7 @@ router.post('/cargadores/:ocppId/iniciar', async (req, res) => {
 
 router.post('/cargadores/:ocppId/detener', async (req, res) => {
   const cargador = await pool.query(
-    'SELECT id FROM cargadores WHERE ocpp_id = $1 AND uf_id = $2',
+    'SELECT id, ocpp_version FROM cargadores WHERE ocpp_id = $1 AND uf_id = $2',
     [req.params.ocppId, req.user.ufId],
   );
   if (cargador.rowCount === 0) {
@@ -259,12 +260,18 @@ router.post('/cargadores/:ocppId/detener', async (req, res) => {
     return res.status(404).json({ error: 'No hay una carga activa para detener.' });
   }
 
-  const url = `${CITRINEOS_REST_URL}/ocpp/2.0.1/evdriver/requestStopTransaction?identifier=${encodeURIComponent(req.params.ocppId)}&tenantId=1`;
+  const is16 = cargador.rows[0].ocpp_version === '1.6';
+  const url = is16
+    ? `${CITRINEOS_REST_URL}/ocpp/1.6/evdriver/remoteStopTransaction?identifier=${encodeURIComponent(req.params.ocppId)}&tenantId=1`
+    : `${CITRINEOS_REST_URL}/ocpp/2.0.1/evdriver/requestStopTransaction?identifier=${encodeURIComponent(req.params.ocppId)}&tenantId=1`;
+  const body = is16
+    ? { transactionId: Number(sesion.rows[0].transaction_id_ocpp) }
+    : { transactionId: sesion.rows[0].transaction_id_ocpp };
   try {
     const citrineRes = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ transactionId: sesion.rows[0].transaction_id_ocpp }),
+      body: JSON.stringify(body),
     });
     const data = await citrineRes.json();
     const confirmation = Array.isArray(data) ? data[0] : data;
