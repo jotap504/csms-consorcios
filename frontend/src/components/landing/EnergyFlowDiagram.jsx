@@ -13,7 +13,7 @@ function lerpColor(a, b, t) {
   return `rgb(${c[0]}, ${c[1]}, ${c[2]})`;
 }
 
-function FlowLine({ vertical = false }) {
+export function FlowLine({ vertical = false }) {
   return (
     <div className={vertical ? 'relative h-10 w-0.5 overflow-hidden bg-[var(--lp-border)]' : 'relative h-0.5 flex-1 overflow-hidden bg-[var(--lp-border)]'}>
       <div

@@ -3,11 +3,11 @@ import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
   Zap, Cable, AlertTriangle, Gauge, ShieldCheck, TrendingUp, Wifi, BarChart3,
-  Users, CheckCircle2, ArrowRight, MessageCircle, X, Send, Car,
+  Users, CheckCircle2, ArrowRight, MessageCircle, X, Send, Car, Cpu, Building2,
   Wallet, Settings2, FileText, PlugZap, Menu, PlayCircle,
 } from 'lucide-react';
 import { api } from '@/lib/api';
-import EnergyFlowDiagram from '@/components/landing/EnergyFlowDiagram';
+import EnergyFlowDiagram, { FlowLine } from '@/components/landing/EnergyFlowDiagram';
 
 const fadeUp = {
   hidden: { opacity: 0, y: 24 },
@@ -29,34 +29,38 @@ function Reveal({ children, className = '', delay = 0 }) {
   );
 }
 
-// --- Hero graphic: animated network of a building's floors connected to a
-// central smart hub, energy pulses traveling along the lines. Pure SVG/CSS,
-// no video/3D dependency needed.
+// --- Hero graphic: a building's floors (each with a wallbox + car) wired to
+// a central EVMS hub, energy pulses traveling along the connectors. Real
+// icons instead of empty boxes, so the diagram reads on its own.
 function HeroGraphic() {
-  const floors = [0, 1, 2, 3, 4];
+  const floors = [5, 4, 3, 2, 1];
   return (
-    <div className="relative mx-auto aspect-square w-full max-w-md lp-float">
-      <svg viewBox="0 0 400 400" className="h-full w-full" aria-hidden="true">
-        <rect x="40" y="40" width="140" height="320" rx="12" fill="none" stroke="var(--lp-border)" strokeWidth="2" />
-        {floors.map((i) => (
-          <rect key={i} x="56" y={64 + i * 58} width="108" height="42" rx="6" fill="var(--lp-surface)" stroke="var(--lp-border)" />
-        ))}
-        <circle cx="300" cy="200" r="46" fill="var(--lp-bg)" stroke="var(--lp-blue)" strokeWidth="2" className="lp-node text-[var(--lp-blue)]" />
-        <circle cx="300" cy="200" r="10" fill="var(--lp-blue)" />
-        {floors.map((i) => (
-          <path
-            key={i}
-            d={`M164 ${85 + i * 58} C 220 ${85 + i * 58}, 240 200, 254 200`}
-            fill="none"
-            stroke="var(--lp-blue)"
-            strokeWidth="2"
-            className="lp-energy-line"
-            style={{ animationDelay: `${i * 0.3}s` }}
-          />
-        ))}
-      </svg>
-      <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 rounded-full border border-[var(--lp-border)] bg-white px-4 py-1.5 text-xs font-medium text-[var(--lp-fg)] shadow-sm">
-        Balanceo dinamico en tiempo real
+    <div className="relative mx-auto w-full max-w-md lp-float">
+      <div className="flex items-stretch gap-3 sm:gap-5">
+        <div className="flex flex-1 flex-col gap-1.5 rounded-2xl border border-[var(--lp-border)] bg-white p-2.5 shadow-sm">
+          <div className="mb-1 flex items-center gap-1.5 px-1.5 text-[10px] font-semibold text-[var(--lp-muted)]">
+            <Building2 className="h-3.5 w-3.5" /> Edificio
+          </div>
+          {floors.map((n, i) => (
+            <div key={n} className="flex items-center gap-2 rounded-lg bg-[var(--lp-surface)] px-2.5 py-2">
+              <PlugZap className="h-4 w-4 shrink-0 text-[var(--lp-blue)] lp-node" style={{ animationDelay: `${i * 0.3}s` }} />
+              <Car className="h-4 w-4 shrink-0 text-[var(--lp-fg)]" />
+              <span className="ml-auto text-[10px] font-medium text-[var(--lp-muted)]">P{n}</span>
+              <div className="w-5 sm:w-8">
+                <FlowLine />
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="flex shrink-0 flex-col items-center justify-center gap-1 self-center rounded-full border-2 border-[var(--lp-blue)] bg-white p-4 shadow-md lp-node text-[var(--lp-blue)]">
+          <Cpu className="h-7 w-7" />
+          <span className="text-[9px] font-bold text-[var(--lp-fg)]">EVMS</span>
+        </div>
+      </div>
+      <div className="relative mt-4 flex justify-center">
+        <div className="rounded-full border border-[var(--lp-border)] bg-white px-4 py-1.5 text-xs font-medium text-[var(--lp-fg)] shadow-sm">
+          Balanceo dinamico en tiempo real
+        </div>
       </div>
     </div>
   );
