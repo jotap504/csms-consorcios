@@ -105,7 +105,7 @@ async function pushChargingProfile(ocppId, maxAmps) {
       csChargingProfiles: {
         chargingProfileId: profileId,
         stackLevel: 0,
-        chargingProfilePurpose: 'ChargingStationMaxProfile',
+        chargingProfilePurpose: 'ChargePointMaxProfile',
         chargingProfileKind: 'Absolute',
         chargingSchedule: {
           chargingRateUnit: 'A',
