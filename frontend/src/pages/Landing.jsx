@@ -93,12 +93,19 @@ function Hero() {
   return (
     <section id="inicio">
       <ShaderHero
-        trustBadge={{ icon: '⚡', text: 'Balanceo dinamico de carga en tiempo real' }}
         headline={{
           line1: 'Los edificios no fueron diseñados',
-          line2: 'para cargar autos electricos. Nosotros si.',
+          line2: (
+            <>para cargar autos <span className="text-emerald-300">ELÉCTRICOS</span>. Nosotros <span className="text-emerald-300">SÍ</span>.</>
+          ),
         }}
-        subtitle="Cada año mas propietarios compran vehiculos electricos. Las instalaciones tradicionales no estan preparadas para soportar esa demanda. BILON instala una infraestructura inteligente preparada para el presente y para el futuro."
+        subtitle={(
+          <>
+            Cada año mas propietarios compran vehiculos <span className="font-medium text-cyan-200">ELÉCTRICOS</span>. Las instalaciones
+            tradicionales no estan preparadas para soportar esa demanda. <span className="font-medium text-cyan-200">BILON</span> instala
+            una infraestructura <span className="font-medium text-cyan-200">INTELIGENTE</span> preparada para el presente y para el futuro.
+          </>
+        )}
         buttons={{
           primary: { text: 'Solicitar asesoramiento', onClick: () => scrollToId('contacto') },
           secondary: { text: 'Ver como funciona', onClick: () => scrollToId('solucion') },
