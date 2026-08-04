@@ -3,11 +3,12 @@ import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
   Zap, Cable, AlertTriangle, Gauge, ShieldCheck, TrendingUp, Wifi, BarChart3,
-  Users, CheckCircle2, ArrowRight, MessageCircle, X, Send, Car, Cpu, Building2,
+  Users, CheckCircle2, MessageCircle, X, Send, Car,
   Wallet, Settings2, FileText, PlugZap, Menu, PlayCircle,
 } from 'lucide-react';
 import { api } from '@/lib/api';
-import EnergyFlowDiagram, { FlowLine } from '@/components/landing/EnergyFlowDiagram';
+import EnergyFlowDiagram from '@/components/landing/EnergyFlowDiagram';
+import ShaderHero from '@/components/landing/ShaderHero';
 
 const fadeUp = {
   hidden: { opacity: 0, y: 24 },
@@ -26,77 +27,6 @@ function Reveal({ children, className = '', delay = 0 }) {
     >
       {children}
     </motion.div>
-  );
-}
-
-// --- Hero graphic: 5 wallboxes wired to a central EVMS hub. Cycles through
-// the DLM story - 3 cars sharing 33% each, a 4th arrives and all drop to
-// 25%, a 5th arrives and gets queued instead of dropping everyone further.
-// Only opacity/color transitions (no layout-affecting properties - see the
-// horizontal-overflow bug this page already shipped once from an animation
-// that touched layout).
-const HERO_STEPS = [
-  { active: 3, queued: false, pct: 33 },
-  { active: 4, queued: false, pct: 25 },
-  { active: 4, queued: true, pct: 25 },
-];
-const HERO_CYCLE_MS = 2600;
-
-function HeroGraphic() {
-  const [step, setStep] = useState(0);
-  useEffect(() => {
-    const id = setInterval(() => setStep((s) => (s + 1) % HERO_STEPS.length), HERO_CYCLE_MS);
-    return () => clearInterval(id);
-  }, []);
-  const { active, queued, pct } = HERO_STEPS[step];
-
-  return (
-    <div className="relative mx-auto w-full max-w-md lp-float">
-      <div className="flex items-stretch gap-3 sm:gap-5">
-        <div className="flex flex-1 flex-col gap-1.5 rounded-2xl border border-[var(--lp-border)] bg-white p-2.5 shadow-sm">
-          <div className="mb-1 flex items-center gap-1.5 px-1.5 text-[10px] font-semibold text-[var(--lp-muted)]">
-            <Building2 className="h-3.5 w-3.5" /> Edificio
-          </div>
-          {[0, 1, 2, 3, 4].map((i) => {
-            const isQueuedSlot = queued && i === active;
-            const isCharging = i < active;
-            return (
-              <div
-                key={i}
-                className={`flex items-center gap-2 rounded-lg px-2.5 py-2 transition-colors duration-500 ${
-                  isQueuedSlot ? 'bg-amber-50' : 'bg-[var(--lp-surface)]'
-                } ${!isCharging && !isQueuedSlot ? 'opacity-40' : ''}`}
-              >
-                <PlugZap
-                  className={`h-4 w-4 shrink-0 transition-colors duration-500 ${
-                    isCharging ? 'text-[var(--lp-blue)] lp-node' : isQueuedSlot ? 'text-amber-500' : 'text-[var(--lp-muted)]'
-                  }`}
-                  style={isCharging ? { animationDelay: `${i * 0.3}s` } : undefined}
-                />
-                <Car className={`h-4 w-4 shrink-0 transition-colors duration-500 ${isQueuedSlot ? 'text-amber-600' : 'text-[var(--lp-fg)]'}`} />
-                <span className="text-[10px] font-medium text-[var(--lp-muted)]">WB{i + 1}</span>
-                <span className="ml-auto min-w-[52px] text-right text-[10px] font-bold">
-                  {isCharging && <span className="text-[var(--lp-blue)]">{pct}%</span>}
-                  {isQueuedSlot && <span className="text-amber-600">En cola</span>}
-                </span>
-                <div className="w-5 sm:w-8">
-                  <FlowLine />
-                </div>
-              </div>
-            );
-          })}
-        </div>
-        <div className="flex shrink-0 flex-col items-center justify-center gap-1 self-center rounded-full border-2 border-[var(--lp-blue)] bg-white p-4 shadow-md lp-node text-[var(--lp-blue)]">
-          <Cpu className="h-7 w-7" />
-          <span className="text-[9px] font-bold text-[var(--lp-fg)]">EVMS</span>
-        </div>
-      </div>
-      <div className="relative mt-4 flex justify-center">
-        <div className="rounded-full border border-[var(--lp-border)] bg-white px-4 py-1.5 text-xs font-medium text-[var(--lp-fg)] shadow-sm">
-          Balanceo dinamico en tiempo real
-        </div>
-      </div>
-    </div>
   );
 }
 
@@ -155,39 +85,25 @@ function Nav() {
   );
 }
 
+function scrollToId(id) {
+  document.getElementById(id)?.scrollIntoView({ behavior: 'smooth' });
+}
+
 function Hero() {
   return (
-    <section id="inicio" className="relative overflow-hidden px-6 pt-16 pb-24 md:pt-24 md:pb-32">
-      <div className="mx-auto grid max-w-6xl items-center gap-16 md:grid-cols-2">
-        <Reveal>
-          <h1 className="lp-heading text-4xl font-bold leading-[1.1] tracking-tight text-[var(--lp-fg)] md:text-5xl lg:text-6xl">
-            Los edificios no fueron diseñados para cargar autos electricos.{' '}
-            <span className="text-[var(--lp-blue)]">Nosotros si.</span>
-          </h1>
-          <p className="mt-6 max-w-lg text-lg leading-relaxed text-[var(--lp-muted)]">
-            Cada año mas propietarios compran vehiculos electricos. Las instalaciones tradicionales no estan preparadas
-            para soportar esa demanda. BILON instala una infraestructura inteligente preparada para el presente y para
-            el futuro.
-          </p>
-          <div className="mt-9 flex flex-wrap gap-4">
-            <a
-              href="#contacto"
-              className="inline-flex h-12 cursor-pointer items-center gap-2 rounded-lg bg-[var(--lp-blue)] px-6 text-sm font-semibold text-white transition-transform duration-200 hover:scale-[1.02] hover:bg-[#0052cc]"
-            >
-              Solicitar asesoramiento <ArrowRight className="h-4 w-4" />
-            </a>
-            <a
-              href="#solucion"
-              className="inline-flex h-12 cursor-pointer items-center rounded-lg border border-[var(--lp-border)] px-6 text-sm font-semibold text-[var(--lp-fg)] transition-colors hover:bg-[var(--lp-surface)]"
-            >
-              Ver como funciona
-            </a>
-          </div>
-        </Reveal>
-        <Reveal delay={0.15}>
-          <HeroGraphic />
-        </Reveal>
-      </div>
+    <section id="inicio">
+      <ShaderHero
+        trustBadge={{ icon: '⚡', text: 'Balanceo dinamico de carga en tiempo real' }}
+        headline={{
+          line1: 'Los edificios no fueron diseñados',
+          line2: 'para cargar autos electricos. Nosotros si.',
+        }}
+        subtitle="Cada año mas propietarios compran vehiculos electricos. Las instalaciones tradicionales no estan preparadas para soportar esa demanda. BILON instala una infraestructura inteligente preparada para el presente y para el futuro."
+        buttons={{
+          primary: { text: 'Solicitar asesoramiento', onClick: () => scrollToId('contacto') },
+          secondary: { text: 'Ver como funciona', onClick: () => scrollToId('solucion') },
+        }}
+      />
     </section>
   );
 }
