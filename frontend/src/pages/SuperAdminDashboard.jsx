@@ -41,6 +41,11 @@ export default function SuperAdminDashboard() {
     loadAll();
   }, []);
 
+  async function loadCargadores() {
+    const ch = await api.get('/superadmin/cargadores');
+    setCargadores(ch.data);
+  }
+
   async function handleCreate(e) {
     e.preventDefault();
     await api.post('/superadmin/consorcios', {
@@ -146,7 +151,10 @@ export default function SuperAdminDashboard() {
 
       <Card className="mt-6">
         <CardHeader>
-          <CardTitle>Cargadores (vista global)</CardTitle>
+          <div className="flex items-center justify-between">
+            <CardTitle>Cargadores (vista global)</CardTitle>
+            <Button variant="outline" size="sm" onClick={loadCargadores}>Actualizar</Button>
+          </div>
         </CardHeader>
         <CardContent>
           {cargadores.length === 0 ? (
@@ -156,22 +164,37 @@ export default function SuperAdminDashboard() {
               <TableHeader>
                 <TableRow>
                   <TableHead>OCPP ID</TableHead>
-                  <TableHead>Consorcio</TableHead>
-                  <TableHead>Modelo</TableHead>
+                  <TableHead>Consorcio / Sector</TableHead>
+                  <TableHead>Version</TableHead>
+                  <TableHead>Reportado por el equipo</TableHead>
                   <TableHead>Estado</TableHead>
+                  <TableHead>Ultimo mensaje</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {cargadores.map((c) => (
                   <TableRow key={c.id}>
-                    <TableCell className="font-mono text-xs">{c.ocpp_id}</TableCell>
-                    <TableCell>{c.consorcio_nombre}</TableCell>
-                    <TableCell>{c.charge_point_vendor} {c.charge_point_model}</TableCell>
-                    <TableCell>
-                      <Badge variant={c.activo ? 'accent' : 'muted'}>
-                        {c.activo ? 'Cargando' : 'Inactivo'}
-                      </Badge>
+                    <TableCell className="font-mono text-xs">{c.ocpp_id}{c.etiqueta ? <div className="text-muted-foreground">{c.etiqueta}</div> : null}</TableCell>
+                    <TableCell>{c.consorcio_nombre}{c.sector_nombre ? <div className="text-xs text-muted-foreground">{c.sector_nombre}</div> : null}</TableCell>
+                    <TableCell>{c.ocpp_version}</TableCell>
+                    <TableCell className="text-xs">
+                      {c.vendor_reportado || c.modelo_reportado ? (
+                        <>
+                          <div>{c.vendor_reportado} {c.modelo_reportado}</div>
+                          {c.firmware_reportado && <div className="text-muted-foreground">fw {c.firmware_reportado}</div>}
+                        </>
+                      ) : <span className="text-muted-foreground">nunca conecto</span>}
                     </TableCell>
+                    <TableCell>
+                      <div className="flex flex-col gap-1">
+                        <Badge variant={c.conectado_citrineos ? 'accent' : 'muted'}>
+                          {c.conectado_citrineos ? 'Conectado' : 'Desconectado'}
+                        </Badge>
+                        {c.activo && <Badge variant="accent">Cargando{c.amps_asignados != null ? ` (${c.amps_asignados}A)` : ''}</Badge>}
+                        {c.en_cola && <Badge variant="muted">En cola</Badge>}
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-xs text-muted-foreground">{timeAgo(c.ultimo_mensaje)}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>
@@ -181,4 +204,15 @@ export default function SuperAdminDashboard() {
       </Card>
     </Layout>
   );
+}
+
+function timeAgo(iso) {
+  if (!iso) return 'nunca';
+  const diffMs = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 1) return 'recien';
+  if (mins < 60) return `hace ${mins} min`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `hace ${hours} h`;
+  return `hace ${Math.floor(hours / 24)} d`;
 }

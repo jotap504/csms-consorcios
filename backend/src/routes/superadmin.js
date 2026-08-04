@@ -125,20 +125,30 @@ router.post('/consorcios/:id/pagos', async (req, res) => {
   res.status(201).json(result.rows[0]);
 });
 
-// Vista global de cargadores
+// Vista global de cargadores: config nuestra + config que el equipo reporto al
+// bootear (CitrineOS."ChargingStations", NO lo que se tipeo a mano al crearlo)
+// + estado en vivo (CitrineOS."ChargingStations".isOnline/latestOcppMessageTimestamp
+// es la fuente mas confiable de "esta conectado ahora", cargador_estado_actual
+// es nuestra copia de la ultima StatusNotification/balanceo).
 router.get('/cargadores', async (_req, res) => {
-  // estado_online is never updated by anything (dead column from the original
-  // schema) — "activo" mirrors what the per-consorcio panel actually shows:
-  // whether there's an open charging session right now.
   const result = await pool.query(
-    `SELECT ca.id, ca.ocpp_id, ca.charge_point_vendor, ca.charge_point_model,
-            ca.estado_online, ca.ultimo_heartbeat, co.id AS consorcio_id, co.nombre AS consorcio_nombre,
+    `SELECT ca.id, ca.ocpp_id, ca.etiqueta, ca.ocpp_version,
+            ca.charge_point_vendor AS vendor_configurado, ca.charge_point_model AS modelo_configurado,
+            co.id AS consorcio_id, co.nombre AS consorcio_nombre,
+            se.nombre AS sector_nombre,
+            cs."isOnline" AS conectado_citrineos, cs."chargePointVendor" AS vendor_reportado,
+            cs."chargePointModel" AS modelo_reportado, cs."firmwareVersion" AS firmware_reportado,
+            cs."protocol" AS protocolo_negociado, cs."latestOcppMessageTimestamp" AS ultimo_mensaje,
+            ce.conectado AS conector_ocupado, ce.status_ocpp, ce.amps_asignados, ce.en_cola, ce.updated_at AS estado_actualizado,
             EXISTS (
               SELECT 1 FROM liquidacion_sesiones l
               WHERE l.cargador_ocpp_id = ca.ocpp_id AND l.fecha_fin IS NULL
             ) AS activo
      FROM cargadores ca
      JOIN consorcios co ON co.id = ca.consorcio_id
+     LEFT JOIN sectores se ON se.id = ca.sector_id
+     LEFT JOIN "ChargingStations" cs ON cs.id = ca.ocpp_id
+     LEFT JOIN cargador_estado_actual ce ON ce.cargador_ocpp_id = ca.ocpp_id
      ORDER BY co.nombre, ca.ocpp_id`,
   );
   res.json(result.rows);
