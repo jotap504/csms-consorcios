@@ -1,6 +1,7 @@
 const express = require('express');
 const { pool } = require('../db');
 const { authenticate, requireRole } = require('../auth/middleware');
+const { ensureAuthorized } = require('../lib/citrineAuth');
 
 const router = express.Router();
 router.use(authenticate, requireRole('residente'));
@@ -215,6 +216,8 @@ router.post('/cargadores/:ocppId/iniciar', async (req, res) => {
   if (activa.rowCount > 0) {
     return res.status(409).json({ error: 'Este cargador ya tiene una carga en curso.' });
   }
+
+  await ensureAuthorized(pool, tarjeta.rows[0].id_tag_ocpp);
 
   const is16 = cargador.rows[0].ocpp_version === '1.6';
   const url = is16

@@ -1,8 +1,12 @@
 const express = require('express');
+const { pool } = require('../db');
 const { sendMail } = require('../lib/mailer');
+const { ensureAuthorized } = require('../lib/citrineAuth');
 
 const router = express.Router();
 const LEADS_EMAIL = process.env.LEADS_EMAIL || 'eqz839ar@gmail.com';
+const CITRINEOS_REST_URL = process.env.CITRINEOS_REST_URL || 'http://citrineos-core:8080';
+const PUBLIC_TEST_ID_TAG = 'PUBLIC-TEST';
 
 // Simple in-memory per-IP throttle - single instance, no need for redis/etc.
 // Chat hits a paid API per call so this caps runaway cost from bots/abuse.
@@ -137,6 +141,197 @@ router.post('/leads', async (req, res) => {
            <p><b>Mensaje:</b> ${mensaje || '-'}</p>`,
   });
   res.status(201).json({ ok: true });
+});
+
+// --- Login-free OCPP tester for wallbox manufacturers -----------------
+// "Type your charger's OCPP ID, connect it, watch the result" - no
+// account needed. Additive: reuses the existing proveedor_cargadores/
+// proveedor_tests machinery under one fixed placeholder "proveedor" row
+// (auto-created below) so results show up in the superadmin panel too,
+// but never touches the login-based /proveedor flow.
+//
+// Safety: an ocpp_id already registered as a REAL, billed consorcio
+// charger is refused outright - otherwise anyone who knows/guesses a
+// real charger's id could remote-start/stop it with zero auth.
+let publicProveedorIdCache = null;
+async function getPublicProveedorId() {
+  if (publicProveedorIdCache) return publicProveedorIdCache;
+  const existing = await pool.query(
+    "SELECT id FROM proveedores WHERE nombre_empresa = 'Pruebas publicas (sin login)'",
+  );
+  if (existing.rowCount > 0) {
+    publicProveedorIdCache = existing.rows[0].id;
+    return publicProveedorIdCache;
+  }
+  const created = await pool.query(
+    "INSERT INTO proveedores (nombre_empresa, email_contacto) VALUES ('Pruebas publicas (sin login)', NULL) RETURNING id",
+  );
+  publicProveedorIdCache = created.rows[0].id;
+  return publicProveedorIdCache;
+}
+
+async function logPublicTest(ocppId, accion, resultado, detalle) {
+  const proveedorId = await getPublicProveedorId();
+  await pool.query(
+    `INSERT INTO proveedor_tests (proveedor_id, cargador_ocpp_id, usuario_id, accion, resultado, detalle)
+     VALUES ($1, $2, NULL, $3, $4, $5)`,
+    [proveedorId, ocppId, accion, resultado, detalle ?? null],
+  );
+}
+
+async function refuseIfRealCargador(ocppId, res) {
+  const real = await pool.query('SELECT 1 FROM cargadores WHERE ocpp_id = $1', [ocppId]);
+  if (real.rowCount > 0) {
+    res.status(403).json({ error: 'Este ID pertenece a un cargador real de un consorcio, no se puede usar aca.' });
+    return true;
+  }
+  return false;
+}
+
+router.get('/ocpp-test/:ocppId/estado', async (req, res) => {
+  if (rateLimited(`ocpptest:${req.ip}`, 120, 60 * 60 * 1000)) {
+    return res.status(429).json({ error: 'Demasiadas consultas. Proba de nuevo en un rato.' });
+  }
+  const result = await pool.query(
+    `SELECT cs."isOnline" AS conectado_citrineos, cs."chargePointVendor" AS vendor_reportado,
+            cs."chargePointModel" AS modelo_reportado, cs."protocol" AS protocolo_negociado,
+            cs."latestOcppMessageTimestamp" AS ultimo_mensaje,
+            ce.status_ocpp, ce.conectado AS conector_ocupado, ce.transaction_id_ocpp, ce.amps_asignados
+     FROM "ChargingStations" cs
+     FULL OUTER JOIN cargador_estado_actual ce ON ce.cargador_ocpp_id = cs.id
+     WHERE cs.id = $1 OR ce.cargador_ocpp_id = $1
+     LIMIT 1`,
+    [req.params.ocppId],
+  );
+  res.json(result.rows[0] ?? { conectado_citrineos: null });
+});
+
+router.post('/ocpp-test/:ocppId/iniciar', async (req, res) => {
+  if (rateLimited(`ocpptest:${req.ip}`, 30, 60 * 60 * 1000)) {
+    return res.status(429).json({ error: 'Demasiadas consultas. Proba de nuevo en un rato.' });
+  }
+  const ocppId = req.params.ocppId;
+  if (await refuseIfRealCargador(ocppId, res)) return;
+  const version = req.body?.version === '1.6' ? '1.6' : '2.0.1';
+  const proveedorId = await getPublicProveedorId();
+
+  await pool.query(
+    `INSERT INTO proveedor_cargadores (proveedor_id, ocpp_id, ocpp_version)
+     VALUES ($1, $2, $3) ON CONFLICT (ocpp_id) DO NOTHING`,
+    [proveedorId, ocppId, version],
+  );
+  await ensureAuthorized(pool, PUBLIC_TEST_ID_TAG);
+
+  const is16 = version === '1.6';
+  const url = is16
+    ? `${CITRINEOS_REST_URL}/ocpp/1.6/evdriver/remoteStartTransaction?identifier=${encodeURIComponent(ocppId)}&tenantId=1`
+    : `${CITRINEOS_REST_URL}/ocpp/2.0.1/evdriver/requestStartTransaction?identifier=${encodeURIComponent(ocppId)}&tenantId=1`;
+  const body = is16
+    ? { connectorId: 1, idTag: PUBLIC_TEST_ID_TAG }
+    : { remoteStartId: Date.now() % 1000000, idToken: { idToken: PUBLIC_TEST_ID_TAG, type: 'ISO14443' }, evseId: 1 };
+  try {
+    const citrineRes = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const data = await citrineRes.json();
+    const confirmation = Array.isArray(data) ? data[0] : data;
+    if (!confirmation?.success) {
+      await logPublicTest(ocppId, 'iniciar', 'ERROR', JSON.stringify(confirmation));
+      return res.status(502).json({ error: 'El cargador rechazo el inicio remoto.', detail: confirmation });
+    }
+    await logPublicTest(ocppId, 'iniciar', 'OK', null);
+    res.json({ ok: true });
+  } catch (err) {
+    await logPublicTest(ocppId, 'iniciar', 'ERROR', err.message);
+    res.status(502).json({ error: 'No se pudo comunicar con el cargador.' });
+  }
+});
+
+router.post('/ocpp-test/:ocppId/detener', async (req, res) => {
+  if (rateLimited(`ocpptest:${req.ip}`, 30, 60 * 60 * 1000)) {
+    return res.status(429).json({ error: 'Demasiadas consultas. Proba de nuevo en un rato.' });
+  }
+  const ocppId = req.params.ocppId;
+  if (await refuseIfRealCargador(ocppId, res)) return;
+  const version = req.body?.version === '1.6' ? '1.6' : '2.0.1';
+
+  const estado = await pool.query('SELECT transaction_id_ocpp FROM cargador_estado_actual WHERE cargador_ocpp_id = $1', [ocppId]);
+  const txId = estado.rows[0]?.transaction_id_ocpp;
+  if (!txId) {
+    return res.status(404).json({ error: 'No hay una carga de prueba activa para detener.' });
+  }
+
+  const is16 = version === '1.6';
+  const url = is16
+    ? `${CITRINEOS_REST_URL}/ocpp/1.6/evdriver/remoteStopTransaction?identifier=${encodeURIComponent(ocppId)}&tenantId=1`
+    : `${CITRINEOS_REST_URL}/ocpp/2.0.1/evdriver/requestStopTransaction?identifier=${encodeURIComponent(ocppId)}&tenantId=1`;
+  const body = is16 ? { transactionId: Number(txId) } : { transactionId: txId };
+  try {
+    const citrineRes = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const data = await citrineRes.json();
+    const confirmation = Array.isArray(data) ? data[0] : data;
+    if (!confirmation?.success) {
+      await logPublicTest(ocppId, 'detener', 'ERROR', JSON.stringify(confirmation));
+      return res.status(502).json({ error: 'El cargador rechazo la detencion remota.', detail: confirmation });
+    }
+    await logPublicTest(ocppId, 'detener', 'OK', null);
+    res.json({ ok: true });
+  } catch (err) {
+    await logPublicTest(ocppId, 'detener', 'ERROR', err.message);
+    res.status(502).json({ error: 'No se pudo comunicar con el cargador.' });
+  }
+});
+
+router.post('/ocpp-test/:ocppId/set-amps', async (req, res) => {
+  if (rateLimited(`ocpptest:${req.ip}`, 30, 60 * 60 * 1000)) {
+    return res.status(429).json({ error: 'Demasiadas consultas. Proba de nuevo en un rato.' });
+  }
+  const ocppId = req.params.ocppId;
+  if (await refuseIfRealCargador(ocppId, res)) return;
+  const version = req.body?.version === '1.6' ? '1.6' : '2.0.1';
+  const { amps } = req.body ?? {};
+  if (!amps || amps <= 0) {
+    return res.status(400).json({ error: 'amps debe ser un numero mayor a 0.' });
+  }
+
+  const is16 = version === '1.6';
+  const profileId = Date.now() % 1000000;
+  const url = is16
+    ? `${CITRINEOS_REST_URL}/ocpp/1.6/smartcharging/setChargingProfile?identifier=${encodeURIComponent(ocppId)}&tenantId=1`
+    : `${CITRINEOS_REST_URL}/ocpp/2.0.1/smartcharging/setChargingProfile?identifier=${encodeURIComponent(ocppId)}&tenantId=1`;
+  const body = is16
+    ? {
+      connectorId: 1,
+      csChargingProfiles: {
+        chargingProfileId: profileId,
+        stackLevel: 0,
+        chargingProfilePurpose: 'ChargePointMaxProfile',
+        chargingProfileKind: 'Absolute',
+        chargingSchedule: { chargingRateUnit: 'A', startSchedule: new Date().toISOString(), chargingSchedulePeriod: [{ startPeriod: 0, limit: amps }] },
+      },
+    }
+    : {
+      evseId: 0,
+      chargingProfile: {
+        id: profileId,
+        stackLevel: 0,
+        chargingProfilePurpose: 'ChargingStationMaxProfile',
+        chargingProfileKind: 'Absolute',
+        chargingSchedule: [{ id: profileId, chargingRateUnit: 'A', startSchedule: new Date().toISOString(), chargingSchedulePeriod: [{ startPeriod: 0, limit: amps }] }],
+      },
+    };
+  try {
+    const citrineRes = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const data = await citrineRes.json();
+    const confirmation = Array.isArray(data) ? data[0] : data;
+    if (!confirmation?.success) {
+      await logPublicTest(ocppId, 'set_amps', 'ERROR', JSON.stringify(confirmation));
+      return res.status(502).json({ error: 'El cargador rechazo el perfil de carga.', detail: confirmation });
+    }
+    await logPublicTest(ocppId, 'set_amps', 'OK', `${amps}A`);
+    res.json({ ok: true });
+  } catch (err) {
+    await logPublicTest(ocppId, 'set_amps', 'ERROR', err.message);
+    res.status(502).json({ error: 'No se pudo comunicar con el cargador.' });
+  }
 });
 
 module.exports = router;

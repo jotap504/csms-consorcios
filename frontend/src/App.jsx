@@ -9,6 +9,7 @@ import AdminConsorcio from '@/pages/AdminConsorcio';
 import ConsorcioDashboard from '@/pages/ConsorcioDashboard';
 import ResidenteDashboard from '@/pages/ResidenteDashboard';
 import ProveedorDashboard from '@/pages/ProveedorDashboard';
+import OcppPublicTest from '@/pages/OcppPublicTest';
 import CargarCarga from '@/pages/CargarCarga';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import { getSession, homeForRole } from '@/lib/auth';
@@ -79,6 +80,7 @@ export default function App() {
           </ProtectedRoute>
         }
       />
+      <Route path="/ocpp" element={<OcppPublicTest />} />
       <Route
         path="/cargar/:ocppId"
         element={

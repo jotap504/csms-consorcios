@@ -1,6 +1,7 @@
 const express = require('express');
 const { pool } = require('../db');
 const { authenticate, requireRole } = require('../auth/middleware');
+const { ensureAuthorized } = require('../lib/citrineAuth');
 
 const router = express.Router();
 router.use(authenticate, requireRole('proveedor'));
@@ -132,6 +133,7 @@ router.post('/cargadores/:ocppId/iniciar', async (req, res) => {
 
   const is16 = version === '1.6';
   const idTag = 'PROVEEDOR-TEST';
+  await ensureAuthorized(pool, idTag);
   const url = is16
     ? `${CITRINEOS_REST_URL}/ocpp/1.6/evdriver/remoteStartTransaction?identifier=${encodeURIComponent(req.params.ocppId)}&tenantId=1`
     : `${CITRINEOS_REST_URL}/ocpp/2.0.1/evdriver/requestStartTransaction?identifier=${encodeURIComponent(req.params.ocppId)}&tenantId=1`;
