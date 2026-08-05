@@ -295,7 +295,7 @@ export default function ShaderHero({ headline, subtitle, buttons, className = ''
           </div>
 
           <div className="lp-hero-fade-up lp-hero-delay-3 mx-auto max-w-2xl">
-            <p className="text-lg leading-relaxed font-light text-sky-100/80 md:text-xl">
+            <p className="text-lg leading-relaxed font-semibold text-sky-50 md:text-xl [text-shadow:0_2px_8px_rgba(0,0,0,0.6)]">
               {subtitle}
             </p>
           </div>
