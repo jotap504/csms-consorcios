@@ -80,7 +80,7 @@ export default function App() {
           </ProtectedRoute>
         }
       />
-      <Route path="/ocpp" element={<OcppPublicTest />} />
+      <Route path="/ocpp-test" element={<OcppPublicTest />} />
       <Route
         path="/cargar/:ocppId"
         element={
