@@ -1,6 +1,7 @@
 require('dotenv').config();
 const amqp = require('amqplib');
 const { Pool } = require('pg');
+const { startModbusPolling } = require('./modbus-poller');
 
 const AMQP_URL = process.env.AMQP_URL;
 const DATABASE_URL = process.env.DATABASE_URL;
@@ -85,6 +86,33 @@ async function getActiveGroupForStation(stationId) {
   return { consorcioId: r.rows[0].consorcio_id, sectorId: r.rows[0].sector_id };
 }
 
+// Suma de amperios actualmente asignados a TODOS los wallbox del edificio
+// con sesion activa (todos los sectores + los sin sector). Se usa para
+// descontar el consumo de los propios autos de la lectura del medidor
+// general, cuando ese medidor esta en la acometida principal y ve todo el
+// edificio (wallboxes incluidos) en vez de solo "el resto".
+//
+// Solo cuenta cargadores con sesion abierta (fecha_fin IS NULL): endSession
+// nunca resetea amps_asignados a 0 cuando termina una carga (rebalanceGroup
+// corta antes por "ordenados.length === 0"), asi que sumar la columna sin
+// filtrar arrastraria para siempre el ultimo valor asignado de autos que ya
+// dejaron de cargar. Tambien evita contar el piso de MIN_AMPS que se le
+// asigna a un cargador recien reconectado sin sesion (handleBootNotification).
+async function getAmpsAsignadosTotales(consorcioId) {
+  const r = await pool.query(
+    `SELECT COALESCE(SUM(ce.amps_asignados), 0) AS total
+     FROM cargador_estado_actual ce
+     JOIN cargadores ca ON ca.ocpp_id = ce.cargador_ocpp_id
+     WHERE ca.consorcio_id = $1
+       AND EXISTS (
+         SELECT 1 FROM liquidacion_sesiones ls
+         WHERE ls.cargador_ocpp_id = ce.cargador_ocpp_id AND ls.fecha_fin IS NULL
+       )`,
+    [consorcioId],
+  );
+  return Number(r.rows[0].total);
+}
+
 async function setCargadorEstado(ocppId, ampsAsignados, enCola) {
   await pool.query(
     `INSERT INTO cargador_estado_actual (cargador_ocpp_id, amps_asignados, en_cola, updated_at)
@@ -149,16 +177,20 @@ async function pushChargingProfile(ocppId, maxAmps) {
   }
 }
 
-// Ultima lectura del medidor de corriente de un sector (consumo del RESTO
-// del edificio, sin contar los cargadores EV - ver nota de instalacion).
+// Ultima lectura del medidor de corriente de un sector, o del medidor
+// general del edificio si sectorId es null (consumo del RESTO del edificio,
+// sin contar los cargadores EV - ver nota de instalacion).
 // Devuelve null si no hay lectura o si es demasiado vieja (fail-safe: en ese
 // caso rebalanceGroup usa el limite estatico configurado, como si no
 // tuviera medidor dinamico).
-async function getConsumoMedidoAmps(sectorId) {
+async function getConsumoMedidoAmps({ consorcioId, sectorId }) {
   const r = await pool.query(
-    `SELECT amps_l1, amps_l2, amps_l3, potencia_kw, "timestamp"
-     FROM lecturas_sector WHERE sector_id = $1 ORDER BY "timestamp" DESC LIMIT 1`,
-    [sectorId],
+    sectorId != null
+      ? `SELECT amps_l1, amps_l2, amps_l3, potencia_kw, "timestamp"
+         FROM lecturas_sector WHERE sector_id = $1 ORDER BY "timestamp" DESC LIMIT 1`
+      : `SELECT amps_l1, amps_l2, amps_l3, potencia_kw, "timestamp"
+         FROM lecturas_consorcio WHERE consorcio_id = $1 ORDER BY "timestamp" DESC LIMIT 1`,
+    [sectorId != null ? sectorId : consorcioId],
   );
   if (r.rowCount === 0) return null;
   const row = r.rows[0];
@@ -194,7 +226,7 @@ async function rebalanceGroup({ consorcioId, sectorId }) {
     );
     limite = sector.rows[0]?.limite_amperios_totales;
     if (sector.rows[0]?.usar_medidor_dinamico && limite) {
-      const consumoMedido = await getConsumoMedidoAmps(sectorId);
+      const consumoMedido = await getConsumoMedidoAmps({ sectorId });
       if (consumoMedido != null) {
         const limiteOriginal = limite;
         limite = Math.max(0, Math.floor(limite - consumoMedido));
@@ -205,8 +237,30 @@ async function rebalanceGroup({ consorcioId, sectorId }) {
       }
     }
   } else {
-    const consorcio = await pool.query('SELECT limite_amperios_totales FROM consorcios WHERE id = $1', [consorcioId]);
+    const consorcio = await pool.query(
+      'SELECT limite_amperios_totales, usar_medidor_dinamico FROM consorcios WHERE id = $1',
+      [consorcioId],
+    );
     limite = consorcio.rows[0]?.limite_amperios_totales;
+    if (consorcio.rows[0]?.usar_medidor_dinamico && limite) {
+      // El medidor general va en la acometida principal: ve TODO el edificio,
+      // wallboxes incluidos. Hay que descontar lo que nosotros mismos les
+      // asignamos a los autos para aislar el consumo real del "resto"
+      // (AC, hornos, ascensor, etc), que es lo que realmente compite por
+      // el limite contratado.
+      const consumoMedido = await getConsumoMedidoAmps({ consorcioId });
+      if (consumoMedido != null) {
+        const amperiosAsignadosAutos = await getAmpsAsignadosTotales(consorcioId);
+        const restoEdificio = Math.max(0, consumoMedido - amperiosAsignadosAutos);
+        const limiteOriginal = limite;
+        limite = Math.max(0, Math.floor(limite - restoEdificio));
+        console.log(
+          `[Balanceador] consorcio=${consorcioId} medidor dinamico (acometida principal): `
+          + `total_medido=${consumoMedido.toFixed(1)}A, autos_asignados=${amperiosAsignadosAutos}A, `
+          + `resto_edificio=${restoEdificio.toFixed(1)}A, ${limiteOriginal}A contratado -> ${limite}A disponibles para autos`,
+        );
+      }
+    }
   }
   if (!limite) return; // sin limite configurado, no hay nada para repartir
 
@@ -369,6 +423,50 @@ async function endSession({ stationId, transactionId, timestamp, endWh: endWhInp
   openSessions.delete(key);
   console.log(`[Ended] ${stationId} tx=${transactionId} kwh=${kwh.toFixed(3)} monto=${monto.toFixed(2)}`);
   await rebalanceGroup({ consorcioId, sectorId });
+}
+
+// Sesiones huerfanas: la sesion sigue "activa" en liquidacion_sesiones (nunca
+// llego un Ended valido - ej. el station mando un Stop mal formado que
+// CitrineOS rechazo por formato antes de que nos llegara por AMQP, algo
+// confirmado con un stress test) pero CitrineOS reporta el cargador
+// desconectado hace rato. Sin esto, ese cargador queda "cargando" para
+// siempre en la base, ocupando un cupo del balanceador de por vida.
+const ORPHAN_STALE_MS = 30 * 60 * 1000; // 30 min offline sin Ended = huerfana
+
+async function reconcileOrphanSessions() {
+  const cutoff = new Date(Date.now() - ORPHAN_STALE_MS);
+  const result = await pool.query(
+    `SELECT ls.transaction_id_ocpp, ls.cargador_ocpp_id, cs."latestOcppMessageTimestamp"
+     FROM liquidacion_sesiones ls
+     JOIN "ChargingStations" cs ON cs.id = ls.cargador_ocpp_id
+     WHERE ls.fecha_fin IS NULL
+       AND cs."isOnline" = FALSE
+       AND cs."latestOcppMessageTimestamp" < $1`,
+    [cutoff],
+  );
+  for (const row of result.rows) {
+    console.warn(
+      `[Reconciliacion] Sesion huerfana: ${row.cargador_ocpp_id} tx=${row.transaction_id_ocpp}, `
+      + `offline desde ${row.latestOcppMessageTimestamp}. Cerrando con la ultima lectura conocida.`,
+    );
+    const ultimaLectura = await pool.query(
+      `SELECT kwh_acumulado FROM lecturas_medidor
+       WHERE transaction_id_ocpp = $1 AND cargador_ocpp_id = $2
+       ORDER BY "timestamp" DESC LIMIT 1`,
+      [row.transaction_id_ocpp, row.cargador_ocpp_id],
+    );
+    const endWh = ultimaLectura.rows[0] ? Number(ultimaLectura.rows[0].kwh_acumulado) * 1000 : null;
+    try {
+      await endSession({
+        stationId: row.cargador_ocpp_id,
+        transactionId: row.transaction_id_ocpp,
+        timestamp: new Date().toISOString(),
+        endWh,
+      });
+    } catch (err) {
+      console.error(`[Reconciliacion] Error cerrando ${row.cargador_ocpp_id}:`, err.message);
+    }
+  }
 }
 
 async function handleTransactionEvent(context, payload) {
@@ -545,11 +643,14 @@ async function main() {
 
   console.log(`Escuchando eventos OCPP 2.0.1 (TransactionEvent) y 1.6 (Start/Stop/MeterValues) en cola "${QUEUE}"...`);
 
+  startModbusPolling(pool);
+
   // Safety net: re-balance periodically in case a Started/Ended event was
   // missed (e.g. listener was briefly down) and the last pushed profile is
   // stale. Groups by (consorcio, sector) so cada sector se rebalancea aparte.
   setInterval(async () => {
     try {
+      await reconcileOrphanSessions();
       const result = await pool.query(
         `SELECT DISTINCT ca.consorcio_id, ca.sector_id
          FROM liquidacion_sesiones ls
