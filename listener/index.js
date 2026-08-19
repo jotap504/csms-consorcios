@@ -12,6 +12,8 @@ const MIN_AMPS = 6; // IEC 61851 minimum safe charging current
 const REBALANCE_INTERVAL_MS = 60000;
 const METER_STALE_MS = 90000; // lectura de medidor mas vieja que esto se ignora (fail-safe al limite estatico)
 const ASSUMED_VOLTS = 220; // solo si el medidor manda potencia_kw en vez de amps por fase
+const CHARGING_PROFILE_CONFIRM_TIMEOUT_MS = 4000; // cuanto esperar la respuesta real del cargador a SetChargingProfile
+const CHARGING_PROFILE_POLL_MS = 400;
 
 const pool = new Pool({ connectionString: DATABASE_URL });
 
@@ -171,6 +173,7 @@ async function pushChargingProfile(ocppId, maxAmps) {
         ],
       },
     };
+  const sentAt = new Date();
   try {
     const res = await fetch(url, {
       method: 'POST',
@@ -180,11 +183,41 @@ async function pushChargingProfile(ocppId, maxAmps) {
     const data = await res.json();
     const confirmation = Array.isArray(data) ? data[0] : data;
     if (!confirmation?.success) {
-      console.warn(`[Balanceador] ${ocppId} rechazo el perfil de ${maxAmps}A:`, confirmation?.payload);
+      console.warn(`[Balanceador] No se pudo enviar perfil a ${ocppId}:`, confirmation?.payload);
+      return;
+    }
+    // El REST de CitrineOS para SetChargingProfile es fire-and-forget:
+    // success=true solo confirma que el CALL salio, NO lo que respondio el
+    // cargador (un CALLRESULT bien formado con payload.status="Rejected"
+    // tambien da success=true). La respuesta real llega async y CitrineOS la
+    // persiste en su propia tabla OCPPMessages - hay que ir a buscarla ahi.
+    // Bug real detectado con un wallbox de proveedor (goiot c13) que
+    // rechazaba TODOS los perfiles y nunca se vio en logs por esto.
+    const status = await getChargingProfileConfirmationStatus(ocppId, sentAt);
+    if (status && status !== 'Accepted') {
+      console.warn(`[Balanceador] ${ocppId} rechazo el perfil de ${maxAmps}A: status=${status}`);
     }
   } catch (err) {
     console.warn(`[Balanceador] No se pudo enviar perfil a ${ocppId}:`, err.message);
   }
+}
+
+// Poll corto contra la tabla propia de CitrineOS donde persiste la respuesta
+// real del cargador (ver comentario en pushChargingProfile). Si no llega a
+// tiempo devuelve null y no se bloquea el balanceo por eso.
+async function getChargingProfileConfirmationStatus(ocppId, sentAt) {
+  const deadline = Date.now() + CHARGING_PROFILE_CONFIRM_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, CHARGING_PROFILE_POLL_MS));
+    const r = await pool.query(
+      `SELECT message FROM "OCPPMessages"
+       WHERE "stationId" = $1 AND action = 'SetChargingProfile' AND state = '2' AND "timestamp" >= $2
+       ORDER BY "timestamp" ASC LIMIT 1`,
+      [ocppId, sentAt],
+    );
+    if (r.rowCount > 0) return r.rows[0].message?.[2]?.status ?? null;
+  }
+  return null;
 }
 
 // Ultima lectura del medidor de corriente de un sector, o del medidor
