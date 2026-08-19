@@ -54,6 +54,16 @@ function powerKw(meterValue) {
 }
 
 async function getOcppVersion(stationId) {
+  // CitrineOS graba el protocolo REALMENTE negociado en la conexion WS actual
+  // (ChargingStations.protocol) - confiar en eso antes que en ocpp_version
+  // configurado a mano en cargadores/proveedor_cargadores, que puede quedar
+  // desactualizado si el equipo termina negociando otra version (paso justo
+  // con un wallbox de proveedor: quedo cargado como 1.6, conecto por 2.0.1,
+  // y CitrineOS rechazaba el SetChargingProfile por mismatch de protocolo).
+  const cs = await pool.query('SELECT protocol FROM "ChargingStations" WHERE id = $1', [stationId]);
+  const protocol = cs.rows[0]?.protocol;
+  if (protocol) return protocol.includes('1.6') ? '1.6' : '2.0.1';
+
   const r = await pool.query('SELECT ocpp_version FROM cargadores WHERE ocpp_id = $1', [stationId]);
   if (r.rowCount > 0) return r.rows[0].ocpp_version;
   const p = await pool.query('SELECT ocpp_version FROM proveedor_cargadores WHERE ocpp_id = $1', [stationId]);
