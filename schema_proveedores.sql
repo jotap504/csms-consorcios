@@ -25,12 +25,25 @@ CREATE TABLE IF NOT EXISTS proveedor_tests (
   proveedor_id INT NOT NULL REFERENCES proveedores(id) ON DELETE CASCADE,
   cargador_ocpp_id VARCHAR(50) NOT NULL,
   usuario_id INT REFERENCES usuarios(id) ON DELETE SET NULL,
-  accion VARCHAR(20) NOT NULL CHECK (accion IN ('emparejar', 'set_amps', 'iniciar', 'detener', 'generar_qr')),
-  resultado VARCHAR(10) NOT NULL CHECK (resultado IN ('OK', 'ERROR')),
+  accion VARCHAR(20) NOT NULL CHECK (accion IN ('emparejar', 'set_amps', 'iniciar', 'detener', 'generar_qr', 'composite_schedule', 'capacidades')),
+  resultado VARCHAR(12) NOT NULL CHECK (resultado IN ('OK', 'ERROR', 'RECHAZADO')),
   detalle TEXT,
   creado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_proveedor_tests_proveedor ON proveedor_tests (proveedor_id, creado_en DESC);
+
+-- El tester publico (/ocpp-test) agrego dos acciones de diagnostico
+-- (composite_schedule, capacidades) y un resultado intermedio (RECHAZADO,
+-- para distinguir "el cargador respondio Rejected" de "no se pudo hablar
+-- con el cargador") - CREATE TABLE de arriba no corre en una DB existente,
+-- asi que hay que recrear los checks a mano.
+ALTER TABLE proveedor_tests DROP CONSTRAINT IF EXISTS proveedor_tests_accion_check;
+ALTER TABLE proveedor_tests ADD CONSTRAINT proveedor_tests_accion_check
+  CHECK (accion IN ('emparejar', 'set_amps', 'iniciar', 'detener', 'generar_qr', 'composite_schedule', 'capacidades'));
+ALTER TABLE proveedor_tests ALTER COLUMN resultado TYPE VARCHAR(12);
+ALTER TABLE proveedor_tests DROP CONSTRAINT IF EXISTS proveedor_tests_resultado_check;
+ALTER TABLE proveedor_tests ADD CONSTRAINT proveedor_tests_resultado_check
+  CHECK (resultado IN ('OK', 'ERROR', 'RECHAZADO'));
 
 ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS proveedor_id INT REFERENCES proveedores(id) ON DELETE CASCADE;
 ALTER TABLE usuarios DROP CONSTRAINT IF EXISTS usuarios_rol_check;
