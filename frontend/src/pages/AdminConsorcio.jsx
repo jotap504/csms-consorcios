@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import QRCode from 'qrcode';
 import {
   ArrowLeft, Plus, Pencil, Trash2, Activity, Download,
-  Copy, PlugZap, CreditCard, Upload, Sparkles, X as XIcon,
+  Copy, PlugZap, CreditCard, Upload, Sparkles, X as XIcon, Wallet,
 } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer, CartesianGrid } from 'recharts';
 import { api } from '@/lib/api';
@@ -128,6 +128,8 @@ export default function AdminConsorcio() {
 
   const [tarjetaForm, setTarjetaForm] = useState(EMPTY_TARJETA_FORM);
   const [tarjetasUfOpen, setTarjetasUfOpen] = useState(null); // UF row cuyas tarjetas se estan gestionando
+  const [recargaOpen, setRecargaOpen] = useState(null); // tarjeta.id cuya recarga se esta cargando
+  const [recargaMonto, setRecargaMonto] = useState('');
 
   const [live, setLive] = useState({ cargadores: [], medidor_general: null });
   const liveIntervalRef = useRef(null);
@@ -278,6 +280,11 @@ export default function AdminConsorcio() {
     loadAll();
   }
 
+  async function handleToggleSaldoPrepago() {
+    await api.put(`/admin/consorcios/${id}`, { usar_saldo_prepago: !consorcio.usar_saldo_prepago });
+    loadAll();
+  }
+
   function medidorModbusDe(sectorId) {
     return medidoresModbus.find((m) => m.sector_id === sectorId) ?? null;
   }
@@ -364,6 +371,15 @@ export default function AdminConsorcio() {
 
   async function toggleTarjeta(tarjetaId, activa) {
     await api.put(`/admin/tarjetas/${tarjetaId}`, { activa: !activa });
+    loadAll();
+  }
+
+  async function handleRecargarSaldo(tarjetaId) {
+    const monto = Number(recargaMonto);
+    if (!monto || monto <= 0) return;
+    await api.post(`/admin/tarjetas/${tarjetaId}/recargas`, { monto });
+    setRecargaOpen(null);
+    setRecargaMonto('');
     loadAll();
   }
 
@@ -1236,14 +1252,32 @@ export default function AdminConsorcio() {
                 ) : (
                   <ul className="flex flex-col gap-1.5">
                     {tarjetasUfOpen && tarjetas.filter((t) => t.uf_id === tarjetasUfOpen.id).map((t) => (
-                      <li key={t.id} className="flex items-center justify-between rounded-md bg-muted px-2.5 py-1.5 text-sm">
-                        <span className="font-mono text-xs">{t.id_tag_ocpp}</span>
-                        <div className="flex items-center gap-2">
-                          <Switch checked={t.activa} onCheckedChange={() => toggleTarjeta(t.id, t.activa)} />
-                          <Button size="sm" variant="destructive" onClick={() => handleDeleteTarjeta(t.id)}>
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </Button>
+                      <li key={t.id} className="flex flex-col gap-1.5 rounded-md bg-muted px-2.5 py-1.5 text-sm">
+                        <div className="flex items-center justify-between">
+                          <span className="font-mono text-xs">{t.id_tag_ocpp}</span>
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs text-muted-foreground">Saldo: ${Number(t.saldo ?? 0).toFixed(2)}</span>
+                            <Button size="sm" variant="outline" onClick={() => { setRecargaOpen(t.id); setRecargaMonto(''); }}>
+                              <Wallet className="h-3.5 w-3.5" />
+                            </Button>
+                            <Switch checked={t.activa} onCheckedChange={() => toggleTarjeta(t.id, t.activa)} />
+                            <Button size="sm" variant="destructive" onClick={() => handleDeleteTarjeta(t.id)}>
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
+                          </div>
                         </div>
+                        {recargaOpen === t.id && (
+                          <div className="flex gap-2 border-t border-border pt-1.5">
+                            <Input
+                              type="number"
+                              placeholder="Monto a recargar"
+                              value={recargaMonto}
+                              onChange={(e) => setRecargaMonto(e.target.value)}
+                              className="h-8 text-xs"
+                            />
+                            <Button size="sm" onClick={() => handleRecargarSaldo(t.id)}>Confirmar</Button>
+                          </div>
+                        )}
                       </li>
                     ))}
                   </ul>
@@ -1562,6 +1596,20 @@ export default function AdminConsorcio() {
                 </div>
               )}
             </CardContent>
+          </Card>
+
+          <Card className="mb-4">
+            <CardHeader className="flex-row flex-wrap items-center justify-between gap-3">
+              <div>
+                <CardTitle className="flex items-center gap-2"><Wallet className="h-4 w-4" />Saldo prepago en tarjetas RFID</CardTitle>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Si esta activado, el residente necesita saldo positivo en su tarjeta para iniciar una carga - se descuenta automaticamente al terminar cada sesion. No afecta la facturacion por expensas existente.
+                </p>
+              </div>
+              {consorcio && (
+                <Switch checked={consorcio.usar_saldo_prepago} onCheckedChange={handleToggleSaldoPrepago} />
+              )}
+            </CardHeader>
           </Card>
 
           <Card>

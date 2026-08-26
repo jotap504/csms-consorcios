@@ -44,7 +44,7 @@ router.get('/consorcios/:id', async (req, res) => {
   const result = await pool.query(
     `SELECT c.id, c.nombre, c.direccion, c.email_administracion, c.telefono_contacto,
             c.limite_amperios_totales, c.costo_kwh_electricidad, c.usar_medidor_dinamico,
-            c.modo_facturacion, c.tipo_cliente,
+            c.modo_facturacion, c.tipo_cliente, c.usar_saldo_prepago,
             lu.amps_l1, lu.amps_l2, lu.amps_l3, lu.potencia_kw, lu."timestamp" AS ultima_lectura_en
      FROM consorcios c
      LEFT JOIN LATERAL (
@@ -62,7 +62,7 @@ router.get('/consorcios/:id', async (req, res) => {
 router.put('/consorcios/:id', async (req, res) => {
   const {
     nombre, direccion, telefono_contacto, limite_amperios_totales, costo_kwh_electricidad, usar_medidor_dinamico,
-    modo_facturacion, tipo_cliente,
+    modo_facturacion, tipo_cliente, usar_saldo_prepago,
   } = req.body ?? {};
   if (modo_facturacion && !['administrador', 'propietario_directo'].includes(modo_facturacion)) {
     return res.status(400).json({ error: 'modo_facturacion invalido.' });
@@ -79,14 +79,15 @@ router.put('/consorcios/:id', async (req, res) => {
        costo_kwh_electricidad = COALESCE($5, costo_kwh_electricidad),
        usar_medidor_dinamico = COALESCE($6, usar_medidor_dinamico),
        modo_facturacion = COALESCE($7, modo_facturacion),
-       tipo_cliente = COALESCE($8, tipo_cliente)
+       tipo_cliente = COALESCE($8, tipo_cliente),
+       usar_saldo_prepago = COALESCE($10, usar_saldo_prepago)
      WHERE id = $9
      RETURNING id, nombre, direccion, email_administracion, telefono_contacto,
                limite_amperios_totales, costo_kwh_electricidad, usar_medidor_dinamico,
-               modo_facturacion, tipo_cliente`,
+               modo_facturacion, tipo_cliente, usar_saldo_prepago`,
     [
       nombre, direccion, telefono_contacto, limite_amperios_totales, costo_kwh_electricidad, usar_medidor_dinamico ?? null,
-      modo_facturacion ?? null, tipo_cliente ?? null, req.params.id,
+      modo_facturacion ?? null, tipo_cliente ?? null, req.params.id, usar_saldo_prepago ?? null,
     ],
   );
   if (result.rowCount === 0) return res.status(404).json({ error: 'Consorcio no encontrado.' });
@@ -622,6 +623,53 @@ router.delete('/tarjetas/:id', async (req, res) => {
   res.status(204).end();
 });
 
+// Recarga manual de saldo prepago (opt-in por consorcio via
+// consorcios.usar_saldo_prepago). Mismo shape que pagos_abono_sistema
+// (monto, comprobante_ref) - registro de un pago ya recibido por otro medio
+// (transferencia, efectivo), no una pasarela de pago propia. Ledger completo
+// en tarjeta_movimientos + saldo cacheado en tarjetas_rfid, actualizados
+// atomicamente en la misma transaccion.
+router.post('/tarjetas/:id/recargas', async (req, res) => {
+  const { monto, comprobante_ref } = req.body ?? {};
+  const montoNum = Number(monto);
+  if (!montoNum || montoNum <= 0) {
+    return res.status(400).json({ error: 'monto debe ser un numero mayor a 0.' });
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const tarjeta = await client.query('SELECT id FROM tarjetas_rfid WHERE id = $1 FOR UPDATE', [req.params.id]);
+    if (tarjeta.rowCount === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Tarjeta no encontrada.' });
+    }
+    await client.query(
+      `INSERT INTO tarjeta_movimientos (tarjeta_id, tipo, monto, comprobante_ref) VALUES ($1, 'recarga', $2, $3)`,
+      [req.params.id, montoNum, comprobante_ref ?? null],
+    );
+    const updated = await client.query(
+      'UPDATE tarjetas_rfid SET saldo = saldo + $1 WHERE id = $2 RETURNING saldo',
+      [montoNum, req.params.id],
+    );
+    await client.query('COMMIT');
+    res.status(201).json({ ok: true, saldo: updated.rows[0].saldo });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+});
+
+router.get('/tarjetas/:id/movimientos', async (req, res) => {
+  const result = await pool.query(
+    `SELECT id, tipo, monto, liquidacion_sesion_id, comprobante_ref, creado_en
+     FROM tarjeta_movimientos WHERE tarjeta_id = $1 ORDER BY creado_en DESC LIMIT 100`,
+    [req.params.id],
+  );
+  res.json(result.rows);
+});
+
 // Consumo en tiempo real: lecturas de los ultimos 30 min por cargador, mas
 // si tiene una sesion de carga activa en este momento.
 router.get('/consorcios/:id/live', async (req, res) => {
@@ -939,6 +987,98 @@ router.get('/cargadores/:ocppId/ocpp-log', requireRole('superadmin'), async (req
       timestamp: r.timestamp,
     };
   }));
+});
+
+// Alarmas historicas: solo status='Faulted' se guarda (ver listener/index.js
+// handleStatusNotification) - el estado en vivo de cualquier otra transicion
+// ya lo cubre cargador_estado_actual, esto es historial de fallas reales.
+router.get('/cargadores/:ocppId/alarmas', requireRole('superadmin'), async (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 100, 500);
+  const result = await pool.query(
+    `SELECT id, status_ocpp, error_code, creado_en
+     FROM cargador_alarmas WHERE cargador_ocpp_id = $1
+     ORDER BY creado_en DESC LIMIT $2`,
+    [req.params.ocppId, limit],
+  );
+  res.json(result.rows);
+});
+
+// ---------------------------------------------------------------------------
+// Reservations (ReserveNow/CancelReservation) - solo cargadores OCPP 2.0.1:
+// CitrineOS no expone reserveNow/cancelReservation por REST para 1.6
+// (confirmado via /docs/json, el bridge 1.6 solo tiene remoteStart/Stop/
+// unlockConnector/clearCache). Superadmin only por el mismo criterio que
+// Configuration/OCPP Log arriba - accion real sobre un equipo en produccion.
+// ---------------------------------------------------------------------------
+
+router.post('/cargadores/:ocppId/reservas', requireRole('superadmin'), async (req, res) => {
+  const ocppId = req.params.ocppId;
+  const { ufId, idTagOcpp, expiraEn } = req.body ?? {};
+  if (!idTagOcpp || !expiraEn) {
+    return res.status(400).json({ error: 'idTagOcpp y expiraEn son requeridos.' });
+  }
+  const cargador = await pool.query('SELECT id, consorcio_id FROM cargadores WHERE ocpp_id = $1', [ocppId]);
+  if (cargador.rowCount === 0) return res.status(404).json({ error: 'Cargador no encontrado.' });
+
+  const version = await getOcppVersion(ocppId);
+  if (version !== '2.0.1') {
+    return res.status(400).json({ error: 'Reservations solo soportado en cargadores OCPP 2.0.1 por ahora (CitrineOS no expone reserveNow para 1.6).' });
+  }
+
+  const reserva = await pool.query(
+    `INSERT INTO reservas (cargador_ocpp_id, consorcio_id, uf_id, id_tag_ocpp, expira_en, creado_por)
+     VALUES ($1, $2, $3, $4, $5, 'admin') RETURNING id`,
+    [ocppId, cargador.rows[0].consorcio_id, ufId ?? null, idTagOcpp, expiraEn],
+  );
+  const reservaId = reserva.rows[0].id;
+
+  const url = `${CITRINEOS_REST_URL}/ocpp/2.0.1/evdriver/reserveNow?identifier=${encodeURIComponent(ocppId)}&tenantId=1`;
+  const body = { id: reservaId, expiryDateTime: expiraEn, idToken: { idToken: idTagOcpp, type: 'ISO14443' }, evseId: 1 };
+  try {
+    const { dispatched, payload } = await sendAndAwaitConfirmation(ocppId, 'ReserveNow', url, body);
+    if (!dispatched) {
+      await pool.query(`UPDATE reservas SET estado = 'rechazada' WHERE id = $1`, [reservaId]);
+      return res.status(502).json({ error: 'No se pudo comunicar con el cargador.' });
+    }
+    const status = payload?.status ?? null;
+    if (status !== 'Accepted') {
+      await pool.query(`UPDATE reservas SET estado = 'rechazada' WHERE id = $1`, [reservaId]);
+      return res.status(409).json({ error: `El cargador rechazo la reserva: ${status ?? 'sin confirmacion'}` });
+    }
+    res.status(201).json({ id: reservaId, ok: true, status });
+  } catch (err) {
+    await pool.query(`UPDATE reservas SET estado = 'rechazada' WHERE id = $1`, [reservaId]);
+    console.error('Error creando reserva OCPP:', err);
+    res.status(502).json({ error: 'No se pudo comunicar con CitrineOS.' });
+  }
+});
+
+router.delete('/reservas/:id', requireRole('superadmin'), async (req, res) => {
+  const reserva = await pool.query(`SELECT id, cargador_ocpp_id FROM reservas WHERE id = $1 AND estado = 'activa'`, [req.params.id]);
+  if (reserva.rowCount === 0) return res.status(404).json({ error: 'Reserva no encontrada o ya no esta activa.' });
+
+  const ocppId = reserva.rows[0].cargador_ocpp_id;
+  const url = `${CITRINEOS_REST_URL}/ocpp/2.0.1/evdriver/cancelReservation?identifier=${encodeURIComponent(ocppId)}&tenantId=1`;
+  try {
+    await sendAndAwaitConfirmation(ocppId, 'CancelReservation', url, { reservationId: Number(req.params.id) });
+  } catch (err) {
+    console.warn('Error cancelando reserva en el cargador (se cancela igual en nuestra DB):', err.message);
+  }
+  await pool.query(`UPDATE reservas SET estado = 'cancelada' WHERE id = $1`, [req.params.id]);
+  res.json({ ok: true });
+});
+
+router.get('/consorcios/:id/reservas', async (req, res) => {
+  const result = await pool.query(
+    `SELECT r.id, r.cargador_ocpp_id, r.uf_id, r.id_tag_ocpp, r.expira_en, r.estado, r.creado_por, r.creado_en,
+            uf.numero_departamento, uf.numero_cochera
+     FROM reservas r
+     LEFT JOIN unidades_funcionales uf ON uf.id = r.uf_id
+     WHERE r.consorcio_id = $1
+     ORDER BY r.creado_en DESC LIMIT 100`,
+    [req.params.id],
+  );
+  res.json(result.rows);
 });
 
 // ---------------------------------------------------------------------------

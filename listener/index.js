@@ -377,25 +377,27 @@ async function startSession({ stationId, transactionId, idTag, timestamp, startW
   const precioKwh = consorcio.rows[0]?.costo_kwh_electricidad ?? 0;
 
   let ufId = null;
+  let tarjetaId = null;
   if (idTag) {
     const uf = await pool.query(
-      `SELECT uf.id FROM unidades_funcionales uf
+      `SELECT uf.id AS uf_id, t.id AS tarjeta_id FROM unidades_funcionales uf
        JOIN tarjetas_rfid t ON t.uf_id = uf.id
        WHERE t.id_tag_ocpp = $1 AND t.activa = TRUE`,
       [idTag],
     );
-    ufId = uf.rows[0]?.id ?? null;
+    ufId = uf.rows[0]?.uf_id ?? null;
+    tarjetaId = uf.rows[0]?.tarjeta_id ?? null;
   }
 
   await pool.query(
     `INSERT INTO liquidacion_sesiones
       (transaction_id_ocpp, consorcio_id, uf_id, cargador_ocpp_id, fecha_inicio,
-       kwh_consumidos, precio_kwh_aplicado, monto_total_expensa, liquidado_en_expensas)
-     VALUES ($1, $2, $3, $4, $5, 0, $6, 0, FALSE)`,
-    [String(transactionId), consorcioId, ufId, stationId, timestamp, precioKwh],
+       kwh_consumidos, precio_kwh_aplicado, monto_total_expensa, liquidado_en_expensas, tarjeta_id)
+     VALUES ($1, $2, $3, $4, $5, 0, $6, 0, FALSE, $7)`,
+    [String(transactionId), consorcioId, ufId, stationId, timestamp, precioKwh, tarjetaId],
   );
 
-  openSessions.set(sessionKey(stationId, transactionId), { startWh, precioKwh, consorcioId, sectorId });
+  openSessions.set(sessionKey(stationId, transactionId), { startWh, precioKwh, consorcioId, sectorId, tarjetaId });
   await recordLectura(stationId, transactionId, consorcioId, timestamp, { wh: startWh, powerKw: null });
   console.log(`[Started] ${stationId} tx=${transactionId} uf=${ufId ?? '-'} precioKwh=${precioKwh}`);
   await rebalanceGroup({ consorcioId, sectorId });
@@ -417,11 +419,11 @@ async function updateSession({ stationId, transactionId, timestamp, wh, powerKw:
 async function endSession({ stationId, transactionId, timestamp, endWh: endWhInput }) {
   const key = sessionKey(stationId, transactionId);
 
-  let { startWh, precioKwh, consorcioId, sectorId } = openSessions.get(key) ?? {};
+  let { startWh, precioKwh, consorcioId, sectorId, tarjetaId } = openSessions.get(key) ?? {};
   if (startWh === undefined) {
     console.warn(`[Ended] No hay estado en memoria para ${key}; se intenta recuperar de la DB.`);
     const row = await pool.query(
-      `SELECT ls.precio_kwh_aplicado, ca.consorcio_id, ca.sector_id
+      `SELECT ls.precio_kwh_aplicado, ls.tarjeta_id, ca.consorcio_id, ca.sector_id
        FROM liquidacion_sesiones ls
        JOIN cargadores ca ON ca.ocpp_id = ls.cargador_ocpp_id
        WHERE ls.transaction_id_ocpp = $1 AND ls.cargador_ocpp_id = $2 AND ls.fecha_fin IS NULL`,
@@ -445,6 +447,7 @@ async function endSession({ stationId, transactionId, timestamp, endWh: endWhInp
     startWh = 0;
     consorcioId = row.rows[0].consorcio_id;
     sectorId = row.rows[0].sector_id;
+    tarjetaId = row.rows[0].tarjeta_id;
   }
 
   const endWh = endWhInput ?? startWh;
@@ -452,19 +455,48 @@ async function endSession({ stationId, transactionId, timestamp, endWh: endWhInp
   const monto = kwh * precioKwh;
   const periodo = timestamp.slice(0, 7);
 
-  await pool.query(
-    `UPDATE liquidacion_sesiones
-     SET fecha_fin = $1, kwh_consumidos = $2, monto_total_expensa = $3, periodo_expensa = $4
-     WHERE transaction_id_ocpp = $5 AND cargador_ocpp_id = $6 AND fecha_fin IS NULL`,
-    [timestamp, kwh, monto, periodo, String(transactionId), stationId],
-  );
+  // Saldo prepago (opt-in por consorcio) - deduccion atomica en la misma
+  // transaccion que el cierre de la sesion, para que nunca queden
+  // desincronizados si algo falla a mitad de camino.
+  const usarSaldo = consorcioId != null && tarjetaId != null
+    ? (await pool.query('SELECT usar_saldo_prepago FROM consorcios WHERE id = $1', [consorcioId])).rows[0]?.usar_saldo_prepago
+    : false;
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(
+      `UPDATE liquidacion_sesiones
+       SET fecha_fin = $1, kwh_consumidos = $2, monto_total_expensa = $3, periodo_expensa = $4
+       WHERE transaction_id_ocpp = $5 AND cargador_ocpp_id = $6 AND fecha_fin IS NULL`,
+      [timestamp, kwh, monto, periodo, String(transactionId), stationId],
+    );
+    if (usarSaldo && monto > 0) {
+      const liquidacion = await client.query(
+        'SELECT id FROM liquidacion_sesiones WHERE transaction_id_ocpp = $1 AND cargador_ocpp_id = $2',
+        [String(transactionId), stationId],
+      );
+      await client.query('UPDATE tarjetas_rfid SET saldo = saldo - $1 WHERE id = $2', [monto, tarjetaId]);
+      await client.query(
+        `INSERT INTO tarjeta_movimientos (tarjeta_id, tipo, monto, liquidacion_sesion_id)
+         VALUES ($1, 'consumo', $2, $3)`,
+        [tarjetaId, -monto, liquidacion.rows[0]?.id ?? null],
+      );
+    }
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 
   if (consorcioId != null) {
     await recordLectura(stationId, transactionId, consorcioId, timestamp, { wh: endWh, powerKw: 0 });
   }
 
   openSessions.delete(key);
-  console.log(`[Ended] ${stationId} tx=${transactionId} kwh=${kwh.toFixed(3)} monto=${monto.toFixed(2)}`);
+  console.log(`[Ended] ${stationId} tx=${transactionId} kwh=${kwh.toFixed(3)} monto=${monto.toFixed(2)}${usarSaldo ? ' (saldo descontado)' : ''}`);
   await rebalanceGroup({ consorcioId, sectorId });
 }
 
@@ -627,6 +659,16 @@ async function handleStatusNotification(context, payload) {
     [stationId, conectado, status],
   );
   console.log(`[StatusNotification] ${stationId} status=${status} conectado=${conectado}`);
+
+  // Alarmas historicas: solo se guarda un evento real (Faulted), no cada
+  // transicion Available/Occupied/Charging - eso ya lo cubre en vivo
+  // cargador_estado_actual de arriba, guardar todo aca seria puro ruido.
+  if (status === 'Faulted') {
+    await pool.query(
+      'INSERT INTO cargador_alarmas (cargador_ocpp_id, status_ocpp, error_code) VALUES ($1, $2, $3)',
+      [stationId, status, payload.errorCode ?? null],
+    );
+  }
 }
 
 async function main() {

@@ -1,8 +1,8 @@
 import { useEffect, useState, useCallback } from 'react';
-import { AlertCircle, Zap, Clock, Gauge, Battery, ListOrdered, Plug, PlugZap, History } from 'lucide-react';
+import { AlertCircle, Zap, Clock, Gauge, Battery, ListOrdered, Plug, PlugZap, History, CalendarClock, Wallet } from 'lucide-react';
 import { api } from '@/lib/api';
 import { formatElapsed, cn } from '@/lib/utils';
-import { Button, Card, CardContent, CardHeader, CardTitle, CardDescription, Badge } from '@/components/ui';
+import { Button, Card, CardContent, CardHeader, CardTitle, CardDescription, Badge, Input } from '@/components/ui';
 import ChargeGauge from '@/components/ChargeGauge';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -42,6 +42,21 @@ export default function CargadorControl({ ocppId }) {
   const [actionLoading, setActionLoading] = useState(false);
   const [startPhase, setStartPhase] = useState(null); // null | 'checking' | 'starting'
   const [loading, setLoading] = useState(true);
+  const [tarjeta, setTarjeta] = useState(null);
+  const [programado, setProgramado] = useState(false);
+  const [horaInicio, setHoraInicio] = useState('');
+  const [reservando, setReservando] = useState(false);
+  const [expiraReserva, setExpiraReserva] = useState('');
+  const [reservaError, setReservaError] = useState('');
+
+  const loadTarjeta = useCallback(async () => {
+    try {
+      const { data } = await api.get('/residente/tarjetas');
+      setTarjeta(data.find((t) => t.activa) ?? null);
+    } catch {
+      // no bloquea el resto de la tarjeta si esto falla
+    }
+  }, []);
 
   const loadEstado = useCallback(async () => {
     try {
@@ -79,7 +94,7 @@ export default function CargadorControl({ ocppId }) {
         const { data } = await api.get(`/residente/cargadores/${ocppId}`);
         if (cancelled) return;
         setCargador(data);
-        await Promise.all([loadEstado(), loadHistorial(), loadDisponibilidad()]);
+        await Promise.all([loadEstado(), loadHistorial(), loadDisponibilidad(), loadTarjeta()]);
       } catch (err) {
         if (cancelled) return;
         setLoadError(err.response?.data?.error || 'No se pudo cargar la informacion del cargador.');
@@ -89,7 +104,7 @@ export default function CargadorControl({ ocppId }) {
     }
     init();
     return () => { cancelled = true; };
-  }, [ocppId, loadEstado, loadHistorial, loadDisponibilidad]);
+  }, [ocppId, loadEstado, loadHistorial, loadDisponibilidad, loadTarjeta]);
 
   useEffect(() => {
     if (!cargador) return undefined;
@@ -107,13 +122,28 @@ export default function CargadorControl({ ocppId }) {
     await sleep(750);
     setStartPhase('starting');
     try {
-      await api.post(`/residente/cargadores/${ocppId}/iniciar`);
+      await api.post(`/residente/cargadores/${ocppId}/iniciar`, programado && horaInicio ? { horaInicio: new Date(horaInicio).toISOString() } : {});
       await Promise.all([loadEstado(), loadDisponibilidad()]);
     } catch (err) {
       setActionError(err.response?.data?.error || 'No se pudo iniciar la carga.');
     } finally {
       setActionLoading(false);
       setStartPhase(null);
+    }
+  }
+
+  async function handleReservar() {
+    if (!expiraReserva) return;
+    setReservaError('');
+    setActionLoading(true);
+    try {
+      await api.post(`/residente/cargadores/${ocppId}/reservas`, { expiraEn: new Date(expiraReserva).toISOString() });
+      setReservando(false);
+      setExpiraReserva('');
+    } catch (err) {
+      setReservaError(err.response?.data?.error || 'No se pudo reservar el cargador.');
+    } finally {
+      setActionLoading(false);
     }
   }
 
@@ -174,12 +204,18 @@ export default function CargadorControl({ ocppId }) {
         <CardHeader className="items-center text-center">
           <CardTitle className="text-xl">{cargador.etiqueta || cargador.ocpp_id}</CardTitle>
           <CardDescription className="font-mono text-xs">{cargador.ocpp_id}</CardDescription>
-          {estado.conectado != null && (
-            <Badge variant={estado.conectado ? 'accent' : 'muted'} className="mt-1 gap-1">
-              {estado.conectado ? <PlugZap className="h-3 w-3" /> : <Plug className="h-3 w-3" />}
-              {estado.conectado ? 'Vehiculo conectado' : 'Sin vehiculo conectado'}
+          <div className="mt-1 flex flex-wrap items-center justify-center gap-1.5">
+            <Badge variant={estado.online === true ? 'accent' : 'destructive'} className="gap-1">
+              <span className={cn('h-1.5 w-1.5 rounded-full', estado.online === true ? 'bg-emerald-500' : 'bg-destructive')} />
+              {estado.online === true ? 'Cargador conectado' : 'Cargador desconectado'}
             </Badge>
-          )}
+            {estado.conectado != null && (
+              <Badge variant={estado.conectado ? 'accent' : 'muted'} className="gap-1">
+                {estado.conectado ? <PlugZap className="h-3 w-3" /> : <Plug className="h-3 w-3" />}
+                {estado.conectado ? 'Vehiculo conectado' : 'Sin vehiculo conectado'}
+              </Badge>
+            )}
+          </div>
         </CardHeader>
         <CardContent className="flex flex-col items-center gap-6">
           {cargando && !activando ? (
@@ -209,7 +245,7 @@ export default function CargadorControl({ ocppId }) {
             </p>
           )}
 
-          {!estado.activo && !activando && (
+          {estado.online === true && !estado.activo && !activando && (
             <p className="-mt-4 text-center text-xs text-muted-foreground">
               {disponibilidad == null
                 ? 'Chequeando disponibilidad de carga en la red...'
@@ -221,7 +257,13 @@ export default function CargadorControl({ ocppId }) {
             </p>
           )}
 
-          {estado.conectado === false && !estado.activo && !activando && (
+          {estado.online !== true && !estado.activo && !activando && (
+            <p className="-mt-4 text-center text-xs text-destructive">
+              Este cargador esta desconectado en este momento, no se puede iniciar carga. Avisa al administrador del edificio.
+            </p>
+          )}
+
+          {estado.online === true && estado.conectado === false && !estado.activo && !activando && (
             <p className="-mt-4 text-center text-xs text-amber-600">
               Conecta tu vehiculo al cargador para poder iniciar.
             </p>
@@ -261,19 +303,55 @@ export default function CargadorControl({ ocppId }) {
               {actionLoading ? 'Deteniendo...' : enCola ? 'Cancelar' : 'Detener carga'}
             </Button>
           ) : (
-            <Button
-              size="lg"
-              className="w-full"
-              disabled={actionLoading || estado.conectado === false}
-              onClick={handleIniciar}
-            >
-              {activando ? '...' : 'Iniciar carga'}
-            </Button>
+            <div className="flex w-full flex-col gap-2">
+              <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                <input type="checkbox" checked={programado} onChange={(e) => setProgramado(e.target.checked)} />
+                Programar para mas tarde (tarifa nocturna / horario de valle)
+              </label>
+              {programado && (
+                <Input type="datetime-local" value={horaInicio} onChange={(e) => setHoraInicio(e.target.value)} className="h-9 text-xs" />
+              )}
+              <Button
+                size="lg"
+                className="w-full"
+                disabled={actionLoading || estado.conectado === false || estado.online !== true || (programado && !horaInicio)}
+                onClick={handleIniciar}
+              >
+                {activando ? '...' : estado.online !== true ? 'Cargador desconectado' : 'Iniciar carga'}
+              </Button>
+            </div>
+          )}
+
+          {!estado.activo && (
+            <div className="w-full border-t border-border pt-3">
+              {reservando ? (
+                <div className="flex flex-col gap-2">
+                  <label className="flex items-center gap-1.5 text-xs font-medium text-foreground">
+                    <CalendarClock className="h-3.5 w-3.5" /> Reservar hasta
+                  </label>
+                  <Input type="datetime-local" value={expiraReserva} onChange={(e) => setExpiraReserva(e.target.value)} className="h-9 text-xs" />
+                  {reservaError && <p className="text-xs text-destructive">{reservaError}</p>}
+                  <div className="flex gap-2">
+                    <Button size="sm" variant="outline" className="flex-1" disabled={actionLoading} onClick={() => setReservando(false)}>Cancelar</Button>
+                    <Button size="sm" className="flex-1" disabled={actionLoading || !expiraReserva} onClick={handleReservar}>Confirmar</Button>
+                  </div>
+                </div>
+              ) : (
+                <Button size="sm" variant="outline" className="w-full gap-1.5" onClick={() => setReservando(true)}>
+                  <CalendarClock className="h-3.5 w-3.5" /> Reservar para más tarde
+                </Button>
+              )}
+            </div>
           )}
 
           <p className="text-center text-xs text-muted-foreground">
             Precio actual: ${Number(cargador.costo_kwh_electricidad).toFixed(2)} / kWh
           </p>
+          {tarjeta && (
+            <p className="flex items-center justify-center gap-1.5 text-center text-xs text-muted-foreground">
+              <Wallet className="h-3.5 w-3.5" /> Saldo de tu tarjeta: ${Number(tarjeta.saldo).toFixed(2)}
+            </p>
+          )}
         </CardContent>
       </Card>
 

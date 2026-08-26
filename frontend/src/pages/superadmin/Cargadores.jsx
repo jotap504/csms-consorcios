@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Settings, ScrollText, Save } from 'lucide-react';
+import { Settings, ScrollText, Save, AlertTriangle, CalendarClock, X as XIcon } from 'lucide-react';
 import { api } from '@/lib/api';
 import { toast } from '@/lib/toast';
 import AdminLayout from '@/components/AdminLayout';
@@ -54,6 +54,14 @@ export default function Cargadores() {
   const [logOpen, setLogOpen] = useState(null);
   const [logItems, setLogItems] = useState(null);
   const [logBusy, setLogBusy] = useState(false);
+  const [alarmasOpen, setAlarmasOpen] = useState(null);
+  const [alarmasItems, setAlarmasItems] = useState(null);
+  const [alarmasBusy, setAlarmasBusy] = useState(false);
+  const [reservasOpen, setReservasOpen] = useState(null);
+  const [reservasItems, setReservasItems] = useState(null);
+  const [reservasBusy, setReservasBusy] = useState(false);
+  const [reservaForm, setReservaForm] = useState({ idTagOcpp: '', expiraEn: '' });
+  const [creandoReserva, setCreandoReserva] = useState(false);
 
   async function loadCargadores() {
     const { data } = await api.get('/superadmin/cargadores');
@@ -120,6 +128,64 @@ export default function Cargadores() {
     }
   }
 
+  async function openAlarmas(c) {
+    setAlarmasOpen(c);
+    setAlarmasItems(null);
+    setAlarmasBusy(true);
+    try {
+      const { data } = await api.get(`/admin/cargadores/${encodeURIComponent(c.ocpp_id)}/alarmas`);
+      setAlarmasItems(data);
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'No se pudo leer el historial de alarmas.');
+      setAlarmasOpen(null);
+    } finally {
+      setAlarmasBusy(false);
+    }
+  }
+
+  async function openReservas(c) {
+    setReservasOpen(c);
+    setReservasItems(null);
+    setReservaForm({ idTagOcpp: '', expiraEn: '' });
+    setReservasBusy(true);
+    try {
+      const { data } = await api.get(`/admin/consorcios/${c.consorcio_id}/reservas`);
+      setReservasItems(data.filter((r) => r.cargador_ocpp_id === c.ocpp_id));
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'No se pudo leer las reservas.');
+      setReservasOpen(null);
+    } finally {
+      setReservasBusy(false);
+    }
+  }
+
+  async function crearReserva() {
+    if (!reservaForm.idTagOcpp || !reservaForm.expiraEn) return;
+    setCreandoReserva(true);
+    try {
+      await api.post(`/admin/cargadores/${encodeURIComponent(reservasOpen.ocpp_id)}/reservas`, {
+        idTagOcpp: reservaForm.idTagOcpp,
+        expiraEn: new Date(reservaForm.expiraEn).toISOString(),
+      });
+      toast.success('Reserva creada.');
+      await openReservas(reservasOpen);
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'No se pudo crear la reserva.');
+    } finally {
+      setCreandoReserva(false);
+    }
+  }
+
+  async function cancelarReserva(id) {
+    try {
+      await api.delete(`/admin/reservas/${id}`);
+      toast.success('Reserva cancelada.');
+      await openReservas(reservasOpen);
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'No se pudo cancelar la reserva.');
+    }
+  }
+
   return (
     <AdminLayout title="Cargadores" navItems={SUPERADMIN_NAV}>
       <Card>
@@ -176,6 +242,7 @@ export default function Cargadores() {
                         <Badge variant={c.conectado_citrineos ? 'accent' : 'muted'}>
                           {c.conectado_citrineos ? 'Conectado' : 'Desconectado'}
                         </Badge>
+                        {c.status_ocpp === 'Faulted' && <Badge variant="destructive">Falla</Badge>}
                         {c.activo && <Badge variant="accent">Cargando{c.amps_asignados != null ? ` (${c.amps_asignados}A)` : ''}</Badge>}
                         {c.en_cola && <Badge variant="muted">En cola</Badge>}
                       </div>
@@ -188,6 +255,12 @@ export default function Cargadores() {
                         </Button>
                         <Button variant="outline" size="sm" onClick={() => openLog(c)} title="OCPP Log">
                           <ScrollText className="h-3.5 w-3.5" />
+                        </Button>
+                        <Button variant="outline" size="sm" onClick={() => openAlarmas(c)} title="Alarmas historicas">
+                          <AlertTriangle className="h-3.5 w-3.5" />
+                        </Button>
+                        <Button variant="outline" size="sm" onClick={() => openReservas(c)} title="Reservations">
+                          <CalendarClock className="h-3.5 w-3.5" />
                         </Button>
                       </div>
                     </TableCell>
@@ -262,6 +335,102 @@ export default function Cargadores() {
             </div>
           ) : (
             <p className="text-sm text-muted-foreground">Sin mensajes registrados para este equipo.</p>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={alarmasOpen != null} onOpenChange={(o) => !o && setAlarmasOpen(null)}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Alarmas historicas - {alarmasOpen?.ocpp_id}</DialogTitle>
+            <DialogDescription>Solo fallas reales (status Faulted) - el estado en vivo ya se ve en la tabla.</DialogDescription>
+          </DialogHeader>
+          {alarmasBusy ? (
+            <p className="text-sm text-muted-foreground">Cargando...</p>
+          ) : alarmasItems && alarmasItems.length > 0 ? (
+            <div className="max-h-[60vh] overflow-y-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Estado</TableHead>
+                    <TableHead>Codigo de error</TableHead>
+                    <TableHead>Hora</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {alarmasItems.map((a) => (
+                    <TableRow key={a.id}>
+                      <TableCell><Badge variant="destructive">{a.status_ocpp}</Badge></TableCell>
+                      <TableCell className="text-xs font-mono">{a.error_code ?? '-'}</TableCell>
+                      <TableCell className="text-xs text-muted-foreground">{new Date(a.creado_en).toLocaleString()}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">Sin fallas registradas para este equipo.</p>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={reservasOpen != null} onOpenChange={(o) => !o && setReservasOpen(null)}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Reservations - {reservasOpen?.ocpp_id}</DialogTitle>
+            <DialogDescription>Solo cargadores OCPP 2.0.1 (CitrineOS no expone reserveNow para 1.6 todavia).</DialogDescription>
+          </DialogHeader>
+          <div className="flex items-end gap-2 rounded-lg border border-border p-3">
+            <div className="flex-1">
+              <label className="mb-1 block text-xs text-muted-foreground">Id tag (tarjeta RFID)</label>
+              <Input value={reservaForm.idTagOcpp} onChange={(e) => setReservaForm((f) => ({ ...f, idTagOcpp: e.target.value }))} className="h-8 text-xs" />
+            </div>
+            <div className="flex-1">
+              <label className="mb-1 block text-xs text-muted-foreground">Reservado hasta</label>
+              <Input
+                type="datetime-local"
+                value={reservaForm.expiraEn}
+                onChange={(e) => setReservaForm((f) => ({ ...f, expiraEn: e.target.value }))}
+                className="h-8 text-xs"
+              />
+            </div>
+            <Button size="sm" disabled={creandoReserva} onClick={crearReserva}>Reservar</Button>
+          </div>
+          {reservasBusy ? (
+            <p className="text-sm text-muted-foreground">Cargando...</p>
+          ) : reservasItems && reservasItems.length > 0 ? (
+            <div className="max-h-[45vh] overflow-y-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Id tag</TableHead>
+                    <TableHead>Hasta</TableHead>
+                    <TableHead>Estado</TableHead>
+                    <TableHead>Origen</TableHead>
+                    <TableHead />
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {reservasItems.map((r) => (
+                    <TableRow key={r.id}>
+                      <TableCell className="font-mono text-xs">{r.id_tag_ocpp}</TableCell>
+                      <TableCell className="text-xs">{new Date(r.expira_en).toLocaleString()}</TableCell>
+                      <TableCell><Badge variant={r.estado === 'activa' ? 'accent' : 'muted'}>{r.estado}</Badge></TableCell>
+                      <TableCell className="text-xs text-muted-foreground">{r.creado_por}</TableCell>
+                      <TableCell>
+                        {r.estado === 'activa' && (
+                          <Button size="sm" variant="outline" onClick={() => cancelarReserva(r.id)}>
+                            <XIcon className="h-3.5 w-3.5" />
+                          </Button>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">Sin reservas para este equipo.</p>
           )}
         </DialogContent>
       </Dialog>
