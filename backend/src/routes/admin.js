@@ -1,10 +1,31 @@
 const express = require('express');
 const crypto = require('crypto');
+const bcrypt = require('bcryptjs');
 const multer = require('multer');
 const XLSX = require('xlsx');
 const pdfParse = require('pdf-parse');
 const { pool } = require('../db');
 const { authenticate, requireRole } = require('../auth/middleware');
+
+// Contrasena por defecto para el login de residente que se crea solo al
+// cargar/editar una UF con propietario_email. ON CONFLICT (email) nunca
+// pisa password_hash de una cuenta existente - solo relinkea uf_id/consorcio_id,
+// asi un residente que ya cambio su clave no la pierde si el admin reedita la UF.
+const DEFAULT_RESIDENTE_PASSWORD = 'user1234';
+
+async function upsertUsuarioResidente(client, { email, nombre, consorcioId, ufId }) {
+  if (!email) return;
+  const passwordHash = await bcrypt.hash(DEFAULT_RESIDENTE_PASSWORD, 10);
+  await client.query(
+    `INSERT INTO usuarios (email, password_hash, rol, consorcio_id, uf_id, nombre)
+     VALUES ($1, $2, 'residente', $3, $4, $5)
+     ON CONFLICT (email) DO UPDATE SET
+       consorcio_id = EXCLUDED.consorcio_id,
+       uf_id = EXCLUDED.uf_id,
+       nombre = COALESCE(EXCLUDED.nombre, usuarios.nombre)`,
+    [email, passwordHash, consorcioId, ufId, nombre ?? null],
+  );
+}
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
 
@@ -21,9 +42,17 @@ router.get('/consorcios', async (_req, res) => {
 
 router.get('/consorcios/:id', async (req, res) => {
   const result = await pool.query(
-    `SELECT id, nombre, direccion, email_administracion, telefono_contacto,
-            limite_amperios_totales, costo_kwh_electricidad
-     FROM consorcios WHERE id = $1`,
+    `SELECT c.id, c.nombre, c.direccion, c.email_administracion, c.telefono_contacto,
+            c.limite_amperios_totales, c.costo_kwh_electricidad, c.usar_medidor_dinamico,
+            c.modo_facturacion, c.tipo_cliente,
+            lu.amps_l1, lu.amps_l2, lu.amps_l3, lu.potencia_kw, lu."timestamp" AS ultima_lectura_en
+     FROM consorcios c
+     LEFT JOIN LATERAL (
+       SELECT amps_l1, amps_l2, amps_l3, potencia_kw, "timestamp"
+       FROM lecturas_consorcio lc WHERE lc.consorcio_id = c.id
+       ORDER BY lc."timestamp" DESC LIMIT 1
+     ) lu ON TRUE
+     WHERE c.id = $1`,
     [req.params.id],
   );
   if (result.rowCount === 0) return res.status(404).json({ error: 'Consorcio no encontrado.' });
@@ -31,18 +60,34 @@ router.get('/consorcios/:id', async (req, res) => {
 });
 
 router.put('/consorcios/:id', async (req, res) => {
-  const { nombre, direccion, telefono_contacto, limite_amperios_totales, costo_kwh_electricidad } = req.body ?? {};
+  const {
+    nombre, direccion, telefono_contacto, limite_amperios_totales, costo_kwh_electricidad, usar_medidor_dinamico,
+    modo_facturacion, tipo_cliente,
+  } = req.body ?? {};
+  if (modo_facturacion && !['administrador', 'propietario_directo'].includes(modo_facturacion)) {
+    return res.status(400).json({ error: 'modo_facturacion invalido.' });
+  }
+  if (tipo_cliente && !['residencial', 'comercial'].includes(tipo_cliente)) {
+    return res.status(400).json({ error: 'tipo_cliente invalido.' });
+  }
   const result = await pool.query(
     `UPDATE consorcios SET
        nombre = COALESCE($1, nombre),
        direccion = COALESCE($2, direccion),
        telefono_contacto = COALESCE($3, telefono_contacto),
        limite_amperios_totales = COALESCE($4, limite_amperios_totales),
-       costo_kwh_electricidad = COALESCE($5, costo_kwh_electricidad)
-     WHERE id = $6
+       costo_kwh_electricidad = COALESCE($5, costo_kwh_electricidad),
+       usar_medidor_dinamico = COALESCE($6, usar_medidor_dinamico),
+       modo_facturacion = COALESCE($7, modo_facturacion),
+       tipo_cliente = COALESCE($8, tipo_cliente)
+     WHERE id = $9
      RETURNING id, nombre, direccion, email_administracion, telefono_contacto,
-               limite_amperios_totales, costo_kwh_electricidad`,
-    [nombre, direccion, telefono_contacto, limite_amperios_totales, costo_kwh_electricidad, req.params.id],
+               limite_amperios_totales, costo_kwh_electricidad, usar_medidor_dinamico,
+               modo_facturacion, tipo_cliente`,
+    [
+      nombre, direccion, telefono_contacto, limite_amperios_totales, costo_kwh_electricidad, usar_medidor_dinamico ?? null,
+      modo_facturacion ?? null, tipo_cliente ?? null, req.params.id,
+    ],
   );
   if (result.rowCount === 0) return res.status(404).json({ error: 'Consorcio no encontrado.' });
   res.json(result.rows[0]);
@@ -52,10 +97,20 @@ router.put('/consorcios/:id', async (req, res) => {
 router.get('/consorcios/:id/cargadores', async (req, res) => {
   const result = await pool.query(
     `SELECT c.*, uf.numero_departamento AS uf_numero_departamento, uf.numero_cochera AS uf_numero_cochera,
-            s.nombre AS sector_nombre
+            uf.propietario_nombre AS uf_propietario_nombre,
+            coc.numero_cochera AS cochera_numero,
+            s.nombre AS sector_nombre,
+            si.identificador AS stock_identificador,
+            p.potencia_kw, p.fases, p.conector, p.montaje, p.ocpp_protocolo, p.tipo_corriente,
+            COALESCE(cs."isOnline", FALSE) AS estado_online,
+            cs."latestOcppMessageTimestamp" AS ultimo_heartbeat
      FROM cargadores c
      LEFT JOIN unidades_funcionales uf ON uf.id = c.uf_id
+     LEFT JOIN cocheras coc ON coc.id = c.cochera_id
      LEFT JOIN sectores s ON s.id = c.sector_id
+     LEFT JOIN stock_items si ON si.id = c.stock_item_id
+     LEFT JOIN productos_catalogo p ON p.id = si.producto_id
+     LEFT JOIN "ChargingStations" cs ON cs.id = c.ocpp_id
      WHERE c.consorcio_id = $1
      ORDER BY c.etiqueta NULLS LAST, c.ocpp_id`,
     [req.params.id],
@@ -63,60 +118,34 @@ router.get('/consorcios/:id/cargadores', async (req, res) => {
   res.json(result.rows);
 });
 
-router.post('/consorcios/:id/cargadores', async (req, res) => {
-  const { ocpp_id, etiqueta, charge_point_vendor, charge_point_model, uf_id, sector_id, ocpp_version } = req.body ?? {};
-  if (!ocpp_id) {
-    return res.status(400).json({ error: 'ocpp_id es requerido.' });
-  }
-  if (uf_id) {
-    const uf = await pool.query(
-      'SELECT id FROM unidades_funcionales WHERE id = $1 AND consorcio_id = $2',
-      [uf_id, req.params.id],
-    );
-    if (uf.rowCount === 0) {
-      return res.status(404).json({ error: 'Unidad funcional no encontrada en este consorcio.' });
-    }
-  }
-  if (sector_id) {
-    const sector = await pool.query(
-      'SELECT id FROM sectores WHERE id = $1 AND consorcio_id = $2',
-      [sector_id, req.params.id],
-    );
-    if (sector.rowCount === 0) {
-      return res.status(404).json({ error: 'Sector no encontrado en este consorcio.' });
-    }
-  }
-  try {
-    const result = await pool.query(
-      `INSERT INTO cargadores (ocpp_id, etiqueta, charge_point_vendor, charge_point_model, consorcio_id, uf_id, sector_id, ocpp_version)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
-      [ocpp_id, etiqueta, charge_point_vendor, charge_point_model, req.params.id, uf_id ?? null, sector_id ?? null, ocpp_version === '1.6' ? '1.6' : '2.0.1'],
-    );
-    res.status(201).json(result.rows[0]);
-  } catch (err) {
-    if (err.code === '23505') {
-      return res.status(409).json({ error: `Ya existe un cargador con ocpp_id "${ocpp_id}".` });
-    }
-    throw err;
-  }
-});
+// Alta de wallbox: unico camino es POST /consorcios/:id/instalaciones (ver
+// mas abajo), que consume el stock Y registra el cargador en un solo paso.
 
 router.put('/cargadores/:id', async (req, res) => {
-  const { etiqueta, charge_point_vendor, charge_point_model, uf_id, sector_id, ocpp_version } = req.body ?? {};
+  const {
+    etiqueta, charge_point_vendor, charge_point_model, cochera_id: cocheraId, sector_id, ocpp_version,
+  } = req.body ?? {};
+  const sendsCochera = 'cochera_id' in (req.body ?? {});
   let consorcioId = null;
-  if (uf_id || sector_id) {
+  if (sendsCochera || sector_id) {
     const cargador = await pool.query('SELECT consorcio_id FROM cargadores WHERE id = $1', [req.params.id]);
     if (cargador.rowCount === 0) return res.status(404).json({ error: 'Cargador no encontrado.' });
     consorcioId = cargador.rows[0].consorcio_id;
   }
-  if (uf_id) {
-    const uf = await pool.query(
-      'SELECT id FROM unidades_funcionales WHERE id = $1 AND consorcio_id = $2',
-      [uf_id, consorcioId],
+  // uf_id se deriva siempre de la cochera - nunca se asigna un cargador a
+  // una UF sin especificar cual de sus cocheras ocupa.
+  let ufId = null;
+  if (sendsCochera && cocheraId) {
+    const cochera = await pool.query(
+      `SELECT coc.id, coc.uf_id FROM cocheras coc
+       JOIN unidades_funcionales uf ON uf.id = coc.uf_id
+       WHERE coc.id = $1 AND uf.consorcio_id = $2`,
+      [cocheraId, consorcioId],
     );
-    if (uf.rowCount === 0) {
-      return res.status(404).json({ error: 'Unidad funcional no encontrada en este consorcio.' });
+    if (cochera.rowCount === 0) {
+      return res.status(404).json({ error: 'Cochera no encontrada en este consorcio.' });
     }
+    ufId = cochera.rows[0].uf_id;
   }
   if (sector_id) {
     const sector = await pool.query(
@@ -132,23 +161,45 @@ router.put('/cargadores/:id', async (req, res) => {
        etiqueta = COALESCE($1, etiqueta),
        charge_point_vendor = COALESCE($2, charge_point_vendor),
        charge_point_model = COALESCE($3, charge_point_model),
-       uf_id = CASE WHEN $4 THEN $5::int ELSE uf_id END,
+       cochera_id = CASE WHEN $4 THEN $5::int ELSE cochera_id END,
+       uf_id = CASE WHEN $4 THEN $10::int ELSE uf_id END,
        sector_id = CASE WHEN $6 THEN $7::int ELSE sector_id END,
        ocpp_version = COALESCE($9, ocpp_version)
      WHERE id = $8 RETURNING *`,
     [etiqueta ?? null, charge_point_vendor ?? null, charge_point_model ?? null,
-      'uf_id' in (req.body ?? {}), uf_id ?? null,
+      sendsCochera, cocheraId ?? null,
       'sector_id' in (req.body ?? {}), sector_id ?? null, req.params.id,
-      ocpp_version === '1.6' || ocpp_version === '2.0.1' ? ocpp_version : null],
+      ocpp_version === '1.6' || ocpp_version === '2.0.1' ? ocpp_version : null, ufId],
   );
   if (result.rowCount === 0) return res.status(404).json({ error: 'Cargador no encontrado.' });
   res.json(result.rows[0]);
 });
 
 router.delete('/cargadores/:id', async (req, res) => {
-  const result = await pool.query('DELETE FROM cargadores WHERE id = $1', [req.params.id]);
-  if (result.rowCount === 0) return res.status(404).json({ error: 'Cargador no encontrado.' });
-  res.status(204).end();
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const cargador = await client.query('SELECT stock_item_id FROM cargadores WHERE id = $1', [req.params.id]);
+    if (cargador.rowCount === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Cargador no encontrado.' });
+    }
+    await client.query('DELETE FROM cargadores WHERE id = $1', [req.params.id]);
+    const stockItemId = cargador.rows[0].stock_item_id;
+    if (stockItemId) {
+      await client.query(
+        `UPDATE stock_items SET estado = 'en_stock', consorcio_id = NULL WHERE id = $1`,
+        [stockItemId],
+      );
+    }
+    await client.query('COMMIT');
+    res.status(204).end();
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 });
 
 // Sectores (pisos/subsuelos con circuito y balanceo independiente)
@@ -200,10 +251,96 @@ router.delete('/sectores/:id', async (req, res) => {
   res.status(204).end();
 });
 
+// Medidores Modbus-TCP (gateway RS485->TCP en el tablero). sector_id null =
+// medidor general del edificio; con sector_id = medidor de ese piso puntual.
+router.get('/consorcios/:id/medidores-modbus', async (req, res) => {
+  const result = await pool.query(
+    `SELECT m.*, s.nombre AS sector_nombre
+     FROM medidores_modbus m
+     LEFT JOIN sectores s ON s.id = m.sector_id
+     WHERE m.consorcio_id = $1 ORDER BY m.sector_id NULLS FIRST`,
+    [req.params.id],
+  );
+  res.json(result.rows);
+});
+
+router.post('/consorcios/:id/medidores-modbus', async (req, res) => {
+  const {
+    sector_id, nombre, modelo, host, puerto, unit_id, intervalo_seg,
+  } = req.body ?? {};
+  if (!nombre || !host) {
+    return res.status(400).json({ error: 'nombre y host son requeridos.' });
+  }
+  if (sector_id) {
+    const sector = await pool.query(
+      'SELECT id FROM sectores WHERE id = $1 AND consorcio_id = $2',
+      [sector_id, req.params.id],
+    );
+    if (sector.rowCount === 0) {
+      return res.status(404).json({ error: 'Sector no encontrado en este consorcio.' });
+    }
+  }
+  try {
+    const result = await pool.query(
+      `INSERT INTO medidores_modbus (consorcio_id, sector_id, nombre, modelo, host, puerto, unit_id, intervalo_seg)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+      [
+        req.params.id, sector_id ?? null, nombre, modelo || 'ADW300', host,
+        puerto || 502, unit_id || 1, intervalo_seg || 15,
+      ],
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    if (err.code === '23505') {
+      return res.status(409).json({
+        error: sector_id
+          ? 'Este sector ya tiene un medidor Modbus configurado.'
+          : 'Este edificio ya tiene un medidor general Modbus configurado.',
+      });
+    }
+    throw err;
+  }
+});
+
+router.put('/medidores-modbus/:id', async (req, res) => {
+  const {
+    nombre, modelo, host, puerto, unit_id, intervalo_seg, activo,
+  } = req.body ?? {};
+  const result = await pool.query(
+    `UPDATE medidores_modbus SET
+       nombre = COALESCE($1, nombre),
+       modelo = COALESCE($2, modelo),
+       host = COALESCE($3, host),
+       puerto = COALESCE($4, puerto),
+       unit_id = COALESCE($5, unit_id),
+       intervalo_seg = COALESCE($6, intervalo_seg),
+       activo = COALESCE($7, activo)
+     WHERE id = $8 RETURNING *`,
+    [nombre ?? null, modelo ?? null, host ?? null, puerto ?? null, unit_id ?? null, intervalo_seg ?? null, activo ?? null, req.params.id],
+  );
+  if (result.rowCount === 0) return res.status(404).json({ error: 'Medidor no encontrado.' });
+  res.json(result.rows[0]);
+});
+
+router.delete('/medidores-modbus/:id', async (req, res) => {
+  const result = await pool.query('DELETE FROM medidores_modbus WHERE id = $1', [req.params.id]);
+  if (result.rowCount === 0) return res.status(404).json({ error: 'Medidor no encontrado.' });
+  res.status(204).end();
+});
+
 // Unidades funcionales
+// Un depto puede tener mas de una cochera (ver schema_cocheras.sql) - se
+// devuelven agregadas por UF para que el front las liste sin N+1 requests.
 router.get('/consorcios/:id/unidades', async (req, res) => {
   const result = await pool.query(
-    'SELECT * FROM unidades_funcionales WHERE consorcio_id = $1 ORDER BY numero_departamento',
+    `SELECT uf.*,
+            COALESCE(
+              (SELECT json_agg(json_build_object('id', coc.id, 'numero_cochera', coc.numero_cochera) ORDER BY coc.numero_cochera)
+               FROM cocheras coc WHERE coc.uf_id = uf.id),
+              '[]'
+            ) AS cocheras
+     FROM unidades_funcionales uf
+     WHERE uf.consorcio_id = $1 ORDER BY uf.numero_departamento`,
     [req.params.id],
   );
   res.json(result.rows);
@@ -214,12 +351,60 @@ router.post('/consorcios/:id/unidades', async (req, res) => {
   if (!numero_departamento) {
     return res.status(400).json({ error: 'numero_departamento es requerido.' });
   }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await client.query(
+      `INSERT INTO unidades_funcionales (consorcio_id, numero_departamento, numero_cochera, propietario_nombre, propietario_email, telefono_propietario)
+       VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+      [req.params.id, numero_departamento, numero_cochera, propietario_nombre, propietario_email, telefono_propietario ?? null],
+    );
+    const uf = result.rows[0];
+    let cocheraCreada = null;
+    if (numero_cochera) {
+      const coch = await client.query('INSERT INTO cocheras (uf_id, numero_cochera) VALUES ($1,$2) RETURNING *', [uf.id, numero_cochera]);
+      cocheraCreada = coch.rows[0];
+    }
+    await upsertUsuarioResidente(client, {
+      email: propietario_email,
+      nombre: propietario_nombre,
+      consorcioId: req.params.id,
+      ufId: uf.id,
+    });
+    await client.query('COMMIT');
+    res.status(201).json({ ...uf, cochera_creada: cocheraCreada });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+});
+
+// Cocheras (espacios de auto) de una unidad funcional - un depto puede
+// tener varias, cada una con su propio wallbox (o ninguno todavia).
+router.post('/unidades/:id/cocheras', async (req, res) => {
+  const { numero_cochera: numeroCochera } = req.body ?? {};
+  if (!numeroCochera) {
+    return res.status(400).json({ error: 'numero_cochera es requerido.' });
+  }
+  const uf = await pool.query('SELECT id FROM unidades_funcionales WHERE id = $1', [req.params.id]);
+  if (uf.rowCount === 0) return res.status(404).json({ error: 'Unidad funcional no encontrada.' });
   const result = await pool.query(
-    `INSERT INTO unidades_funcionales (consorcio_id, numero_departamento, numero_cochera, propietario_nombre, propietario_email, telefono_propietario)
-     VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-    [req.params.id, numero_departamento, numero_cochera, propietario_nombre, propietario_email, telefono_propietario ?? null],
+    'INSERT INTO cocheras (uf_id, numero_cochera) VALUES ($1,$2) RETURNING *',
+    [req.params.id, numeroCochera],
   );
   res.status(201).json(result.rows[0]);
+});
+
+router.delete('/cocheras/:id', async (req, res) => {
+  const enUso = await pool.query('SELECT id FROM cargadores WHERE cochera_id = $1', [req.params.id]);
+  if (enUso.rowCount > 0) {
+    return res.status(409).json({ error: 'Esta cochera tiene un wallbox asignado. Reasignalo o borralo antes de borrar la cochera.' });
+  }
+  const result = await pool.query('DELETE FROM cocheras WHERE id = $1', [req.params.id]);
+  if (result.rowCount === 0) return res.status(404).json({ error: 'Cochera no encontrada.' });
+  res.status(204).end();
 });
 
 // Import con IA: lee un Excel/CSV/PDF y devuelve filas candidatas de
@@ -304,24 +489,69 @@ ${rawContent.slice(0, 40000)}`;
 
 router.put('/unidades/:id', async (req, res) => {
   const { numero_departamento, numero_cochera, propietario_nombre, propietario_email, telefono_propietario } = req.body ?? {};
-  const result = await pool.query(
-    `UPDATE unidades_funcionales SET
-       numero_departamento = COALESCE($1, numero_departamento),
-       numero_cochera = COALESCE($2, numero_cochera),
-       propietario_nombre = COALESCE($3, propietario_nombre),
-       propietario_email = COALESCE($4, propietario_email),
-       telefono_propietario = COALESCE($5, telefono_propietario)
-     WHERE id = $6 RETURNING *`,
-    [numero_departamento, numero_cochera, propietario_nombre, propietario_email, telefono_propietario, req.params.id],
-  );
-  if (result.rowCount === 0) return res.status(404).json({ error: 'Unidad funcional no encontrada.' });
-  res.json(result.rows[0]);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await client.query(
+      `UPDATE unidades_funcionales SET
+         numero_departamento = COALESCE($1, numero_departamento),
+         numero_cochera = COALESCE($2, numero_cochera),
+         propietario_nombre = COALESCE($3, propietario_nombre),
+         propietario_email = COALESCE($4, propietario_email),
+         telefono_propietario = COALESCE($5, telefono_propietario)
+       WHERE id = $6 RETURNING *`,
+      [numero_departamento, numero_cochera, propietario_nombre, propietario_email, telefono_propietario, req.params.id],
+    );
+    if (result.rowCount === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Unidad funcional no encontrada.' });
+    }
+    const uf = result.rows[0];
+    await upsertUsuarioResidente(client, {
+      email: uf.propietario_email,
+      nombre: uf.propietario_nombre,
+      consorcioId: uf.consorcio_id,
+      ufId: uf.id,
+    });
+    await client.query('COMMIT');
+    res.json(uf);
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Error actualizando unidad funcional:', err);
+    res.status(500).json({ error: 'No se pudo actualizar la unidad funcional.' });
+  } finally {
+    client.release();
+  }
 });
 
+// Borrar una UF borra tambien sus cargadores (no los deja huerfanos con
+// uf_id/cochera_id en null) - un wallbox instalado en una cochera que ya no
+// existe no tiene sentido como registro suelto. El stock_item asociado
+// vuelve a 'en_stock' para poder reinstalarlo en otro lado.
 router.delete('/unidades/:id', async (req, res) => {
-  const result = await pool.query('DELETE FROM unidades_funcionales WHERE id = $1', [req.params.id]);
-  if (result.rowCount === 0) return res.status(404).json({ error: 'Unidad funcional no encontrada.' });
-  res.status(204).end();
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const cargadoresDeUf = await client.query('SELECT id, stock_item_id FROM cargadores WHERE uf_id = $1', [req.params.id]);
+    for (const c of cargadoresDeUf.rows) {
+      if (c.stock_item_id) {
+        await client.query(`UPDATE stock_items SET estado = 'en_stock', consorcio_id = NULL WHERE id = $1`, [c.stock_item_id]);
+      }
+    }
+    await client.query('DELETE FROM cargadores WHERE uf_id = $1', [req.params.id]);
+    const result = await client.query('DELETE FROM unidades_funcionales WHERE id = $1', [req.params.id]);
+    if (result.rowCount === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Unidad funcional no encontrada.' });
+    }
+    await client.query('COMMIT');
+    res.status(204).end();
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 });
 
 // Tarjetas RFID / NFC
@@ -395,7 +625,7 @@ router.delete('/tarjetas/:id', async (req, res) => {
 // Consumo en tiempo real: lecturas de los ultimos 30 min por cargador, mas
 // si tiene una sesion de carga activa en este momento.
 router.get('/consorcios/:id/live', async (req, res) => {
-  const [cargadores, activos, lecturas, acumulados] = await Promise.all([
+  const [cargadores, activos, lecturas, medidorGeneral, acumulados] = await Promise.all([
     pool.query('SELECT id, ocpp_id, etiqueta FROM cargadores WHERE consorcio_id = $1', [req.params.id]),
     pool.query(
       'SELECT cargador_ocpp_id, transaction_id_ocpp, fecha_inicio FROM liquidacion_sesiones WHERE consorcio_id = $1 AND fecha_fin IS NULL',
@@ -404,6 +634,15 @@ router.get('/consorcios/:id/live', async (req, res) => {
     pool.query(
       `SELECT cargador_ocpp_id, "timestamp", kwh_acumulado, potencia_kw
        FROM lecturas_medidor
+       WHERE consorcio_id = $1 AND "timestamp" > NOW() - INTERVAL '30 minutes'
+       ORDER BY "timestamp" ASC`,
+      [req.params.id],
+    ),
+    // Medidor general del edificio (Modbus/Acrel), no por cargador - mismo
+    // criterio de ventana (30 min) que las lecturas por cargador de arriba.
+    pool.query(
+      `SELECT "timestamp", amps_l1, amps_l2, amps_l3, potencia_kw
+       FROM lecturas_consorcio
        WHERE consorcio_id = $1 AND "timestamp" > NOW() - INTERVAL '30 minutes'
        ORDER BY "timestamp" ASC`,
       [req.params.id],
@@ -459,8 +698,8 @@ router.get('/consorcios/:id/live', async (req, res) => {
   }
   const acumuladosByOcpp = new Map(acumulados.rows.map((r) => [r.cargador_ocpp_id, r]));
 
-  res.json(
-    cargadores.rows.map((c) => {
+  res.json({
+    cargadores: cargadores.rows.map((c) => {
       const readings = readingsByOcpp.get(c.ocpp_id) ?? [];
       const activa = activeByOcpp.get(c.ocpp_id);
       const activo = activa != null;
@@ -479,7 +718,11 @@ router.get('/consorcios/:id/live', async (req, res) => {
         kwh_mes: Number(acum?.kwh_mes ?? 0),
       };
     }),
-  );
+    medidor_general: {
+      readings: medidorGeneral.rows,
+      ultima_lectura: medidorGeneral.rows[medidorGeneral.rows.length - 1] ?? null,
+    },
+  });
 });
 
 // Balanceo de carga (DLM): pushes a ChargingStationMaxProfile to the station
@@ -530,6 +773,1116 @@ router.post('/cargadores/:ocppId/charging-profile', async (req, res) => {
   } catch (err) {
     console.error('Error enviando charging profile a CitrineOS:', err);
     res.status(502).json({ error: 'No se pudo comunicar con CitrineOS.' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Configuration remota (GetConfiguration/ChangeConfiguration en 1.6,
+// GetVariables/SetVariables en 2.0.1) + visor de OCPP Log. Accion sensible
+// (toca limites de corriente, seguridad WS, etc. de un equipo real) -
+// superadmin only, igual criterio que otras rutas superadmin-exclusivas de
+// este mismo archivo (ver abono-items-catalogo mas abajo).
+// ---------------------------------------------------------------------------
+
+// Mismo criterio que listener/index.js:getOcppVersion - confiar en el
+// protocolo REALMENTE negociado (ChargingStations.protocol) antes que en
+// ocpp_version guardado a mano, que puede quedar desactualizado. Backend y
+// listener son procesos/contenedores separados sin codigo compartido, por
+// eso esto se duplica en vez de importarse.
+async function getOcppVersion(stationId) {
+  const cs = await pool.query('SELECT protocol FROM "ChargingStations" WHERE id = $1', [stationId]);
+  const protocol = cs.rows[0]?.protocol;
+  if (protocol) return protocol.includes('1.6') ? '1.6' : '2.0.1';
+  const r = await pool.query('SELECT ocpp_version FROM cargadores WHERE ocpp_id = $1', [stationId]);
+  return r.rows[0]?.ocpp_version ?? '2.0.1';
+}
+
+// Mismo patron que backend/src/routes/public.js:sendAndAwaitConfirmation - el
+// REST de CitrineOS es fire-and-forget (success=true solo confirma que el
+// mensaje salio, no lo que respondio el cargador). La respuesta real llega
+// async y CitrineOS la persiste en su propia tabla OCPPMessages.
+const CONFIRMATION_TIMEOUT_MS = 5000;
+const CONFIRMATION_POLL_MS = 400;
+async function sendAndAwaitConfirmation(ocppId, action, url, body) {
+  const sentAt = new Date();
+  const dispatchRes = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const dispatchData = await dispatchRes.json();
+  const dispatch = Array.isArray(dispatchData) ? dispatchData[0] : dispatchData;
+  if (!dispatch?.success) return { dispatched: false, payload: dispatch?.payload };
+
+  const deadline = Date.now() + CONFIRMATION_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, CONFIRMATION_POLL_MS));
+    const row = await pool.query(
+      `SELECT message FROM "OCPPMessages"
+       WHERE "stationId" = $1 AND action = $2 AND state = '2' AND "timestamp" >= $3
+       ORDER BY "timestamp" ASC LIMIT 1`,
+      [ocppId, action, sentAt],
+    );
+    if (row.rowCount > 0) return { dispatched: true, payload: row.rows[0].message?.[2] ?? null };
+  }
+  return { dispatched: true, payload: null };
+}
+
+// Lista curada de variables 2.0.1 - no existe un "traer todas" simple sin
+// paginar NotifyReport (GetBaseReport/FullInventory). Nombres reales, vistos
+// en vivo esta semana en el NotifyReport de un wallbox de proveedor real,
+// cubriendo las mismas areas que los grupos Core/Reservation/SmartCharging/
+// Authorize del lado 1.6.
+const VARIABLES_201_CURADAS = [
+  { component: 'OCPPCommCtrlr', variable: 'HeartbeatInterval' },
+  { component: 'OCPPCommCtrlr', variable: 'WebSocketPingInterval' },
+  { component: 'TxCtrlr', variable: 'EVConnectionTimeOut' },
+  { component: 'TxCtrlr', variable: 'StopTxOnInvalidId' },
+  { component: 'TxCtrlr', variable: 'StopTxOnEVSideDisconnect' },
+  { component: 'AuthCtrlr', variable: 'AuthorizeRemoteStart' },
+  { component: 'AuthCtrlr', variable: 'LocalPreAuthorize' },
+  { component: 'SampledDataCtrlr', variable: 'TxUpdatedInterval' },
+  { component: 'SampledDataCtrlr', variable: 'TxUpdatedMeasurands' },
+  { component: 'SmartChargingCtrlr', variable: 'Enabled' },
+  { component: 'ReservationCtrlr', variable: 'Enabled' },
+];
+
+router.get('/cargadores/:ocppId/configuration', requireRole('superadmin'), async (req, res) => {
+  const ocppId = req.params.ocppId;
+  const cargador = await pool.query('SELECT id FROM cargadores WHERE ocpp_id = $1', [ocppId]);
+  if (cargador.rowCount === 0) return res.status(404).json({ error: 'Cargador no encontrado.' });
+
+  const version = await getOcppVersion(ocppId);
+  const is16 = version === '1.6';
+  const url = is16
+    ? `${CITRINEOS_REST_URL}/ocpp/1.6/configuration/getConfiguration?identifier=${encodeURIComponent(ocppId)}&tenantId=1`
+    : `${CITRINEOS_REST_URL}/ocpp/2.0.1/monitoring/getVariables?identifier=${encodeURIComponent(ocppId)}&tenantId=1`;
+  const body = is16
+    ? {}
+    : { getVariableData: VARIABLES_201_CURADAS.map((v) => ({ component: { name: v.component }, variable: { name: v.variable } })) };
+
+  try {
+    const { dispatched, payload } = await sendAndAwaitConfirmation(ocppId, is16 ? 'GetConfiguration' : 'GetVariables', url, body);
+    if (!dispatched) return res.status(502).json({ error: 'No se pudo comunicar con el cargador.' });
+    if (!payload) return res.status(504).json({ error: 'El cargador no respondio a tiempo.' });
+
+    const items = is16
+      ? (payload.configurationKey ?? []).map((k) => ({ key: k.key, value: k.value ?? null, readonly: !!k.readonly }))
+      : (payload.getVariableResult ?? []).map((r) => ({
+        key: `${r.component?.name}.${r.variable?.name}`,
+        value: r.attributeValue ?? null,
+        readonly: false,
+        status: r.attributeStatus,
+      }));
+    res.json({ version, items, unknownKeys: is16 ? (payload.unknownKey ?? []) : [] });
+  } catch (err) {
+    console.error('Error leyendo configuracion OCPP:', err);
+    res.status(502).json({ error: 'No se pudo comunicar con CitrineOS.' });
+  }
+});
+
+router.put('/cargadores/:ocppId/configuration', requireRole('superadmin'), async (req, res) => {
+  const ocppId = req.params.ocppId;
+  const { key, value } = req.body ?? {};
+  if (!key || value == null) return res.status(400).json({ error: 'key y value son requeridos.' });
+
+  const cargador = await pool.query('SELECT id FROM cargadores WHERE ocpp_id = $1', [ocppId]);
+  if (cargador.rowCount === 0) return res.status(404).json({ error: 'Cargador no encontrado.' });
+
+  const version = await getOcppVersion(ocppId);
+  const is16 = version === '1.6';
+  const url = is16
+    ? `${CITRINEOS_REST_URL}/ocpp/1.6/configuration/changeConfiguration?identifier=${encodeURIComponent(ocppId)}&tenantId=1`
+    : `${CITRINEOS_REST_URL}/ocpp/2.0.1/monitoring/setVariables?identifier=${encodeURIComponent(ocppId)}&tenantId=1`;
+  let body;
+  if (is16) {
+    body = { key, value: String(value) };
+  } else {
+    const [component, variable] = key.split('.');
+    body = { setVariableData: [{ component: { name: component }, variable: { name: variable }, attributeValue: String(value) }] };
+  }
+
+  try {
+    const { dispatched, payload } = await sendAndAwaitConfirmation(ocppId, is16 ? 'ChangeConfiguration' : 'SetVariables', url, body);
+    if (!dispatched) return res.status(502).json({ error: 'No se pudo comunicar con el cargador.' });
+    if (!payload) return res.status(504).json({ error: 'El cargador no respondio a tiempo.' });
+
+    const status = is16 ? payload.status : payload.setVariableResult?.[0]?.attributeStatus;
+    res.json({ ok: status === 'Accepted', status });
+  } catch (err) {
+    console.error('Error cambiando configuracion OCPP:', err);
+    res.status(502).json({ error: 'No se pudo comunicar con CitrineOS.' });
+  }
+});
+
+router.get('/cargadores/:ocppId/ocpp-log', requireRole('superadmin'), async (req, res) => {
+  const ocppId = req.params.ocppId;
+  const limit = Math.min(Number(req.query.limit) || 100, 500);
+  const STATE_LABELS = { 1: 'Enviado (CALL)', 2: 'Confirmado (CALLRESULT)', 4: 'Error (CALLERROR)' };
+  const result = await pool.query(
+    `SELECT action, state, message, "timestamp"
+     FROM "OCPPMessages"
+     WHERE "stationId" = $1
+     ORDER BY "timestamp" DESC
+     LIMIT $2`,
+    [ocppId, limit],
+  );
+  res.json(result.rows.map((r) => {
+    // Formato OCPP-J: CALL = [type, id, action, payload] (payload en [3]),
+    // CALLRESULT/CALLERROR = [type, id, payload] (payload en [2]). Ademas
+    // CitrineOS a veces persiste "message" como STRING en vez de array
+    // cuando no logra correlacionar una respuesta malformada (visto en vivo
+    // con nuestro propio hardware-sim, que no implementa GetVariables) - en
+    // ese caso no hay payload util que extraer, se muestra el string crudo.
+    const isArray = Array.isArray(r.message);
+    const payload = isArray ? r.message[r.state === '1' ? 3 : 2] : r.message;
+    return {
+      action: r.action,
+      estado: STATE_LABELS[r.state] ?? r.state,
+      contenido: payload ?? null,
+      timestamp: r.timestamp,
+    };
+  }));
+});
+
+// ---------------------------------------------------------------------------
+// Facturacion Bilon (canon, mantenimiento, backup 4g, cargos puntuales) -
+// separada por completo de liquidacion_sesiones (electricidad interna del
+// edificio, que Bilon nunca factura, solo reporta). Ver schema_facturacion_bilon.sql.
+// ---------------------------------------------------------------------------
+
+function periodoValido(periodo) {
+  return typeof periodo === 'string' && /^\d{4}-\d{2}$/.test(periodo);
+}
+
+// Reporte de electricidad por UF, para que el administrador lo impute en sus
+// propias expensas. Bilon no cobra esto - los montos ya quedaron fijados por
+// sesion en liquidacion_sesiones (precio_kwh_aplicado al momento de cada carga).
+router.get('/consorcios/:id/reporte-electrico', async (req, res) => {
+  const { periodo } = req.query;
+  if (!periodoValido(periodo)) {
+    return res.status(400).json({ error: 'periodo debe tener formato YYYY-MM.' });
+  }
+  const result = await pool.query(
+    `SELECT uf.id AS uf_id, uf.numero_departamento, uf.numero_cochera,
+            COALESCE(SUM(ls.kwh_consumidos), 0) AS kwh_totales,
+            COALESCE(SUM(ls.monto_total_expensa), 0) AS monto_sugerido,
+            COUNT(ls.id) AS sesiones
+     FROM unidades_funcionales uf
+     LEFT JOIN liquidacion_sesiones ls
+       ON ls.uf_id = uf.id AND ls.periodo_expensa = $2 AND ls.fecha_fin IS NOT NULL
+     WHERE uf.consorcio_id = $1
+     GROUP BY uf.id, uf.numero_departamento, uf.numero_cochera
+     HAVING COUNT(ls.id) > 0
+     ORDER BY uf.numero_departamento NULLS LAST, uf.numero_cochera NULLS LAST`,
+    [req.params.id, periodo],
+  );
+  res.json(result.rows);
+});
+
+// Abono items (canon fijo por cochera, mantenimiento, backup 4g, etc)
+router.get('/consorcios/:id/abono-items', async (req, res) => {
+  const result = await pool.query(
+    'SELECT * FROM abono_items WHERE consorcio_id = $1 ORDER BY creado_en',
+    [req.params.id],
+  );
+  res.json(result.rows);
+});
+
+const TIPOS_ABONO_ITEM = ['fijo_por_edificio', 'fijo_por_cochera', 'prorrateado_activos', 'unico'];
+
+router.post('/consorcios/:id/abono-items', async (req, res) => {
+  const {
+    nombre, tipo, monto, recurrente,
+  } = req.body ?? {};
+  if (!nombre || !TIPOS_ABONO_ITEM.includes(tipo) || monto == null) {
+    return res.status(400).json({ error: `nombre, monto y tipo (uno de ${TIPOS_ABONO_ITEM.join(', ')}) son requeridos.` });
+  }
+  const result = await pool.query(
+    `INSERT INTO abono_items (consorcio_id, nombre, tipo, monto, recurrente)
+     VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+    [req.params.id, nombre, tipo, monto, recurrente !== false],
+  );
+  res.status(201).json(result.rows[0]);
+});
+
+router.put('/abono-items/:id', async (req, res) => {
+  const {
+    nombre, tipo, monto, recurrente, activo,
+  } = req.body ?? {};
+  if (tipo && !TIPOS_ABONO_ITEM.includes(tipo)) {
+    return res.status(400).json({ error: `tipo debe ser uno de ${TIPOS_ABONO_ITEM.join(', ')}.` });
+  }
+  const result = await pool.query(
+    `UPDATE abono_items SET
+       nombre = COALESCE($1, nombre), tipo = COALESCE($2, tipo), monto = COALESCE($3, monto),
+       recurrente = COALESCE($4, recurrente), activo = COALESCE($5, activo)
+     WHERE id = $6 RETURNING *`,
+    [nombre ?? null, tipo ?? null, monto ?? null, recurrente ?? null, activo ?? null, req.params.id],
+  );
+  if (result.rowCount === 0) return res.status(404).json({ error: 'Item no encontrado.' });
+  res.json(result.rows[0]);
+});
+
+router.delete('/abono-items/:id', async (req, res) => {
+  const result = await pool.query('DELETE FROM abono_items WHERE id = $1', [req.params.id]);
+  if (result.rowCount === 0) return res.status(404).json({ error: 'Item no encontrado.' });
+  res.status(204).end();
+});
+
+// Catalogo de plantillas de abono (valores predeterminados) - solo superadmin,
+// el instalador no toca precios.
+router.get('/abono-items-catalogo', requireRole('superadmin'), async (_req, res) => {
+  const result = await pool.query('SELECT * FROM abono_items_catalogo ORDER BY nombre');
+  res.json(result.rows);
+});
+
+router.post('/abono-items-catalogo', requireRole('superadmin'), async (req, res) => {
+  const {
+    nombre, tipo, monto_sugerido, tipo_cliente,
+  } = req.body ?? {};
+  if (!nombre || !TIPOS_ABONO_ITEM.includes(tipo) || monto_sugerido == null) {
+    return res.status(400).json({ error: `nombre, monto_sugerido y tipo (uno de ${TIPOS_ABONO_ITEM.join(', ')}) son requeridos.` });
+  }
+  if (tipo_cliente && !['residencial', 'comercial'].includes(tipo_cliente)) {
+    return res.status(400).json({ error: 'tipo_cliente invalido.' });
+  }
+  const result = await pool.query(
+    `INSERT INTO abono_items_catalogo (nombre, tipo, monto_sugerido, tipo_cliente)
+     VALUES ($1,$2,$3,$4) RETURNING *`,
+    [nombre, tipo, monto_sugerido, tipo_cliente ?? null],
+  );
+  res.status(201).json(result.rows[0]);
+});
+
+router.put('/abono-items-catalogo/:id', requireRole('superadmin'), async (req, res) => {
+  const {
+    nombre, tipo, monto_sugerido, tipo_cliente, activo,
+  } = req.body ?? {};
+  if (tipo && !TIPOS_ABONO_ITEM.includes(tipo)) {
+    return res.status(400).json({ error: `tipo debe ser uno de ${TIPOS_ABONO_ITEM.join(', ')}.` });
+  }
+  const result = await pool.query(
+    `UPDATE abono_items_catalogo SET
+       nombre = COALESCE($1, nombre), tipo = COALESCE($2, tipo), monto_sugerido = COALESCE($3, monto_sugerido),
+       tipo_cliente = CASE WHEN $6 THEN $4 ELSE tipo_cliente END, activo = COALESCE($5, activo)
+     WHERE id = $7 RETURNING *`,
+    [nombre ?? null, tipo ?? null, monto_sugerido ?? null, tipo_cliente ?? null, activo ?? null, 'tipo_cliente' in (req.body ?? {}), req.params.id],
+  );
+  if (result.rowCount === 0) return res.status(404).json({ error: 'Plantilla no encontrada.' });
+  res.json(result.rows[0]);
+});
+
+router.delete('/abono-items-catalogo/:id', requireRole('superadmin'), async (req, res) => {
+  const result = await pool.query('DELETE FROM abono_items_catalogo WHERE id = $1', [req.params.id]);
+  if (result.rowCount === 0) return res.status(404).json({ error: 'Plantilla no encontrada.' });
+  res.status(204).end();
+});
+
+// Clona las plantillas del catalogo (activas, y que apliquen al tipo_cliente
+// de este edificio o sean genericas) como abono_items propios del consorcio,
+// editables despues sin afectar el catalogo.
+router.post('/consorcios/:id/abono-items/clonar-catalogo', requireRole('superadmin'), async (req, res) => {
+  const { catalogo_ids: catalogoIds } = req.body ?? {};
+  const consorcio = await pool.query('SELECT tipo_cliente FROM consorcios WHERE id = $1', [req.params.id]);
+  if (consorcio.rowCount === 0) return res.status(404).json({ error: 'Consorcio no encontrado.' });
+  const tipoCliente = consorcio.rows[0].tipo_cliente;
+
+  const plantillas = Array.isArray(catalogoIds) && catalogoIds.length > 0
+    ? await pool.query('SELECT * FROM abono_items_catalogo WHERE activo = TRUE AND id = ANY($1::int[])', [catalogoIds])
+    : await pool.query(
+      'SELECT * FROM abono_items_catalogo WHERE activo = TRUE AND (tipo_cliente IS NULL OR tipo_cliente = $1)',
+      [tipoCliente],
+    );
+  const creados = [];
+  for (const p of plantillas.rows) {
+    const result = await pool.query(
+      `INSERT INTO abono_items (consorcio_id, nombre, tipo, monto, catalogo_id)
+       VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+      [req.params.id, p.nombre, p.tipo, p.monto_sugerido, p.id],
+    );
+    creados.push(result.rows[0]);
+  }
+  res.status(201).json(creados);
+});
+
+// Ajuste masivo por porcentaje - accion manual (no cron), pensada para el
+// cierre de fin de mes. consorcio_id ausente = aplica a TODOS los edificios.
+router.post('/abono-items/ajuste-masivo', requireRole('superadmin'), async (req, res) => {
+  const { porcentaje, consorcio_id: consorcioId } = req.body ?? {};
+  if (typeof porcentaje !== 'number' || porcentaje === 0) {
+    return res.status(400).json({ error: 'porcentaje es requerido y debe ser distinto de 0.' });
+  }
+  const result = await pool.query(
+    `UPDATE abono_items SET monto = ROUND(monto * (1 + $1::numeric / 100), 2)
+     WHERE activo = TRUE AND ($2::int IS NULL OR consorcio_id = $2)
+     RETURNING *`,
+    [porcentaje, consorcioId ?? null],
+  );
+  res.json({ actualizados: result.rowCount, items: result.rows });
+});
+
+router.post('/abono-items-catalogo/ajuste-masivo', requireRole('superadmin'), async (req, res) => {
+  const { porcentaje } = req.body ?? {};
+  if (typeof porcentaje !== 'number' || porcentaje === 0) {
+    return res.status(400).json({ error: 'porcentaje es requerido y debe ser distinto de 0.' });
+  }
+  const result = await pool.query(
+    `UPDATE abono_items_catalogo SET monto_sugerido = ROUND(monto_sugerido * (1 + $1::numeric / 100), 2)
+     WHERE activo = TRUE RETURNING *`,
+    [porcentaje],
+  );
+  res.json({ actualizados: result.rowCount, items: result.rows });
+});
+
+// Cargos puntuales (visita tecnica, reparacion) - uf_id null = va al administrador.
+router.get('/consorcios/:id/cargos-puntuales', async (req, res) => {
+  const { periodo } = req.query;
+  const result = await pool.query(
+    periodo
+      ? `SELECT cp.*, uf.numero_departamento, uf.numero_cochera FROM cargos_puntuales cp
+         LEFT JOIN unidades_funcionales uf ON uf.id = cp.uf_id
+         WHERE cp.consorcio_id = $1 AND cp.periodo = $2 ORDER BY cp.creado_en DESC`
+      : `SELECT cp.*, uf.numero_departamento, uf.numero_cochera FROM cargos_puntuales cp
+         LEFT JOIN unidades_funcionales uf ON uf.id = cp.uf_id
+         WHERE cp.consorcio_id = $1 ORDER BY cp.creado_en DESC LIMIT 100`,
+    periodo ? [req.params.id, periodo] : [req.params.id],
+  );
+  res.json(result.rows);
+});
+
+router.post('/consorcios/:id/cargos-puntuales', async (req, res) => {
+  const {
+    uf_id, descripcion, monto, periodo,
+  } = req.body ?? {};
+  if (!descripcion || monto == null || !periodoValido(periodo)) {
+    return res.status(400).json({ error: 'descripcion, monto y periodo (YYYY-MM) son requeridos.' });
+  }
+  if (uf_id) {
+    const uf = await pool.query('SELECT id FROM unidades_funcionales WHERE id = $1 AND consorcio_id = $2', [uf_id, req.params.id]);
+    if (uf.rowCount === 0) return res.status(404).json({ error: 'Unidad funcional no encontrada en este consorcio.' });
+  }
+  const result = await pool.query(
+    `INSERT INTO cargos_puntuales (consorcio_id, uf_id, descripcion, monto, periodo, creado_por)
+     VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+    [req.params.id, uf_id ?? null, descripcion, monto, periodo, req.user.sub],
+  );
+  res.status(201).json(result.rows[0]);
+});
+
+router.delete('/cargos-puntuales/:id', async (req, res) => {
+  const result = await pool.query('DELETE FROM cargos_puntuales WHERE id = $1', [req.params.id]);
+  if (result.rowCount === 0) return res.status(404).json({ error: 'Cargo no encontrado.' });
+  res.status(204).end();
+});
+
+// Genera (o regenera, si no esta pagada) las facturas Bilon de un periodo.
+// modo 'administrador': una sola factura al consorcio con todo.
+// modo 'propietario_directo': una factura por UF con cargador (canon +
+// prorrateo + sus cargos puntuales) + una factura al consorcio con los items
+// fijo_por_edificio y los cargos puntuales sin UF asignada (gastos compartidos).
+router.post('/consorcios/:id/facturas/generar', async (req, res) => {
+  const { periodo } = req.body ?? {};
+  if (!periodoValido(periodo)) {
+    return res.status(400).json({ error: 'periodo debe tener formato YYYY-MM.' });
+  }
+  const consorcio = await pool.query('SELECT modo_facturacion FROM consorcios WHERE id = $1', [req.params.id]);
+  if (consorcio.rowCount === 0) return res.status(404).json({ error: 'Consorcio no encontrado.' });
+  const modo = consorcio.rows[0].modo_facturacion;
+
+  const items = (await pool.query(
+    'SELECT * FROM abono_items WHERE consorcio_id = $1 AND activo = TRUE AND recurrente = TRUE',
+    [req.params.id],
+  )).rows;
+  const itemsPorTipo = Object.fromEntries(TIPOS_ABONO_ITEM.map((t) => [t, items.filter((i) => i.tipo === t)]));
+
+  const cargosSinUf = (await pool.query(
+    'SELECT * FROM cargos_puntuales WHERE consorcio_id = $1 AND periodo = $2 AND uf_id IS NULL',
+    [req.params.id, periodo],
+  )).rows;
+
+  async function upsertFactura(ufId, detalle) {
+    const montoTotal = detalle.reduce((sum, d) => sum + Number(d.monto), 0);
+    if (montoTotal <= 0) return null;
+    const result = await pool.query(
+      `INSERT INTO facturas_bilon (consorcio_id, uf_id, periodo, detalle, monto_total)
+       VALUES ($1,$2,$3,$4,$5)
+       ON CONFLICT (consorcio_id, COALESCE(uf_id, 0), periodo) DO UPDATE SET
+         detalle = EXCLUDED.detalle, monto_total = EXCLUDED.monto_total
+       WHERE facturas_bilon.estado = 'pendiente'
+       RETURNING *`,
+      [req.params.id, ufId, periodo, JSON.stringify(detalle), montoTotal],
+    );
+    return result.rows[0] ?? null;
+  }
+
+  const generadas = [];
+
+  if (modo === 'administrador') {
+    const cantidadCargadores = Number((await pool.query(
+      'SELECT COUNT(*) AS n FROM cargadores WHERE consorcio_id = $1', [req.params.id],
+    )).rows[0].n);
+    const detalle = [
+      ...itemsPorTipo.fijo_por_edificio.map((i) => ({ concepto: i.nombre, monto: Number(i.monto) })),
+      ...itemsPorTipo.fijo_por_cochera.map((i) => ({
+        concepto: `${i.nombre} x${cantidadCargadores}`, monto: Number(i.monto) * cantidadCargadores,
+      })),
+      ...itemsPorTipo.prorrateado_activos.map((i) => ({ concepto: i.nombre, monto: Number(i.monto) })),
+      ...cargosSinUf.map((c) => ({ concepto: c.descripcion, monto: Number(c.monto) })),
+      ...(await pool.query(
+        'SELECT descripcion, monto FROM cargos_puntuales WHERE consorcio_id = $1 AND periodo = $2 AND uf_id IS NOT NULL',
+        [req.params.id, periodo],
+      )).rows.map((c) => ({ concepto: c.descripcion, monto: Number(c.monto) })),
+    ];
+    const f = await upsertFactura(null, detalle);
+    if (f) generadas.push(f);
+  } else {
+    const ufsConCargador = (await pool.query(
+      `SELECT uf.id, COUNT(ca.id) AS n_cargadores FROM unidades_funcionales uf
+       JOIN cargadores ca ON ca.uf_id = uf.id
+       WHERE uf.consorcio_id = $1 GROUP BY uf.id`,
+      [req.params.id],
+    )).rows;
+
+    const montoProrrateadoPorUf = ufsConCargador.length > 0
+      ? itemsPorTipo.prorrateado_activos.reduce((sum, i) => sum + Number(i.monto), 0) / ufsConCargador.length
+      : 0;
+
+    for (const { id: ufId, n_cargadores: nCargadores } of ufsConCargador) {
+      const cargosUf = (await pool.query(
+        'SELECT descripcion, monto FROM cargos_puntuales WHERE consorcio_id = $1 AND periodo = $2 AND uf_id = $3',
+        [req.params.id, periodo, ufId],
+      )).rows;
+      const detalle = [
+        ...itemsPorTipo.fijo_por_cochera.map((i) => ({
+          concepto: `${i.nombre} x${nCargadores}`, monto: Number(i.monto) * Number(nCargadores),
+        })),
+        ...(montoProrrateadoPorUf > 0
+          ? [{ concepto: 'Backup / items compartidos (prorrateado)', monto: Number(montoProrrateadoPorUf.toFixed(2)) }]
+          : []),
+        ...cargosUf.map((c) => ({ concepto: c.descripcion, monto: Number(c.monto) })),
+      ];
+      const f = await upsertFactura(ufId, detalle);
+      if (f) generadas.push(f);
+    }
+
+    const detalleConsorcio = [
+      ...itemsPorTipo.fijo_por_edificio.map((i) => ({ concepto: i.nombre, monto: Number(i.monto) })),
+      ...cargosSinUf.map((c) => ({ concepto: c.descripcion, monto: Number(c.monto) })),
+    ];
+    const fConsorcio = await upsertFactura(null, detalleConsorcio);
+    if (fConsorcio) generadas.push(fConsorcio);
+  }
+
+  res.status(201).json(generadas);
+});
+
+router.get('/consorcios/:id/facturas', async (req, res) => {
+  const { periodo } = req.query;
+  const result = await pool.query(
+    periodo
+      ? `SELECT fb.*, uf.numero_departamento, uf.numero_cochera FROM facturas_bilon fb
+         LEFT JOIN unidades_funcionales uf ON uf.id = fb.uf_id
+         WHERE fb.consorcio_id = $1 AND fb.periodo = $2 ORDER BY fb.uf_id NULLS FIRST`
+      : `SELECT fb.*, uf.numero_departamento, uf.numero_cochera FROM facturas_bilon fb
+         LEFT JOIN unidades_funcionales uf ON uf.id = fb.uf_id
+         WHERE fb.consorcio_id = $1 ORDER BY fb.periodo DESC, fb.uf_id NULLS FIRST LIMIT 200`,
+    periodo ? [req.params.id, periodo] : [req.params.id],
+  );
+  res.json(result.rows);
+});
+
+router.put('/facturas/:id', async (req, res) => {
+  const { estado, detalle } = req.body ?? {};
+
+  if (detalle !== undefined) {
+    if (!Array.isArray(detalle) || detalle.length === 0) {
+      return res.status(400).json({ error: 'detalle debe ser una lista de items con concepto y monto.' });
+    }
+    const montoTotal = detalle.reduce((sum, d) => sum + Number(d.monto), 0);
+    const result = await pool.query(
+      `UPDATE facturas_bilon SET detalle = $1, monto_total = $2
+       WHERE id = $3 AND estado = 'pendiente' RETURNING *`,
+      [JSON.stringify(detalle), montoTotal, req.params.id],
+    );
+    if (result.rowCount === 0) {
+      return res.status(409).json({ error: 'Solo se puede editar el detalle de una factura pendiente.' });
+    }
+    return res.json(result.rows[0]);
+  }
+
+  if (!['pendiente', 'pagada', 'anulada'].includes(estado)) {
+    return res.status(400).json({ error: 'estado debe ser pendiente, pagada o anulada.' });
+  }
+  const result = await pool.query(
+    `UPDATE facturas_bilon SET estado = $1, pagada_en = CASE WHEN $1 = 'pagada' THEN NOW() ELSE pagada_en END
+     WHERE id = $2 RETURNING *`,
+    [estado, req.params.id],
+  );
+  if (result.rowCount === 0) return res.status(404).json({ error: 'Factura no encontrada.' });
+  res.json(result.rows[0]);
+});
+
+// ---------------------------------------------------------------------------
+// Stock / inventario - catalogo de productos, unidades serializadas (wallbox,
+// medidor, router) y movimientos por cantidad (consumibles). Ver schema_stock.sql.
+// Catalogo/ingreso: solo superadmin. Listar/consumir en una instalacion: los
+// dos roles (el instalador elige el material que usa en cada instalacion).
+// ---------------------------------------------------------------------------
+
+const CATEGORIAS_PRODUCTO = ['wallbox', 'medidor', 'router', 'otro'];
+
+router.get('/productos-catalogo', async (_req, res) => {
+  const result = await pool.query(
+    `SELECT p.*,
+            CASE WHEN p.serializado
+              THEN (SELECT COUNT(*) FROM stock_items si WHERE si.producto_id = p.id AND si.estado = 'en_stock')
+              ELSE (SELECT COALESCE(SUM(CASE WHEN sm.tipo IN ('ingreso','devolucion') THEN sm.cantidad
+                                              WHEN sm.tipo IN ('egreso_instalacion') THEN -sm.cantidad
+                                              ELSE sm.cantidad END), 0)
+                    FROM stock_movimientos sm WHERE sm.producto_id = p.id)
+            END AS stock_disponible
+     FROM productos_catalogo p ORDER BY p.categoria, p.marca, p.modelo`,
+  );
+  res.json(result.rows);
+});
+
+const FASES_WALLBOX = ['monofasico', 'trifasico'];
+const CONECTORES_WALLBOX = ['type2', 'nacs'];
+const MONTAJES_WALLBOX = ['pared', 'pie'];
+const OCPP_PROTOCOLOS_WALLBOX = ['1.6', '2.0.1', 'ambos'];
+const TIPOS_CORRIENTE_WALLBOX = ['AC', 'DC'];
+
+router.post('/productos-catalogo', requireRole('superadmin'), async (req, res) => {
+  const {
+    categoria, marca, modelo, descripcion, serializado, unidad,
+    potencia_kw: potenciaKw, fases, conector, montaje,
+    ocpp_protocolo: ocppProtocolo, tipo_corriente: tipoCorriente,
+  } = req.body ?? {};
+  if (!CATEGORIAS_PRODUCTO.includes(categoria) || !modelo) {
+    return res.status(400).json({ error: `categoria (${CATEGORIAS_PRODUCTO.join(', ')}) y modelo son requeridos.` });
+  }
+  if (fases && !FASES_WALLBOX.includes(fases)) {
+    return res.status(400).json({ error: `fases debe ser una de ${FASES_WALLBOX.join(', ')}.` });
+  }
+  if (conector && !CONECTORES_WALLBOX.includes(conector)) {
+    return res.status(400).json({ error: `conector debe ser uno de ${CONECTORES_WALLBOX.join(', ')}.` });
+  }
+  if (montaje && !MONTAJES_WALLBOX.includes(montaje)) {
+    return res.status(400).json({ error: `montaje debe ser uno de ${MONTAJES_WALLBOX.join(', ')}.` });
+  }
+  if (ocppProtocolo && !OCPP_PROTOCOLOS_WALLBOX.includes(ocppProtocolo)) {
+    return res.status(400).json({ error: `ocpp_protocolo debe ser uno de ${OCPP_PROTOCOLOS_WALLBOX.join(', ')}.` });
+  }
+  if (tipoCorriente && !TIPOS_CORRIENTE_WALLBOX.includes(tipoCorriente)) {
+    return res.status(400).json({ error: `tipo_corriente debe ser uno de ${TIPOS_CORRIENTE_WALLBOX.join(', ')}.` });
+  }
+  const result = await pool.query(
+    `INSERT INTO productos_catalogo (categoria, marca, modelo, descripcion, serializado, unidad, potencia_kw, fases, conector, montaje, ocpp_protocolo, tipo_corriente)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+    [categoria, marca ?? null, modelo, descripcion ?? null, serializado !== false, unidad || 'unidad',
+      potenciaKw ?? null, fases ?? null, conector ?? null, montaje ?? null, ocppProtocolo ?? null, tipoCorriente ?? null],
+  );
+  res.status(201).json(result.rows[0]);
+});
+
+router.put('/productos-catalogo/:id', requireRole('superadmin'), async (req, res) => {
+  const {
+    categoria, marca, modelo, descripcion, activo,
+    potencia_kw: potenciaKw, fases, conector, montaje,
+    ocpp_protocolo: ocppProtocolo, tipo_corriente: tipoCorriente,
+  } = req.body ?? {};
+  if (categoria && !CATEGORIAS_PRODUCTO.includes(categoria)) {
+    return res.status(400).json({ error: `categoria debe ser una de ${CATEGORIAS_PRODUCTO.join(', ')}.` });
+  }
+  if (fases && !FASES_WALLBOX.includes(fases)) {
+    return res.status(400).json({ error: `fases debe ser una de ${FASES_WALLBOX.join(', ')}.` });
+  }
+  if (conector && !CONECTORES_WALLBOX.includes(conector)) {
+    return res.status(400).json({ error: `conector debe ser uno de ${CONECTORES_WALLBOX.join(', ')}.` });
+  }
+  if (montaje && !MONTAJES_WALLBOX.includes(montaje)) {
+    return res.status(400).json({ error: `montaje debe ser uno de ${MONTAJES_WALLBOX.join(', ')}.` });
+  }
+  if (ocppProtocolo && !OCPP_PROTOCOLOS_WALLBOX.includes(ocppProtocolo)) {
+    return res.status(400).json({ error: `ocpp_protocolo debe ser uno de ${OCPP_PROTOCOLOS_WALLBOX.join(', ')}.` });
+  }
+  if (tipoCorriente && !TIPOS_CORRIENTE_WALLBOX.includes(tipoCorriente)) {
+    return res.status(400).json({ error: `tipo_corriente debe ser uno de ${TIPOS_CORRIENTE_WALLBOX.join(', ')}.` });
+  }
+  const result = await pool.query(
+    `UPDATE productos_catalogo SET
+       categoria = COALESCE($1, categoria), marca = COALESCE($2, marca), modelo = COALESCE($3, modelo),
+       descripcion = COALESCE($4, descripcion), activo = COALESCE($5, activo),
+       potencia_kw = COALESCE($6, potencia_kw), fases = COALESCE($7, fases),
+       conector = COALESCE($8, conector), montaje = COALESCE($9, montaje),
+       ocpp_protocolo = COALESCE($10, ocpp_protocolo), tipo_corriente = COALESCE($11, tipo_corriente)
+     WHERE id = $12 RETURNING *`,
+    [categoria ?? null, marca ?? null, modelo ?? null, descripcion ?? null, activo ?? null,
+      potenciaKw ?? null, fases ?? null, conector ?? null, montaje ?? null,
+      ocppProtocolo ?? null, tipoCorriente ?? null, req.params.id],
+  );
+  if (result.rowCount === 0) return res.status(404).json({ error: 'Producto no encontrado.' });
+  res.json(result.rows[0]);
+});
+
+// Ingreso de unidades serializadas (wallbox/medidor/router) - acepta un array
+// de identificadores para cargar un lote de una (ej: 10 wallbox importados).
+router.post('/stock-items', requireRole('superadmin'), async (req, res) => {
+  const {
+    producto_id: productoId, identificadores, costo_compra: costoCompra, proveedor_id: proveedorId,
+  } = req.body ?? {};
+  if (!productoId || !Array.isArray(identificadores) || identificadores.length === 0) {
+    return res.status(400).json({ error: 'producto_id e identificadores (array) son requeridos.' });
+  }
+  const creados = [];
+  const errores = [];
+  for (const identificador of identificadores) {
+    try {
+      const result = await pool.query(
+        `INSERT INTO stock_items (producto_id, identificador, costo_compra, ingresado_por, proveedor_id)
+         VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+        [productoId, String(identificador).trim(), costoCompra ?? null, req.user.sub, proveedorId ?? null],
+      );
+      creados.push(result.rows[0]);
+    } catch (err) {
+      if (err.code === '23505') {
+        errores.push({ identificador, error: 'Ya existe en stock.' });
+      } else {
+        throw err;
+      }
+    }
+  }
+  res.status(201).json({ creados, errores });
+});
+
+router.get('/stock-items', async (req, res) => {
+  const {
+    producto_id: productoId, estado, categoria,
+  } = req.query;
+  const conditions = [];
+  const params = [];
+  if (productoId) { params.push(productoId); conditions.push(`si.producto_id = $${params.length}`); }
+  if (estado) { params.push(estado); conditions.push(`si.estado = $${params.length}`); }
+  if (categoria) { params.push(categoria); conditions.push(`p.categoria = $${params.length}`); }
+  const result = await pool.query(
+    `SELECT si.*, p.categoria, p.marca, p.modelo,
+            p.potencia_kw, p.fases, p.conector, p.montaje, p.ocpp_protocolo, p.tipo_corriente
+     FROM stock_items si JOIN productos_catalogo p ON p.id = si.producto_id
+     ${conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''}
+     ORDER BY si.creado_en DESC LIMIT 500`,
+    params,
+  );
+  res.json(result.rows);
+});
+
+router.put('/stock-items/:id', requireRole('superadmin'), async (req, res) => {
+  const { estado, costo_compra: costoCompra } = req.body ?? {};
+  if (estado && !['en_stock', 'instalado', 'devuelto', 'baja'].includes(estado)) {
+    return res.status(400).json({ error: 'estado invalido.' });
+  }
+  const result = await pool.query(
+    `UPDATE stock_items SET estado = COALESCE($1, estado), costo_compra = COALESCE($2, costo_compra)
+     WHERE id = $3 RETURNING *`,
+    [estado ?? null, costoCompra ?? null, req.params.id],
+  );
+  if (result.rowCount === 0) return res.status(404).json({ error: 'Item de stock no encontrado.' });
+  res.json(result.rows[0]);
+});
+
+// Movimientos de productos NO serializados (ingreso/ajuste manual - el
+// egreso_instalacion se genera solo al crear una instalacion, ver abajo).
+router.post('/stock-movimientos', requireRole('superadmin'), async (req, res) => {
+  const {
+    producto_id: productoId, tipo, cantidad, costo_unitario: costoUnitario, nota, proveedor_id: proveedorId,
+  } = req.body ?? {};
+  if (!productoId || !['ingreso', 'ajuste', 'devolucion'].includes(tipo) || !cantidad) {
+    return res.status(400).json({ error: 'producto_id, tipo (ingreso/ajuste/devolucion) y cantidad son requeridos.' });
+  }
+  const result = await pool.query(
+    `INSERT INTO stock_movimientos (producto_id, tipo, cantidad, costo_unitario, creado_por, nota, proveedor_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+    [productoId, tipo, cantidad, costoUnitario ?? null, req.user.sub, nota ?? null, proveedorId ?? null],
+  );
+  res.status(201).json(result.rows[0]);
+});
+
+// ---------------------------------------------------------------------------
+// Proveedores comerciales (empresas a las que Bilon les compra material) -
+// distinto de /superadmin/proveedores (fabricantes de wallbox probando su
+// equipo, "Fabricas" en la UI). El historial de compras se arma leyendo
+// stock_items/stock_movimientos por proveedor_id, no se duplica.
+// ---------------------------------------------------------------------------
+
+router.get('/proveedores', async (_req, res) => {
+  const result = await pool.query('SELECT * FROM proveedores_comerciales ORDER BY activo DESC, nombre_empresa');
+  res.json(result.rows);
+});
+
+router.post('/proveedores', requireRole('superadmin'), async (req, res) => {
+  const {
+    nombre_empresa: nombreEmpresa, cuit, contacto_nombre: contactoNombre,
+    contacto_email: contactoEmail, contacto_telefono: contactoTelefono, direccion, nota,
+  } = req.body ?? {};
+  if (!nombreEmpresa) return res.status(400).json({ error: 'nombre_empresa es requerido.' });
+  const result = await pool.query(
+    `INSERT INTO proveedores_comerciales (nombre_empresa, cuit, contacto_nombre, contacto_email, contacto_telefono, direccion, nota)
+     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+    [nombreEmpresa, cuit ?? null, contactoNombre ?? null, contactoEmail ?? null, contactoTelefono ?? null, direccion ?? null, nota ?? null],
+  );
+  res.status(201).json(result.rows[0]);
+});
+
+router.put('/proveedores/:id', requireRole('superadmin'), async (req, res) => {
+  const {
+    nombre_empresa: nombreEmpresa, cuit, contacto_nombre: contactoNombre,
+    contacto_email: contactoEmail, contacto_telefono: contactoTelefono, direccion, nota, activo,
+  } = req.body ?? {};
+  const result = await pool.query(
+    `UPDATE proveedores_comerciales SET
+       nombre_empresa = COALESCE($1, nombre_empresa), cuit = COALESCE($2, cuit),
+       contacto_nombre = COALESCE($3, contacto_nombre), contacto_email = COALESCE($4, contacto_email),
+       contacto_telefono = COALESCE($5, contacto_telefono), direccion = COALESCE($6, direccion),
+       nota = COALESCE($7, nota), activo = COALESCE($8, activo)
+     WHERE id = $9 RETURNING *`,
+    [nombreEmpresa ?? null, cuit ?? null, contactoNombre ?? null, contactoEmail ?? null,
+      contactoTelefono ?? null, direccion ?? null, nota ?? null, activo ?? null, req.params.id],
+  );
+  if (result.rowCount === 0) return res.status(404).json({ error: 'Proveedor no encontrado.' });
+  res.json(result.rows[0]);
+});
+
+router.get('/proveedores/:id/compras', async (req, res) => {
+  const result = await pool.query(
+    `SELECT 'serializado' AS origen, si.creado_en AS fecha, p.marca, p.modelo, 1 AS cantidad, si.identificador, si.costo_compra AS costo
+     FROM stock_items si JOIN productos_catalogo p ON p.id = si.producto_id
+     WHERE si.proveedor_id = $1
+     UNION ALL
+     SELECT 'movimiento' AS origen, sm.creado_en AS fecha, p.marca, p.modelo, sm.cantidad, NULL AS identificador, sm.costo_unitario AS costo
+     FROM stock_movimientos sm JOIN productos_catalogo p ON p.id = sm.producto_id
+     WHERE sm.proveedor_id = $1 AND sm.tipo = 'ingreso'
+     ORDER BY fecha DESC LIMIT 300`,
+    [req.params.id],
+  );
+  res.json(result.rows);
+});
+
+router.get('/stock-movimientos', async (req, res) => {
+  const { producto_id: productoId } = req.query;
+  const result = await pool.query(
+    productoId
+      ? 'SELECT * FROM stock_movimientos WHERE producto_id = $1 ORDER BY creado_en DESC LIMIT 200'
+      : 'SELECT * FROM stock_movimientos ORDER BY creado_en DESC LIMIT 200',
+    productoId ? [productoId] : [],
+  );
+  res.json(result.rows);
+});
+
+// ---------------------------------------------------------------------------
+// Instalaciones - lo que el instalador carga al terminar un trabajo. Consume
+// stock (marca stock_items instalados, descuenta stock_movimientos) y despues
+// puede facturarse (desglosado o kit resumido) via /instalaciones/:id/facturar.
+// ---------------------------------------------------------------------------
+
+router.get('/consorcios/:id/instalaciones', async (req, res) => {
+  const result = await pool.query(
+    `SELECT i.*, u.email AS instalador_email, uf.numero_departamento, uf.numero_cochera
+     FROM instalaciones i
+     LEFT JOIN usuarios u ON u.id = i.instalador_usuario_id
+     LEFT JOIN unidades_funcionales uf ON uf.id = i.uf_id
+     WHERE i.consorcio_id = $1 ORDER BY i.creado_en DESC`,
+    [req.params.id],
+  );
+  res.json(result.rows);
+});
+
+router.get('/instalaciones/:id', async (req, res) => {
+  const instalacion = await pool.query('SELECT * FROM instalaciones WHERE id = $1', [req.params.id]);
+  if (instalacion.rowCount === 0) return res.status(404).json({ error: 'Instalacion no encontrada.' });
+  const items = await pool.query(
+    `SELECT ii.*, p.categoria, p.marca, p.modelo, si.identificador
+     FROM instalacion_items ii
+     JOIN productos_catalogo p ON p.id = ii.producto_id
+     LEFT JOIN stock_items si ON si.id = ii.stock_item_id
+     WHERE ii.instalacion_id = $1`,
+    [req.params.id],
+  );
+  res.json({ ...instalacion.rows[0], items: items.rows });
+});
+
+// items: [{ producto_id, stock_item_id? (serializado), cantidad? (no serializado) }]
+// Punto UNICO para instalar material (antes habia 2 caminos separados: el
+// alta rapida de cargador en Unidades, que registraba el wallbox en OCPP sin
+// trazar stock/factura, y esta ruta, que trazaba stock/factura sin registrar
+// el wallbox en OCPP - quedaban desincronizados y el mismo item de stock
+// aparecia disponible en un lado y no en el otro). Ahora: si el carrito
+// incluye un wallbox, esta ruta tambien crea la fila en "cargadores".
+router.post('/consorcios/:id/instalaciones', async (req, res) => {
+  const { cochera_id: cocheraId, notas, items } = req.body ?? {};
+  if (!Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({ error: 'items (array, al menos 1) es requerido.' });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    let ufId = null;
+    if (cocheraId) {
+      const cochera = await client.query(
+        `SELECT coc.id, coc.uf_id FROM cocheras coc
+         JOIN unidades_funcionales uf ON uf.id = coc.uf_id
+         WHERE coc.id = $1 AND uf.consorcio_id = $2`,
+        [cocheraId, req.params.id],
+      );
+      if (cochera.rowCount === 0) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'Cochera no encontrada en este consorcio.' });
+      }
+      ufId = cochera.rows[0].uf_id;
+
+      const yaOcupada = await client.query('SELECT id FROM cargadores WHERE cochera_id = $1', [cocheraId]);
+      if (yaOcupada.rowCount > 0) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: 'Esta cochera ya tiene un wallbox asignado.' });
+      }
+    }
+
+    // Resolver categoria de cada item antes de tocar la base - a lo sumo 1
+    // wallbox por instalacion (1 instalacion = 1 cochera = 1 wallbox).
+    const itemsConProducto = [];
+    let wallboxCount = 0;
+    for (const item of items) {
+      const producto = await client.query('SELECT * FROM productos_catalogo WHERE id = $1', [item.producto_id]);
+      if (producto.rowCount === 0) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: `Producto ${item.producto_id} no encontrado.` });
+      }
+      const p = producto.rows[0];
+      if (p.categoria === 'wallbox') wallboxCount += 1;
+      itemsConProducto.push({ item, p });
+    }
+    if (wallboxCount > 1) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Una instalacion es para una sola cochera: agrega el segundo wallbox en otra instalacion.' });
+    }
+    if (wallboxCount === 1 && !cocheraId) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Selecciona la cochera para instalar el wallbox.' });
+    }
+
+    const instalacion = await client.query(
+      `INSERT INTO instalaciones (consorcio_id, uf_id, instalador_usuario_id, notas)
+       VALUES ($1,$2,$3,$4) RETURNING *`,
+      [req.params.id, ufId, req.user.sub, notas ?? null],
+    );
+    const instalacionId = instalacion.rows[0].id;
+
+    const itemsCreados = [];
+    let cargadorCreado = null;
+    for (const { item, p } of itemsConProducto) {
+      if (p.serializado) {
+        if (!item.stock_item_id) {
+          await client.query('ROLLBACK');
+          return res.status(400).json({ error: `${p.modelo} es serializado, falta stock_item_id.` });
+        }
+        const stockItem = await client.query(
+          `UPDATE stock_items SET estado = 'instalado', consorcio_id = $1, instalacion_id = $2
+           WHERE id = $3 AND estado = 'en_stock' RETURNING *`,
+          [req.params.id, instalacionId, item.stock_item_id],
+        );
+        if (stockItem.rowCount === 0) {
+          await client.query('ROLLBACK');
+          return res.status(409).json({ error: `El item de stock ${item.stock_item_id} no esta disponible.` });
+        }
+        const result = await client.query(
+          `INSERT INTO instalacion_items (instalacion_id, producto_id, stock_item_id, costo_unitario)
+           VALUES ($1,$2,$3,$4) RETURNING *`,
+          [instalacionId, item.producto_id, item.stock_item_id, stockItem.rows[0].costo_compra],
+        );
+        itemsCreados.push(result.rows[0]);
+
+        if (p.categoria === 'wallbox') {
+          const si = stockItem.rows[0];
+          try {
+            const cargador = await client.query(
+              `INSERT INTO cargadores (ocpp_id, charge_point_vendor, charge_point_model, consorcio_id, uf_id, cochera_id, ocpp_version, stock_item_id)
+               VALUES ($1,$2,$3,$4,$5,$6,'2.0.1',$7) RETURNING *`,
+              [si.identificador, p.marca, p.modelo, req.params.id, ufId, cocheraId, si.id],
+            );
+            cargadorCreado = cargador.rows[0];
+          } catch (err) {
+            await client.query('ROLLBACK');
+            if (err.code === '23505') {
+              return res.status(409).json({ error: `Ya existe un cargador con ocpp_id "${si.identificador}".` });
+            }
+            throw err;
+          }
+        }
+      } else {
+        const cantidad = Number(item.cantidad) || 1;
+        await client.query(
+          `INSERT INTO stock_movimientos (producto_id, tipo, cantidad, instalacion_id, creado_por)
+           VALUES ($1,'egreso_instalacion',$2,$3,$4)`,
+          [item.producto_id, cantidad, instalacionId, req.user.sub],
+        );
+        const result = await client.query(
+          `INSERT INTO instalacion_items (instalacion_id, producto_id, cantidad)
+           VALUES ($1,$2,$3) RETURNING *`,
+          [instalacionId, item.producto_id, cantidad],
+        );
+        itemsCreados.push(result.rows[0]);
+      }
+    }
+
+    if (cargadorCreado) {
+      await client.query('UPDATE instalaciones SET cargador_id = $1 WHERE id = $2', [cargadorCreado.id, instalacionId]);
+      instalacion.rows[0].cargador_id = cargadorCreado.id;
+    }
+
+    await client.query('COMMIT');
+    res.status(201).json({ ...instalacion.rows[0], items: itemsCreados, cargador: cargadorCreado });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+});
+
+// Genera el/los cargo(s) puntual(es) de una instalacion ya cargada -
+// desglosado (uno por item) o kit resumido (uno solo, con descripcion y
+// monto propios, ej: "Kit de instalacion completo para 1 vehiculo").
+router.post('/instalaciones/:id/facturar', async (req, res) => {
+  const {
+    modo, descripcion_kit: descripcionKit, monto_kit: montoKit, periodo,
+  } = req.body ?? {};
+  if (!['desglosado', 'kit'].includes(modo) || !periodoValido(periodo)) {
+    return res.status(400).json({ error: 'modo (desglosado/kit) y periodo (YYYY-MM) son requeridos.' });
+  }
+  const instalacion = await pool.query('SELECT * FROM instalaciones WHERE id = $1', [req.params.id]);
+  if (instalacion.rowCount === 0) return res.status(404).json({ error: 'Instalacion no encontrada.' });
+  const { consorcio_id: consorcioId, uf_id: ufId } = instalacion.rows[0];
+
+  const items = (await pool.query(
+    `SELECT ii.*, p.categoria, p.marca, p.modelo
+     FROM instalacion_items ii JOIN productos_catalogo p ON p.id = ii.producto_id
+     WHERE ii.instalacion_id = $1`,
+    [req.params.id],
+  )).rows;
+
+  const cargosCreados = [];
+  if (modo === 'desglosado') {
+    for (const item of items) {
+      const monto = Number(item.costo_unitario ?? 0) * Number(item.cantidad ?? 1);
+      if (monto <= 0) continue;
+      const result = await pool.query(
+        `INSERT INTO cargos_puntuales (consorcio_id, uf_id, descripcion, monto, periodo, creado_por)
+         VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+        [consorcioId, ufId, `${item.marca ?? ''} ${item.modelo}`.trim(), monto, periodo, req.user.sub],
+      );
+      cargosCreados.push(result.rows[0]);
+    }
+  } else {
+    const monto = montoKit != null
+      ? Number(montoKit)
+      : items.reduce((sum, i) => sum + Number(i.costo_unitario ?? 0) * Number(i.cantidad ?? 1), 0);
+    const result = await pool.query(
+      `INSERT INTO cargos_puntuales (consorcio_id, uf_id, descripcion, monto, periodo, creado_por)
+       VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+      [consorcioId, ufId, descripcionKit || 'Kit de instalacion completo', monto, periodo, req.user.sub],
+    );
+    cargosCreados.push(result.rows[0]);
+  }
+
+  await pool.query('UPDATE instalaciones SET facturada = TRUE WHERE id = $1', [req.params.id]);
+  res.status(201).json(cargosCreados);
+});
+
+// ---------------------------------------------------------------------------
+// Reconocimiento de facturas de proveedor por IA (imagen o PDF) - solo
+// extrae y devuelve un preview, no persiste nada. La confirmacion (crear el
+// gasto en Contabilidad) la hace el frontend llamando a /contabilidad/gastos
+// con los datos ya revisados/corregidos por el usuario.
+// ---------------------------------------------------------------------------
+
+const IMAGE_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+
+const FACTURA_IA_PROMPT = `Sos un asistente que extrae datos de una factura de compra (de un proveedor a una empresa).
+Devolve EXCLUSIVAMENTE un objeto JSON valido (sin texto adicional, sin markdown, sin backticks) con EXACTAMENTE estos campos:
+- proveedor_nombre (string o null - nombre o razon social del emisor de la factura)
+- cuit (string o null - CUIT del emisor)
+- numero_factura (string o null)
+- fecha (string "YYYY-MM-DD" o null)
+- items (array de objetos, cada uno con: descripcion (string), cantidad (number, default 1), precio_unitario (number o null), monto (number))
+- monto_total (number o null - el total de la factura)
+
+No inventes datos que no esten en el documento. Si un campo no esta presente, usa null. Los montos son numeros (sin simbolo de moneda, con punto decimal).`;
+
+router.post('/facturas-ia/preview', upload.single('file'), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: 'Falta el archivo.' });
+  }
+  if (!process.env.OPENROUTER_API_KEY) {
+    return res.status(500).json({ error: 'Falta configurar OPENROUTER_API_KEY en el servidor.' });
+  }
+
+  const name = req.file.originalname.toLowerCase();
+  const mimeType = req.file.mimetype;
+  let messages;
+
+  try {
+    if (IMAGE_MIME_TYPES.includes(mimeType)) {
+      const base64 = req.file.buffer.toString('base64');
+      messages = [{
+        role: 'user',
+        content: [
+          { type: 'text', text: FACTURA_IA_PROMPT },
+          { type: 'image_url', image_url: { url: `data:${mimeType};base64,${base64}` } },
+        ],
+      }];
+    } else if (name.endsWith('.pdf')) {
+      const parsed = await pdfParse(req.file.buffer);
+      const rawContent = parsed.text;
+      if (!rawContent || rawContent.trim().length < 20) {
+        return res.status(400).json({ error: 'El PDF no tiene texto legible (parece escaneado). Proba subiendo una foto/imagen de la factura en su lugar.' });
+      }
+      messages = [{ role: 'user', content: `${FACTURA_IA_PROMPT}\n\nContenido del documento:\n${rawContent.slice(0, 40000)}` }];
+    } else {
+      return res.status(400).json({ error: 'Formato no soportado. Usa una imagen (jpg/png/webp) o un PDF.' });
+    }
+  } catch (err) {
+    console.error('Error leyendo factura para IA:', err);
+    return res.status(400).json({ error: 'No se pudo leer el archivo. Verifica que no este corrupto.' });
+  }
+
+  try {
+    const aiRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'anthropic/claude-sonnet-5',
+        messages,
+        temperature: 0,
+      }),
+    });
+    const data = await aiRes.json();
+    if (!aiRes.ok) {
+      console.error('Error de OpenRouter:', data);
+      return res.status(502).json({ error: 'El servicio de IA no pudo procesar la factura.' });
+    }
+    let text = (data.choices?.[0]?.message?.content ?? '').trim();
+    text = text.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/, '');
+    let extraido;
+    try {
+      extraido = JSON.parse(text);
+    } catch {
+      console.error('IA devolvio JSON invalido:', text);
+      return res.status(502).json({ error: 'La IA no devolvio un formato valido. Proba con una imagen mas clara o cargalo a mano.' });
+    }
+    res.json(extraido);
+  } catch (err) {
+    console.error('Error llamando a OpenRouter:', err);
+    res.status(502).json({ error: 'No se pudo comunicar con el servicio de IA.' });
   }
 });
 
