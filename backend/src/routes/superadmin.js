@@ -155,6 +155,59 @@ router.get('/cargadores', async (_req, res) => {
   res.json(result.rows);
 });
 
+// Resumen en vivo para el dashboard (donut de estado + potencia total +
+// fallas recientes), agregado a TODA la plataforma - no es por consorcio,
+// eso ya lo tiene AdminConsorcio via /admin/consorcios/:id/live. Clasificacion
+// de estado calcada de matchesFiltroEstado en superadmin/Cargadores.jsx para
+// que el donut coincida exactamente con lo que se ve en esa pantalla.
+router.get('/resumen-vivo', async (_req, res) => {
+  const [cargadores, potencia, fallas] = await Promise.all([
+    pool.query(
+      `SELECT cs."isOnline" AS conectado_citrineos, ce.status_ocpp,
+              EXISTS (
+                SELECT 1 FROM liquidacion_sesiones l
+                WHERE l.cargador_ocpp_id = ca.ocpp_id AND l.fecha_fin IS NULL
+              ) AS activo
+       FROM cargadores ca
+       LEFT JOIN "ChargingStations" cs ON cs.id = ca.ocpp_id
+       LEFT JOIN cargador_estado_actual ce ON ce.cargador_ocpp_id = ca.ocpp_id`,
+    ),
+    pool.query(
+      `SELECT DISTINCT ON (cargador_ocpp_id) cargador_ocpp_id, potencia_kw
+       FROM lecturas_medidor
+       WHERE "timestamp" > NOW() - INTERVAL '10 minutes'
+       ORDER BY cargador_ocpp_id, "timestamp" DESC`,
+    ),
+    pool.query(
+      `SELECT a.cargador_ocpp_id, co.nombre AS consorcio_nombre, a.status_ocpp, a.error_code, a.creado_en
+       FROM cargador_alarmas a
+       LEFT JOIN cargadores ca ON ca.ocpp_id = a.cargador_ocpp_id
+       LEFT JOIN consorcios co ON co.id = ca.consorcio_id
+       ORDER BY a.creado_en DESC LIMIT 10`,
+    ),
+  ]);
+
+  const estadoCounts = {
+    disponible: 0, cargando: 0, falla: 0, offline: 0,
+  };
+  for (const c of cargadores.rows) {
+    if (!c.conectado_citrineos) estadoCounts.offline += 1;
+    else if (c.status_ocpp === 'Faulted') estadoCounts.falla += 1;
+    else if (c.activo) estadoCounts.cargando += 1;
+    else estadoCounts.disponible += 1;
+  }
+
+  const potenciaTotalKw = potencia.rows.reduce((sum, r) => sum + Number(r.potencia_kw ?? 0), 0);
+
+  res.json({
+    estado_counts: estadoCounts,
+    cargadores_total: cargadores.rows.length,
+    cargadores_conectados: cargadores.rows.filter((c) => c.conectado_citrineos).length,
+    potencia_total_kw: potenciaTotalKw,
+    fallas_recientes: fallas.rows,
+  });
+});
+
 router.get('/planes', async (_req, res) => {
   const result = await pool.query('SELECT * FROM planes_suscripcion ORDER BY precio_mensual_usd');
   res.json(result.rows);
@@ -249,6 +302,38 @@ router.get('/proveedores/:id/tests', async (req, res) => {
      WHERE pt.proveedor_id = $1
      ORDER BY pt.creado_en DESC LIMIT 200`,
     [req.params.id],
+  );
+  res.json(result.rows);
+});
+
+// Informe de conexiones OCPP (fabricantes probando via el tester publico sin
+// login, ver routes/public.js) - a diferencia de /proveedores/:id/tests (que
+// es por cuenta registrada), esto agrupa por ocpp_id/estacion tal cual llega
+// a CitrineOS, sea de una cuenta de fabrica o de un test anonimo. Excluye
+// "BilonTest", nuestro propio vendor de pruebas de estres internas.
+router.get('/ocpp-conexiones', async (_req, res) => {
+  const result = await pool.query(
+    `SELECT cs.id AS ocpp_id, cs."chargePointVendor" AS vendor, cs."chargePointModel" AS modelo,
+            cs.protocol AS protocolo, cs."isOnline" AS conectado, cs."latestOcppMessageTimestamp" AS ultima_actividad,
+            COUNT(pt.id) AS tests_count
+     FROM "ChargingStations" cs
+     LEFT JOIN proveedor_tests pt ON pt.cargador_ocpp_id = cs.id
+     WHERE cs."chargePointVendor" IS DISTINCT FROM 'BilonTest'
+     GROUP BY cs.id, cs."chargePointVendor", cs."chargePointModel", cs.protocol, cs."isOnline", cs."latestOcppMessageTimestamp"
+     ORDER BY cs."latestOcppMessageTimestamp" DESC NULLS LAST
+     LIMIT 200`,
+  );
+  res.json(result.rows);
+});
+
+router.get('/ocpp-conexiones/:ocppId/tests', async (req, res) => {
+  const result = await pool.query(
+    `SELECT pt.id, pt.accion, pt.resultado, pt.detalle, pt.creado_en, u.email AS usuario_email
+     FROM proveedor_tests pt
+     LEFT JOIN usuarios u ON u.id = pt.usuario_id
+     WHERE pt.cargador_ocpp_id = $1
+     ORDER BY pt.creado_en DESC LIMIT 200`,
+    [req.params.ocppId],
   );
   res.json(result.rows);
 });
