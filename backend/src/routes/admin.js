@@ -967,7 +967,7 @@ const VARIABLES_201_CURADAS = [
   { component: 'ReservationCtrlr', variable: 'Enabled' },
 ];
 
-router.get('/cargadores/:ocppId/configuration', requireRole('superadmin'), async (req, res) => {
+router.get('/cargadores/:ocppId/configuration', requirePermission('admin_cargadores_avanzado'), async (req, res) => {
   const ocppId = req.params.ocppId;
   const cargador = await pool.query('SELECT id FROM cargadores WHERE ocpp_id = $1', [ocppId]);
   if (cargador.rowCount === 0) return res.status(404).json({ error: 'Cargador no encontrado.' });
@@ -1001,7 +1001,7 @@ router.get('/cargadores/:ocppId/configuration', requireRole('superadmin'), async
   }
 });
 
-router.put('/cargadores/:ocppId/configuration', requireRole('superadmin'), async (req, res) => {
+router.put('/cargadores/:ocppId/configuration', requirePermission('admin_cargadores_avanzado'), async (req, res) => {
   const ocppId = req.params.ocppId;
   const { key, value } = req.body ?? {};
   if (!key || value == null) return res.status(400).json({ error: 'key y value son requeridos.' });
@@ -1035,7 +1035,7 @@ router.put('/cargadores/:ocppId/configuration', requireRole('superadmin'), async
   }
 });
 
-router.get('/cargadores/:ocppId/ocpp-log', requireRole('superadmin'), async (req, res) => {
+router.get('/cargadores/:ocppId/ocpp-log', requirePermission('admin_cargadores_avanzado'), async (req, res) => {
   const ocppId = req.params.ocppId;
   const limit = Math.min(Number(req.query.limit) || 100, 500);
   const STATE_LABELS = { 1: 'Enviado (CALL)', 2: 'Confirmado (CALLRESULT)', 4: 'Error (CALLERROR)' };
@@ -1068,7 +1068,7 @@ router.get('/cargadores/:ocppId/ocpp-log', requireRole('superadmin'), async (req
 // Alarmas historicas: solo status='Faulted' se guarda (ver listener/index.js
 // handleStatusNotification) - el estado en vivo de cualquier otra transicion
 // ya lo cubre cargador_estado_actual, esto es historial de fallas reales.
-router.get('/cargadores/:ocppId/alarmas', requireRole('superadmin'), async (req, res) => {
+router.get('/cargadores/:ocppId/alarmas', requirePermission('admin_cargadores_avanzado'), async (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 100, 500);
   const result = await pool.query(
     `SELECT id, status_ocpp, error_code, creado_en
@@ -1087,7 +1087,7 @@ router.get('/cargadores/:ocppId/alarmas', requireRole('superadmin'), async (req,
 // Configuration/OCPP Log arriba - accion real sobre un equipo en produccion.
 // ---------------------------------------------------------------------------
 
-router.post('/cargadores/:ocppId/reservas', requireRole('superadmin'), async (req, res) => {
+router.post('/cargadores/:ocppId/reservas', requirePermission('admin_cargadores_avanzado'), async (req, res) => {
   const ocppId = req.params.ocppId;
   const { ufId, idTagOcpp, expiraEn } = req.body ?? {};
   if (!idTagOcpp || !expiraEn) {
@@ -1129,7 +1129,7 @@ router.post('/cargadores/:ocppId/reservas', requireRole('superadmin'), async (re
   }
 });
 
-router.delete('/reservas/:id', requireRole('superadmin'), async (req, res) => {
+router.delete('/reservas/:id', requirePermission('admin_cargadores_avanzado'), async (req, res) => {
   const reserva = await pool.query(`SELECT id, cargador_ocpp_id FROM reservas WHERE id = $1 AND estado = 'activa'`, [req.params.id]);
   if (reserva.rowCount === 0) return res.status(404).json({ error: 'Reserva no encontrada o ya no esta activa.' });
 
