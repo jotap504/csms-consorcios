@@ -1904,7 +1904,7 @@ router.get('/proveedores', async (_req, res) => {
   res.json(result.rows);
 });
 
-router.post('/proveedores', requireRole('superadmin'), async (req, res) => {
+router.post('/proveedores', requirePermission('admin_proveedores_fabricas'), async (req, res) => {
   const {
     nombre_empresa: nombreEmpresa, cuit, contacto_nombre: contactoNombre,
     contacto_email: contactoEmail, contacto_telefono: contactoTelefono, direccion, nota,
@@ -1918,7 +1918,7 @@ router.post('/proveedores', requireRole('superadmin'), async (req, res) => {
   res.status(201).json(result.rows[0]);
 });
 
-router.put('/proveedores/:id', requireRole('superadmin'), async (req, res) => {
+router.put('/proveedores/:id', requirePermission('admin_proveedores_fabricas'), async (req, res) => {
   const {
     nombre_empresa: nombreEmpresa, cuit, contacto_nombre: contactoNombre,
     contacto_email: contactoEmail, contacto_telefono: contactoTelefono, direccion, nota, activo,
