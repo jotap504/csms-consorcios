@@ -1236,12 +1236,12 @@ const uploadFirmware = multer({ storage: multer.diskStorage({ destination: FIRMW
 // necesita una URL alcanzable desde afuera, no el nombre del contenedor.
 const BACKEND_PUBLIC_URL = process.env.BACKEND_PUBLIC_URL || 'https://bilon.pagarqr.ar/api';
 
-router.post('/firmware', requireRole('superadmin'), uploadFirmware.single('file'), async (req, res) => {
+router.post('/firmware', requirePermission('admin_firmware_ota'), uploadFirmware.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'Falta el archivo.' });
   res.status(201).json({ filename: req.file.filename, originalName: req.file.originalname });
 });
 
-router.post('/cargadores/:ocppId/firmware', requireRole('superadmin'), async (req, res) => {
+router.post('/cargadores/:ocppId/firmware', requirePermission('admin_firmware_ota'), async (req, res) => {
   const ocppId = req.params.ocppId;
   const { filename } = req.body ?? {};
   if (!filename) return res.status(400).json({ error: 'filename es requerido (subir primero via POST /admin/firmware).' });
@@ -1274,7 +1274,7 @@ router.post('/cargadores/:ocppId/firmware', requireRole('superadmin'), async (re
   }
 });
 
-router.get('/cargadores/:ocppId/firmware', requireRole('superadmin'), async (req, res) => {
+router.get('/cargadores/:ocppId/firmware', requirePermission('admin_firmware_ota'), async (req, res) => {
   const result = await pool.query(
     `SELECT id, filename, version_reportada, status, creado_en FROM firmware_updates
      WHERE cargador_ocpp_id = $1 ORDER BY creado_en DESC LIMIT 50`,
@@ -1283,7 +1283,7 @@ router.get('/cargadores/:ocppId/firmware', requireRole('superadmin'), async (req
   res.json(result.rows);
 });
 
-router.post('/cargadores/:ocppId/diagnostico', requireRole('superadmin'), async (req, res) => {
+router.post('/cargadores/:ocppId/diagnostico', requirePermission('admin_firmware_ota'), async (req, res) => {
   const ocppId = req.params.ocppId;
   const record = await pool.query(
     `INSERT INTO diagnosticos (cargador_ocpp_id) VALUES ($1) RETURNING id`,
@@ -1314,7 +1314,7 @@ router.post('/cargadores/:ocppId/diagnostico', requireRole('superadmin'), async 
   }
 });
 
-router.get('/cargadores/:ocppId/diagnosticos', requireRole('superadmin'), async (req, res) => {
+router.get('/cargadores/:ocppId/diagnosticos', requirePermission('admin_firmware_ota'), async (req, res) => {
   const result = await pool.query(
     `SELECT id, status, filename, creado_en FROM diagnosticos
      WHERE cargador_ocpp_id = $1 ORDER BY creado_en DESC LIMIT 50`,
@@ -1323,7 +1323,7 @@ router.get('/cargadores/:ocppId/diagnosticos', requireRole('superadmin'), async 
   res.json(result.rows);
 });
 
-router.get('/diagnosticos/:id/descargar', requireRole('superadmin'), async (req, res) => {
+router.get('/diagnosticos/:id/descargar', requirePermission('admin_firmware_ota'), async (req, res) => {
   const diagnostico = await pool.query('SELECT filename FROM diagnosticos WHERE id = $1', [req.params.id]);
   const filename = diagnostico.rows[0]?.filename;
   if (!filename) return res.status(404).end();
