@@ -167,6 +167,68 @@ router.get('/alarmas', async (req, res) => {
   res.json(result.rows);
 });
 
+// Equivalente a "Location Status" de GRASEN: resumen agregado por
+// ubicacion (consorcio) en vez de por cargador individual - cantidad de
+// estaciones, cuantas conectadas/cargando ahora, y potencia real sumada
+// (misma fuente que /resumen-vivo, agrupada por consorcio en vez de global).
+router.get('/ubicaciones-estado', async (_req, res) => {
+  const [consorcios, potencia] = await Promise.all([
+    pool.query(
+      `SELECT co.id, co.nombre, co.limite_amperios_totales,
+              COUNT(ca.id) AS cargadores_total,
+              COUNT(ca.id) FILTER (WHERE cs."isOnline") AS cargadores_conectados,
+              COUNT(ca.id) FILTER (WHERE EXISTS (
+                SELECT 1 FROM liquidacion_sesiones l
+                WHERE l.cargador_ocpp_id = ca.ocpp_id AND l.fecha_fin IS NULL
+              )) AS cargadores_activos
+       FROM consorcios co
+       LEFT JOIN cargadores ca ON ca.consorcio_id = co.id
+       LEFT JOIN "ChargingStations" cs ON cs.id = ca.ocpp_id
+       GROUP BY co.id, co.nombre, co.limite_amperios_totales
+       ORDER BY co.nombre`,
+    ),
+    pool.query(
+      `SELECT ca.consorcio_id, SUM(lm.potencia_kw) AS potencia_kw
+       FROM (
+         SELECT DISTINCT ON (cargador_ocpp_id) cargador_ocpp_id, potencia_kw
+         FROM lecturas_medidor
+         WHERE "timestamp" > NOW() - INTERVAL '10 minutes'
+         ORDER BY cargador_ocpp_id, "timestamp" DESC
+       ) lm
+       JOIN cargadores ca ON ca.ocpp_id = lm.cargador_ocpp_id
+       GROUP BY ca.consorcio_id`,
+    ),
+  ]);
+
+  const potenciaByConsorcio = new Map(potencia.rows.map((r) => [r.consorcio_id, Number(r.potencia_kw)]));
+
+  res.json(consorcios.rows.map((c) => ({
+    ...c,
+    potencia_actual_kw: potenciaByConsorcio.get(c.id) ?? 0,
+  })));
+});
+
+// Equivalente a "Charging" de GRASEN (monitor en vivo, no historico):
+// sesiones activas en este momento, todas las consorcios, con la ultima
+// lectura de potencia/kwh de cada una. Buscable por serie en el frontend.
+router.get('/sesiones-activas', async (_req, res) => {
+  const result = await pool.query(
+    `SELECT l.cargador_ocpp_id, co.nombre AS consorcio_nombre, l.fecha_inicio,
+            lm.potencia_kw, lm.kwh_acumulado
+     FROM liquidacion_sesiones l
+     JOIN cargadores ca ON ca.ocpp_id = l.cargador_ocpp_id
+     JOIN consorcios co ON co.id = ca.consorcio_id
+     LEFT JOIN LATERAL (
+       SELECT potencia_kw, kwh_acumulado FROM lecturas_medidor lm2
+       WHERE lm2.transaction_id_ocpp = l.transaction_id_ocpp
+       ORDER BY lm2."timestamp" DESC LIMIT 1
+     ) lm ON true
+     WHERE l.fecha_fin IS NULL
+     ORDER BY l.fecha_inicio DESC`,
+  );
+  res.json(result.rows);
+});
+
 router.get('/cargadores', async (_req, res) => {
   const result = await pool.query(
     `SELECT ca.id, ca.ocpp_id, ca.etiqueta, ca.ocpp_version,

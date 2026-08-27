@@ -15,6 +15,8 @@ import Catalogo from '@/pages/superadmin/Catalogo';
 import Contabilidad from '@/pages/superadmin/Contabilidad';
 import Usuarios from '@/pages/superadmin/Usuarios';
 import Alarmas from '@/pages/superadmin/Alarmas';
+import Ubicaciones from '@/pages/superadmin/Ubicaciones';
+import SesionesActivas from '@/pages/superadmin/SesionesActivas';
 import ComercialDashboard from '@/pages/comercial/Dashboard';
 import ComercialContactos from '@/pages/comercial/Contactos';
 import ComercialContactoDetalle from '@/pages/comercial/ContactoDetalle';
@@ -140,6 +142,22 @@ export default function App() {
         element={
           <ProtectedRoute role="superadmin">
             <Alarmas />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/superadmin/ubicaciones-estado"
+        element={
+          <ProtectedRoute role="superadmin">
+            <Ubicaciones />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/superadmin/sesiones-activas"
+        element={
+          <ProtectedRoute role="superadmin">
+            <SesionesActivas />
           </ProtectedRoute>
         }
       />
