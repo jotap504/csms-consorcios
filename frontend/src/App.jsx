@@ -14,6 +14,7 @@ import Proveedores from '@/pages/superadmin/Proveedores';
 import Catalogo from '@/pages/superadmin/Catalogo';
 import Contabilidad from '@/pages/superadmin/Contabilidad';
 import Usuarios from '@/pages/superadmin/Usuarios';
+import Alarmas from '@/pages/superadmin/Alarmas';
 import ComercialDashboard from '@/pages/comercial/Dashboard';
 import ComercialContactos from '@/pages/comercial/Contactos';
 import ComercialContactoDetalle from '@/pages/comercial/ContactoDetalle';
@@ -131,6 +132,14 @@ export default function App() {
         element={
           <ProtectedRoute role="superadmin">
             <Usuarios />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/superadmin/alarmas"
+        element={
+          <ProtectedRoute role="superadmin">
+            <Alarmas />
           </ProtectedRoute>
         }
       />

@@ -1,5 +1,5 @@
 import {
-  LayoutDashboard, Building2, Zap, Truck, Package, Receipt, Wallet, Factory, Handshake, Users, Inbox, Megaphone, UserCog,
+  LayoutDashboard, Building2, Zap, Truck, Package, Receipt, Wallet, Factory, Handshake, Users, Inbox, Megaphone, UserCog, AlertTriangle,
 } from 'lucide-react';
 
 // Compartido por todas las paginas del lado superadmin (sidebar de AdminLayout).
@@ -16,6 +16,7 @@ export const SUPERADMIN_NAV = [
   { to: '/superadmin/contabilidad', label: 'Contabilidad', icon: Wallet },
   { to: '/superadmin/catalogo', label: 'Catalogo de abonos', icon: Receipt },
   { to: '/superadmin/cargadores', label: 'Cargadores', icon: Zap },
+  { to: '/superadmin/alarmas', label: 'Alarmas', icon: AlertTriangle },
   { to: '/superadmin/proveedores', label: 'Proveedores', icon: Handshake },
   { to: '/superadmin/fabricas', label: 'Fabricas', icon: Factory },
   { to: '/superadmin/stock', label: 'Stock', icon: Package },

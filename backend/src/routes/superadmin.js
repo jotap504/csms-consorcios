@@ -131,6 +131,42 @@ router.post('/consorcios/:id/pagos', async (req, res) => {
 // + estado en vivo (CitrineOS."ChargingStations".isOnline/latestOcppMessageTimestamp
 // es la fuente mas confiable de "esta conectado ahora", cargador_estado_actual
 // es nuestra copia de la ultima StatusNotification/balanceo).
+// Pagina dedicada de alarmas (equivalente a "Real-time Alarm" / tab
+// "Station" de GRASEN) - historial global filtrable, a diferencia del
+// feed de 10 del dashboard (/resumen-vivo) que es solo un resumen.
+// No hay tab "Module Fault" - no reportamos fallas de submodulo de
+// hardware via OCPP, solo StatusNotification=Faulted (cargador_alarmas).
+router.get('/alarmas', async (req, res) => {
+  const { cargador_ocpp_id: ocppId, desde, hasta } = req.query;
+  const conditions = [];
+  const params = [];
+  if (ocppId) {
+    params.push(ocppId);
+    conditions.push(`a.cargador_ocpp_id = $${params.length}`);
+  }
+  if (desde) {
+    params.push(desde);
+    conditions.push(`a.creado_en >= $${params.length}`);
+  }
+  if (hasta) {
+    params.push(hasta);
+    conditions.push(`a.creado_en <= $${params.length}`);
+  }
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  const result = await pool.query(
+    `SELECT a.id, a.cargador_ocpp_id, co.nombre AS consorcio_nombre, se.nombre AS sector_nombre,
+            a.status_ocpp, a.error_code, a.creado_en
+     FROM cargador_alarmas a
+     LEFT JOIN cargadores ca ON ca.ocpp_id = a.cargador_ocpp_id
+     LEFT JOIN consorcios co ON co.id = ca.consorcio_id
+     LEFT JOIN sectores se ON se.id = ca.sector_id
+     ${where}
+     ORDER BY a.creado_en DESC LIMIT 500`,
+    params,
+  );
+  res.json(result.rows);
+});
+
 router.get('/cargadores', async (_req, res) => {
   const result = await pool.query(
     `SELECT ca.id, ca.ocpp_id, ca.etiqueta, ca.ocpp_version,
