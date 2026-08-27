@@ -7,7 +7,7 @@ const multer = require('multer');
 const XLSX = require('xlsx');
 const pdfParse = require('pdf-parse');
 const { pool } = require('../db');
-const { authenticate, requireRole } = require('../auth/middleware');
+const { authenticate, requireRole, requirePermission } = require('../auth/middleware');
 const { generateToken } = require('../lib/tokens');
 // Mismo mailer (stub, loguea en vez de mandar SMTP real) que usa
 // superadmin.js para el flujo de invitacion de consorcio_admin - mismo
@@ -1171,7 +1171,7 @@ const ROLES_SYSTEM_USER = ['superadmin', 'instalador', 'comercial'];
 const INVITE_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://192.168.1.38';
 
-router.get('/usuarios', requireRole('superadmin'), async (_req, res) => {
+router.get('/usuarios', requirePermission('admin_sistema_usuarios'), async (_req, res) => {
   const result = await pool.query(
     `SELECT id, email, nombre, rol, activo, creado_en
      FROM usuarios WHERE rol = ANY($1) ORDER BY creado_en DESC`,
@@ -1180,7 +1180,7 @@ router.get('/usuarios', requireRole('superadmin'), async (_req, res) => {
   res.json(result.rows);
 });
 
-router.post('/usuarios', requireRole('superadmin'), async (req, res) => {
+router.post('/usuarios', requirePermission('admin_sistema_usuarios'), async (req, res) => {
   const { email, nombre, rol } = req.body ?? {};
   if (!email || !ROLES_SYSTEM_USER.includes(rol)) {
     return res.status(400).json({ error: `email requerido y rol debe ser uno de: ${ROLES_SYSTEM_USER.join(', ')}.` });
@@ -1207,7 +1207,7 @@ router.post('/usuarios', requireRole('superadmin'), async (req, res) => {
   }
 });
 
-router.put('/usuarios/:id', requireRole('superadmin'), async (req, res) => {
+router.put('/usuarios/:id', requirePermission('admin_sistema_usuarios'), async (req, res) => {
   const { activo, rol } = req.body ?? {};
   if (rol !== undefined && !ROLES_SYSTEM_USER.includes(rol)) {
     return res.status(400).json({ error: `rol debe ser uno de: ${ROLES_SYSTEM_USER.join(', ')}.` });
