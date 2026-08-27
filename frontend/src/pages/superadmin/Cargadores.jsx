@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Settings, ScrollText, Save, AlertTriangle, CalendarClock, X as XIcon } from 'lucide-react';
+import {
+  Settings, ScrollText, Save, AlertTriangle, CalendarClock, X as XIcon, UploadCloud, FileSearch, Download,
+} from 'lucide-react';
 import { api } from '@/lib/api';
 import { toast } from '@/lib/toast';
 import AdminLayout from '@/components/AdminLayout';
@@ -62,6 +64,15 @@ export default function Cargadores() {
   const [reservasBusy, setReservasBusy] = useState(false);
   const [reservaForm, setReservaForm] = useState({ idTagOcpp: '', expiraEn: '' });
   const [creandoReserva, setCreandoReserva] = useState(false);
+  const [firmwareOpen, setFirmwareOpen] = useState(null);
+  const [firmwareItems, setFirmwareItems] = useState(null);
+  const [firmwareBusy, setFirmwareBusy] = useState(false);
+  const [firmwareFile, setFirmwareFile] = useState(null);
+  const [subiendoFirmware, setSubiendoFirmware] = useState(false);
+  const [diagOpen, setDiagOpen] = useState(null);
+  const [diagItems, setDiagItems] = useState(null);
+  const [diagBusy, setDiagBusy] = useState(false);
+  const [solicitandoDiag, setSolicitandoDiag] = useState(false);
 
   async function loadCargadores() {
     const { data } = await api.get('/superadmin/cargadores');
@@ -186,6 +197,82 @@ export default function Cargadores() {
     }
   }
 
+  async function openFirmware(c) {
+    setFirmwareOpen(c);
+    setFirmwareItems(null);
+    setFirmwareFile(null);
+    setFirmwareBusy(true);
+    try {
+      const { data } = await api.get(`/admin/cargadores/${encodeURIComponent(c.ocpp_id)}/firmware`);
+      setFirmwareItems(data);
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'No se pudo leer el historial de firmware.');
+      setFirmwareOpen(null);
+    } finally {
+      setFirmwareBusy(false);
+    }
+  }
+
+  async function handleSubirFirmware() {
+    if (!firmwareFile) return;
+    setSubiendoFirmware(true);
+    try {
+      const form = new FormData();
+      form.append('file', firmwareFile);
+      const { data } = await api.post('/admin/firmware', form, { headers: { 'Content-Type': 'multipart/form-data' } });
+      await api.post(`/admin/cargadores/${encodeURIComponent(firmwareOpen.ocpp_id)}/firmware`, { filename: data.filename });
+      toast.success('Firmware enviado al equipo.');
+      setFirmwareFile(null);
+      await openFirmware(firmwareOpen);
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'No se pudo enviar el firmware.');
+    } finally {
+      setSubiendoFirmware(false);
+    }
+  }
+
+  async function openDiagnostico(c) {
+    setDiagOpen(c);
+    setDiagItems(null);
+    setDiagBusy(true);
+    try {
+      const { data } = await api.get(`/admin/cargadores/${encodeURIComponent(c.ocpp_id)}/diagnosticos`);
+      setDiagItems(data);
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'No se pudo leer el historial de diagnosticos.');
+      setDiagOpen(null);
+    } finally {
+      setDiagBusy(false);
+    }
+  }
+
+  async function handleSolicitarDiagnostico() {
+    setSolicitandoDiag(true);
+    try {
+      await api.post(`/admin/cargadores/${encodeURIComponent(diagOpen.ocpp_id)}/diagnostico`);
+      toast.success('Diagnostico solicitado al equipo.');
+      await openDiagnostico(diagOpen);
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'No se pudo solicitar el diagnostico.');
+    } finally {
+      setSolicitandoDiag(false);
+    }
+  }
+
+  async function handleDescargarDiagnostico(d) {
+    try {
+      const response = await api.get(`/admin/diagnosticos/${d.id}/descargar`, { responseType: 'blob' });
+      const url = window.URL.createObjectURL(response.data);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = d.filename;
+      a.click();
+      window.URL.revokeObjectURL(url);
+    } catch {
+      toast.error('No se pudo descargar el diagnostico.');
+    }
+  }
+
   return (
     <AdminLayout title="Cargadores" navItems={SUPERADMIN_NAV}>
       <Card>
@@ -261,6 +348,12 @@ export default function Cargadores() {
                         </Button>
                         <Button variant="outline" size="sm" onClick={() => openReservas(c)} title="Reservations">
                           <CalendarClock className="h-3.5 w-3.5" />
+                        </Button>
+                        <Button variant="outline" size="sm" onClick={() => openFirmware(c)} title="Firmware update remoto">
+                          <UploadCloud className="h-3.5 w-3.5" />
+                        </Button>
+                        <Button variant="outline" size="sm" onClick={() => openDiagnostico(c)} title="Diagnostico remoto">
+                          <FileSearch className="h-3.5 w-3.5" />
                         </Button>
                       </div>
                     </TableCell>
@@ -431,6 +524,101 @@ export default function Cargadores() {
             </div>
           ) : (
             <p className="text-sm text-muted-foreground">Sin reservas para este equipo.</p>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={firmwareOpen != null} onOpenChange={(o) => !o && setFirmwareOpen(null)}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Firmware update remoto - {firmwareOpen?.ocpp_id}</DialogTitle>
+            <DialogDescription>
+              Sube un binario y se envia al equipo via UpdateFirmware (2.0.1) / updateFirmware (1.6). El equipo lo descarga por HTTP.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex items-center gap-2 rounded-lg border border-border p-3">
+            <Input
+              type="file"
+              onChange={(e) => setFirmwareFile(e.target.files?.[0] ?? null)}
+              className="h-8 flex-1 text-xs"
+            />
+            <Button size="sm" disabled={!firmwareFile || subiendoFirmware} onClick={handleSubirFirmware}>
+              Enviar al equipo
+            </Button>
+          </div>
+          {firmwareBusy ? (
+            <p className="text-sm text-muted-foreground">Cargando...</p>
+          ) : firmwareItems && firmwareItems.length > 0 ? (
+            <div className="max-h-[45vh] overflow-y-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Archivo</TableHead>
+                    <TableHead>Estado</TableHead>
+                    <TableHead>Hora</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {firmwareItems.map((f) => (
+                    <TableRow key={f.id}>
+                      <TableCell className="font-mono text-xs">{f.filename}</TableCell>
+                      <TableCell className="text-xs">{f.status}</TableCell>
+                      <TableCell className="text-xs text-muted-foreground">{new Date(f.creado_en).toLocaleString()}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">Sin actualizaciones de firmware para este equipo.</p>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={diagOpen != null} onOpenChange={(o) => !o && setDiagOpen(null)}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Diagnostico remoto - {diagOpen?.ocpp_id}</DialogTitle>
+            <DialogDescription>
+              Solicita GetLog (2.0.1) / GetDiagnostics (1.6). El equipo sube el archivo al backend cuando termina.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex justify-end">
+            <Button size="sm" disabled={solicitandoDiag} onClick={handleSolicitarDiagnostico}>
+              Solicitar diagnostico
+            </Button>
+          </div>
+          {diagBusy ? (
+            <p className="text-sm text-muted-foreground">Cargando...</p>
+          ) : diagItems && diagItems.length > 0 ? (
+            <div className="max-h-[45vh] overflow-y-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Estado</TableHead>
+                    <TableHead>Hora</TableHead>
+                    <TableHead />
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {diagItems.map((d) => (
+                    <TableRow key={d.id}>
+                      <TableCell className="text-xs">{d.status}</TableCell>
+                      <TableCell className="text-xs text-muted-foreground">{new Date(d.creado_en).toLocaleString()}</TableCell>
+                      <TableCell>
+                        {d.filename && (
+                          <Button size="sm" variant="outline" onClick={() => handleDescargarDiagnostico(d)}>
+                            <Download className="h-3.5 w-3.5" />
+                          </Button>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">Sin diagnosticos solicitados para este equipo.</p>
           )}
         </DialogContent>
       </Dialog>

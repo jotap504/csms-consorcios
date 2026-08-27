@@ -150,6 +150,24 @@ router.get('/tarjetas', async (req, res) => {
   res.json(result.rows);
 });
 
+// Vehiculos propios - dato informativo, no autoriza ni bloquea nada OCPP.
+router.get('/vehiculos', async (req, res) => {
+  const result = await pool.query('SELECT * FROM vehiculos WHERE uf_id = $1 ORDER BY id', [req.user.ufId]);
+  res.json(result.rows);
+});
+
+router.post('/vehiculos', async (req, res) => {
+  const {
+    patente, vin, alias, marca, modelo,
+  } = req.body ?? {};
+  const result = await pool.query(
+    `INSERT INTO vehiculos (uf_id, patente, vin, alias, marca, modelo)
+     VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+    [req.user.ufId, patente ?? null, vin ?? null, alias ?? null, marca ?? null, modelo ?? null],
+  );
+  res.status(201).json(result.rows[0]);
+});
+
 // QR landing: confirms this cargador is actually assigned to the caller's
 // own unidad funcional before showing anything.
 router.get('/cargadores/:ocppId', async (req, res) => {

@@ -671,6 +671,33 @@ async function handleStatusNotification(context, payload) {
   }
 }
 
+// FirmwareStatusNotification/LogStatusNotification no traen de vuelta nada
+// que correlacione con nuestro row salvo el stationId (no guardamos el
+// requestId numerico que le mandamos a CitrineOS) - se actualiza la fila mas
+// reciente de ese cargador, suficiente porque en la practica no hay mas de
+// un firmware/diagnostico en curso por equipo a la vez.
+async function handleFirmwareStatusNotification(context, payload) {
+  const stationId = context.ocppConnectionName ?? context.stationId;
+  const status = payload.status;
+  await pool.query(
+    `UPDATE firmware_updates SET status = $1
+     WHERE id = (SELECT id FROM firmware_updates WHERE cargador_ocpp_id = $2 ORDER BY creado_en DESC LIMIT 1)`,
+    [status, stationId],
+  );
+  console.log(`[FirmwareStatusNotification] ${stationId} status=${status}`);
+}
+
+async function handleLogStatusNotification(context, payload) {
+  const stationId = context.ocppConnectionName ?? context.stationId;
+  const status = payload.status;
+  await pool.query(
+    `UPDATE diagnosticos SET status = $1
+     WHERE id = (SELECT id FROM diagnosticos WHERE cargador_ocpp_id = $2 ORDER BY creado_en DESC LIMIT 1)`,
+    [status, stationId],
+  );
+  console.log(`[LogStatusNotification] ${stationId} status=${status}`);
+}
+
 async function main() {
   const conn = await amqp.connect(AMQP_URL);
   const channel = await conn.createChannel();
@@ -774,6 +801,10 @@ async function main() {
         await handleOcpp16MeterValues(context, payload);
       } else if (action === 'TransactionEvent') {
         await handleTransactionEvent(context, payload);
+      } else if (action === 'FirmwareStatusNotification') {
+        await handleFirmwareStatusNotification(context, payload);
+      } else if (action === 'LogStatusNotification' || action === 'DiagnosticsStatusNotification') {
+        await handleLogStatusNotification(context, payload);
       }
       channel.ack(msg);
     } catch (err) {

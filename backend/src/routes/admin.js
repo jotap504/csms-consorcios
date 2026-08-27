@@ -1,11 +1,19 @@
 const express = require('express');
 const crypto = require('crypto');
+const path = require('path');
+const fs = require('fs');
 const bcrypt = require('bcryptjs');
 const multer = require('multer');
 const XLSX = require('xlsx');
 const pdfParse = require('pdf-parse');
 const { pool } = require('../db');
 const { authenticate, requireRole } = require('../auth/middleware');
+const { generateToken } = require('../lib/tokens');
+// Mismo mailer (stub, loguea en vez de mandar SMTP real) que usa
+// superadmin.js para el flujo de invitacion de consorcio_admin - mismo
+// criterio para consistencia, no el services/mail.js real (ese es el de la
+// bandeja comercial con nodemailer/IMAP, otro proposito).
+const { sendMail } = require('../lib/mailer');
 
 // Contrasena por defecto para el login de residente que se crea solo al
 // cargar/editar una UF con propietario_email. ON CONFLICT (email) nunca
@@ -670,6 +678,55 @@ router.get('/tarjetas/:id/movimientos', async (req, res) => {
   res.json(result.rows);
 });
 
+// Vehiculos por unidad funcional - dato informativo (no bloquea nada, no
+// se usa para autorizar OCPP). Mismo shape que las rutas de tarjetas de arriba.
+router.get('/consorcios/:id/vehiculos', async (req, res) => {
+  const result = await pool.query(
+    `SELECT v.* FROM vehiculos v
+     JOIN unidades_funcionales uf ON uf.id = v.uf_id
+     WHERE uf.consorcio_id = $1 ORDER BY v.id`,
+    [req.params.id],
+  );
+  res.json(result.rows);
+});
+
+router.post('/consorcios/:id/vehiculos', async (req, res) => {
+  const {
+    uf_id, patente, vin, alias, marca, modelo,
+  } = req.body ?? {};
+  if (!uf_id) return res.status(400).json({ error: 'uf_id es requerido.' });
+  const uf = await pool.query('SELECT id FROM unidades_funcionales WHERE id = $1 AND consorcio_id = $2', [uf_id, req.params.id]);
+  if (uf.rowCount === 0) return res.status(404).json({ error: 'Unidad funcional no encontrada en este consorcio.' });
+
+  const result = await pool.query(
+    `INSERT INTO vehiculos (uf_id, patente, vin, alias, marca, modelo)
+     VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+    [uf_id, patente ?? null, vin ?? null, alias ?? null, marca ?? null, modelo ?? null],
+  );
+  res.status(201).json(result.rows[0]);
+});
+
+router.put('/vehiculos/:id', async (req, res) => {
+  const {
+    patente, vin, alias, marca, modelo,
+  } = req.body ?? {};
+  const result = await pool.query(
+    `UPDATE vehiculos SET
+       patente = COALESCE($1, patente), vin = COALESCE($2, vin), alias = COALESCE($3, alias),
+       marca = COALESCE($4, marca), modelo = COALESCE($5, modelo)
+     WHERE id = $6 RETURNING *`,
+    [patente ?? null, vin ?? null, alias ?? null, marca ?? null, modelo ?? null, req.params.id],
+  );
+  if (result.rowCount === 0) return res.status(404).json({ error: 'Vehiculo no encontrado.' });
+  res.json(result.rows[0]);
+});
+
+router.delete('/vehiculos/:id', async (req, res) => {
+  const result = await pool.query('DELETE FROM vehiculos WHERE id = $1', [req.params.id]);
+  if (result.rowCount === 0) return res.status(404).json({ error: 'Vehiculo no encontrado.' });
+  res.status(204).end();
+});
+
 // Consumo en tiempo real: lecturas de los ultimos 30 min por cargador, mas
 // si tiene una sesion de carga activa en este momento.
 router.get('/consorcios/:id/live', async (req, res) => {
@@ -1079,6 +1136,179 @@ router.get('/consorcios/:id/reservas', async (req, res) => {
     [req.params.id],
   );
   res.json(result.rows);
+});
+
+// ---------------------------------------------------------------------------
+// System User (RBAC acotado) - CRUD sobre la tabla usuarios ya existente,
+// SIN tocar requireRole ni el CHECK constraint de usuarios.rol. Full RBAC
+// dinamico (permisos granulares editables) requeriria reescribir el modelo
+// de autorizacion de toda la app (26 call sites de requireRole) - fuera de
+// alcance por riesgo, ver analisis-plataforma-grasen.md seccion 5 y el plan
+// de esta sesion. Solo roles "admin-facing" (superadmin/instalador/
+// comercial) - residente/proveedor/consorcio_admin ya se gestionan en sus
+// propios flujos (alta de UF, alta de consorcio, alta de proveedor).
+// ---------------------------------------------------------------------------
+const ROLES_SYSTEM_USER = ['superadmin', 'instalador', 'comercial'];
+const INVITE_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const FRONTEND_URL = process.env.FRONTEND_URL || 'http://192.168.1.38';
+
+router.get('/usuarios', requireRole('superadmin'), async (_req, res) => {
+  const result = await pool.query(
+    `SELECT id, email, nombre, rol, activo, creado_en
+     FROM usuarios WHERE rol = ANY($1) ORDER BY creado_en DESC`,
+    [ROLES_SYSTEM_USER],
+  );
+  res.json(result.rows);
+});
+
+router.post('/usuarios', requireRole('superadmin'), async (req, res) => {
+  const { email, nombre, rol } = req.body ?? {};
+  if (!email || !ROLES_SYSTEM_USER.includes(rol)) {
+    return res.status(400).json({ error: `email requerido y rol debe ser uno de: ${ROLES_SYSTEM_USER.join(', ')}.` });
+  }
+  const inviteToken = generateToken();
+  const inviteExpires = new Date(Date.now() + INVITE_TOKEN_TTL_MS);
+  try {
+    const result = await pool.query(
+      `INSERT INTO usuarios (email, nombre, rol, reset_token, reset_token_expires)
+       VALUES ($1, $2, $3, $4, $5) RETURNING id, email, nombre, rol, activo, creado_en`,
+      [email, nombre ?? null, rol, inviteToken, inviteExpires],
+    );
+    await sendMail({
+      to: email,
+      subject: 'Bienvenido a CSMS - acceso al panel',
+      html: `<p>Se creo una cuenta de ${rol} para vos.</p>
+             <p>Elegi tu contrasena para empezar (link valido 7 dias):</p>
+             <p><a href="${FRONTEND_URL}/reset-password?token=${inviteToken}">${FRONTEND_URL}/reset-password?token=${inviteToken}</a></p>`,
+    });
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: `Ya existe un usuario con email "${email}".` });
+    throw err;
+  }
+});
+
+router.put('/usuarios/:id', requireRole('superadmin'), async (req, res) => {
+  const { activo, rol } = req.body ?? {};
+  if (rol !== undefined && !ROLES_SYSTEM_USER.includes(rol)) {
+    return res.status(400).json({ error: `rol debe ser uno de: ${ROLES_SYSTEM_USER.join(', ')}.` });
+  }
+  const result = await pool.query(
+    `UPDATE usuarios SET activo = COALESCE($1, activo), rol = COALESCE($2, rol)
+     WHERE id = $3 AND rol = ANY($4) RETURNING id, email, nombre, rol, activo, creado_en`,
+    [activo ?? null, rol ?? null, req.params.id, ROLES_SYSTEM_USER],
+  );
+  if (result.rowCount === 0) return res.status(404).json({ error: 'Usuario no encontrado.' });
+  res.json(result.rows[0]);
+});
+
+// ---------------------------------------------------------------------------
+// Firmware update remoto (UpdateFirmware) y Diagnostico remoto (GetLog).
+// El archivo en si (firmware que el cargador baja, log que el cargador sube)
+// vive en public.js SIN auth - los cargadores no mandan Bearer token - ver
+// comentario alli. Aca solo el dispatch OCPP y el historial, gateado a
+// superadmin como el resto de las acciones sensibles sobre un equipo real.
+// ---------------------------------------------------------------------------
+const FIRMWARE_DIR = path.join(__dirname, '..', '..', 'uploads', 'firmware');
+fs.mkdirSync(FIRMWARE_DIR, { recursive: true });
+const DIAGNOSTICOS_DIR = path.join(__dirname, '..', '..', 'uploads', 'diagnosticos');
+const uploadFirmware = multer({ storage: multer.diskStorage({ destination: FIRMWARE_DIR }), limits: { fileSize: 100 * 1024 * 1024 } });
+// Dominio publico real (nginx enruta /api/* a este backend) - el cargador
+// necesita una URL alcanzable desde afuera, no el nombre del contenedor.
+const BACKEND_PUBLIC_URL = process.env.BACKEND_PUBLIC_URL || 'https://bilon.pagarqr.ar/api';
+
+router.post('/firmware', requireRole('superadmin'), uploadFirmware.single('file'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'Falta el archivo.' });
+  res.status(201).json({ filename: req.file.filename, originalName: req.file.originalname });
+});
+
+router.post('/cargadores/:ocppId/firmware', requireRole('superadmin'), async (req, res) => {
+  const ocppId = req.params.ocppId;
+  const { filename } = req.body ?? {};
+  if (!filename) return res.status(400).json({ error: 'filename es requerido (subir primero via POST /admin/firmware).' });
+  if (!fs.existsSync(path.join(FIRMWARE_DIR, filename))) return res.status(404).json({ error: 'Archivo no encontrado.' });
+
+  const version = await getOcppVersion(ocppId);
+  const is16 = version === '1.6';
+  const location = `${BACKEND_PUBLIC_URL}/public/firmware/${encodeURIComponent(filename)}`;
+  const requestId = Date.now() % 1000000;
+  const url = is16
+    ? `${CITRINEOS_REST_URL}/ocpp/1.6/configuration/updateFirmware?identifier=${encodeURIComponent(ocppId)}&tenantId=1`
+    : `${CITRINEOS_REST_URL}/ocpp/2.0.1/configuration/updateFirmware?identifier=${encodeURIComponent(ocppId)}&tenantId=1`;
+  const body = is16
+    ? { location, retrieveDate: new Date().toISOString() }
+    : { requestId, firmware: { location, retrieveDateTime: new Date().toISOString() } };
+
+  const record = await pool.query(
+    `INSERT INTO firmware_updates (cargador_ocpp_id, filename) VALUES ($1, $2) RETURNING id`,
+    [ocppId, filename],
+  );
+  try {
+    const { dispatched, payload } = await sendAndAwaitConfirmation(ocppId, 'UpdateFirmware', url, body);
+    const status = !dispatched ? 'Error de comunicacion' : (payload?.status ?? 'Enviado (sin confirmar)');
+    await pool.query('UPDATE firmware_updates SET status = $1 WHERE id = $2', [status, record.rows[0].id]);
+    res.status(201).json({ id: record.rows[0].id, status });
+  } catch (err) {
+    await pool.query(`UPDATE firmware_updates SET status = 'Error' WHERE id = $1`, [record.rows[0].id]);
+    console.error('Error dispatcheando UpdateFirmware:', err);
+    res.status(502).json({ error: 'No se pudo comunicar con CitrineOS.' });
+  }
+});
+
+router.get('/cargadores/:ocppId/firmware', requireRole('superadmin'), async (req, res) => {
+  const result = await pool.query(
+    `SELECT id, filename, version_reportada, status, creado_en FROM firmware_updates
+     WHERE cargador_ocpp_id = $1 ORDER BY creado_en DESC LIMIT 50`,
+    [req.params.ocppId],
+  );
+  res.json(result.rows);
+});
+
+router.post('/cargadores/:ocppId/diagnostico', requireRole('superadmin'), async (req, res) => {
+  const ocppId = req.params.ocppId;
+  const record = await pool.query(
+    `INSERT INTO diagnosticos (cargador_ocpp_id) VALUES ($1) RETURNING id`,
+    [ocppId],
+  );
+  const diagnosticoId = record.rows[0].id;
+
+  const version = await getOcppVersion(ocppId);
+  const is16 = version === '1.6';
+  const remoteLocation = `${BACKEND_PUBLIC_URL}/public/diagnosticos/${diagnosticoId}/upload`;
+  const requestId = Date.now() % 1000000;
+  const url = is16
+    ? `${CITRINEOS_REST_URL}/ocpp/1.6/reporting/getDiagnostics?identifier=${encodeURIComponent(ocppId)}&tenantId=1`
+    : `${CITRINEOS_REST_URL}/ocpp/2.0.1/reporting/getLog?identifier=${encodeURIComponent(ocppId)}&tenantId=1`;
+  const body = is16
+    ? { location: remoteLocation }
+    : { requestId, logType: 'DiagnosticsLog', log: { remoteLocation } };
+
+  try {
+    const { dispatched, payload } = await sendAndAwaitConfirmation(ocppId, is16 ? 'GetDiagnostics' : 'GetLog', url, body);
+    const status = !dispatched ? 'Error de comunicacion' : (payload?.status ?? 'Enviado (sin confirmar)');
+    await pool.query('UPDATE diagnosticos SET status = $1 WHERE id = $2', [status, diagnosticoId]);
+    res.status(201).json({ id: diagnosticoId, status });
+  } catch (err) {
+    await pool.query(`UPDATE diagnosticos SET status = 'Error' WHERE id = $1`, [diagnosticoId]);
+    console.error('Error dispatcheando GetLog/GetDiagnostics:', err);
+    res.status(502).json({ error: 'No se pudo comunicar con CitrineOS.' });
+  }
+});
+
+router.get('/cargadores/:ocppId/diagnosticos', requireRole('superadmin'), async (req, res) => {
+  const result = await pool.query(
+    `SELECT id, status, filename, creado_en FROM diagnosticos
+     WHERE cargador_ocpp_id = $1 ORDER BY creado_en DESC LIMIT 50`,
+    [req.params.ocppId],
+  );
+  res.json(result.rows);
+});
+
+router.get('/diagnosticos/:id/descargar', requireRole('superadmin'), async (req, res) => {
+  const diagnostico = await pool.query('SELECT filename FROM diagnosticos WHERE id = $1', [req.params.id]);
+  const filename = diagnostico.rows[0]?.filename;
+  if (!filename) return res.status(404).end();
+  res.sendFile(path.join(DIAGNOSTICOS_DIR, filename));
 });
 
 // ---------------------------------------------------------------------------

@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import QRCode from 'qrcode';
 import {
   ArrowLeft, Plus, Pencil, Trash2, Activity, Download,
-  Copy, PlugZap, CreditCard, Upload, Sparkles, X as XIcon, Wallet,
+  Copy, PlugZap, CreditCard, Upload, Sparkles, X as XIcon, Wallet, Car,
 } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer, CartesianGrid } from 'recharts';
 import { api } from '@/lib/api';
@@ -161,9 +161,11 @@ export default function AdminConsorcio() {
   const [cargosPuntuales, setCargosPuntuales] = useState([]);
   const [facturas, setFacturas] = useState([]);
   const [reporteElectrico, setReporteElectrico] = useState([]);
+  const [vehiculos, setVehiculos] = useState([]);
+  const [vehiculoForm, setVehiculoForm] = useState({ patente: '', vin: '', alias: '' });
 
   async function loadAll() {
-    const [c, ca, u, t, s, mm, ai, tf] = await Promise.all([
+    const [c, ca, u, t, s, mm, ai, tf, v] = await Promise.all([
       api.get(`/admin/consorcios/${id}`),
       api.get(`/admin/consorcios/${id}/cargadores`),
       api.get(`/admin/consorcios/${id}/unidades`),
@@ -172,6 +174,7 @@ export default function AdminConsorcio() {
       api.get(`/admin/consorcios/${id}/medidores-modbus`),
       api.get(`/admin/consorcios/${id}/abono-items`),
       api.get(`/admin/consorcios/${id}/facturas`),
+      api.get(`/admin/consorcios/${id}/vehiculos`),
     ]);
     setConsorcio(c.data);
     setParamsForm({
@@ -187,6 +190,24 @@ export default function AdminConsorcio() {
     setMedidoresModbus(mm.data);
     setAbonoItems(ai.data);
     setTodasLasFacturas(tf.data);
+    setVehiculos(v.data);
+  }
+
+  async function handleCreateVehiculo(e) {
+    e.preventDefault();
+    if (!tarjetasUfOpen || !vehiculoForm.patente) return;
+    try {
+      await api.post(`/admin/consorcios/${id}/vehiculos`, { ...vehiculoForm, uf_id: tarjetasUfOpen.id });
+      setVehiculoForm({ patente: '', vin: '', alias: '' });
+      await loadAll();
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'No se pudo agregar el vehiculo.');
+    }
+  }
+
+  async function handleDeleteVehiculo(vehiculoId) {
+    await api.delete(`/admin/vehiculos/${vehiculoId}`);
+    await loadAll();
   }
 
   async function loadFacturacionPeriodo(periodo) {
@@ -1290,6 +1311,43 @@ export default function AdminConsorcio() {
                   />
                   <Button type="submit" size="sm">Agregar</Button>
                 </form>
+
+                <div className="border-t border-border pt-3">
+                  <p className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                    <Car className="h-3.5 w-3.5" /> Vehiculos (dato informativo)
+                  </p>
+                  {tarjetasUfOpen && vehiculos.filter((v) => v.uf_id === tarjetasUfOpen.id).length === 0 ? (
+                    <p className="text-xs text-muted-foreground">Sin vehiculos cargados.</p>
+                  ) : (
+                    <ul className="flex flex-col gap-1.5">
+                      {tarjetasUfOpen && vehiculos.filter((v) => v.uf_id === tarjetasUfOpen.id).map((v) => (
+                        <li key={v.id} className="flex items-center justify-between rounded-md bg-muted px-2.5 py-1.5 text-sm">
+                          <span className="text-xs">
+                            {v.patente}{v.alias ? ` - ${v.alias}` : ''}{v.vin ? <span className="text-muted-foreground"> (VIN {v.vin})</span> : null}
+                          </span>
+                          <Button size="sm" variant="destructive" onClick={() => handleDeleteVehiculo(v.id)}>
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  <form onSubmit={handleCreateVehiculo} className="mt-2 flex gap-2">
+                    <Input
+                      placeholder="Patente"
+                      value={vehiculoForm.patente}
+                      onChange={(e) => setVehiculoForm({ ...vehiculoForm, patente: e.target.value })}
+                      className="h-8 text-xs"
+                    />
+                    <Input
+                      placeholder="Alias (opcional)"
+                      value={vehiculoForm.alias}
+                      onChange={(e) => setVehiculoForm({ ...vehiculoForm, alias: e.target.value })}
+                      className="h-8 text-xs"
+                    />
+                    <Button type="submit" size="sm">Agregar</Button>
+                  </form>
+                </div>
               </div>
             </DialogContent>
           </Dialog>

@@ -1,4 +1,7 @@
 const express = require('express');
+const path = require('path');
+const fs = require('fs');
+const multer = require('multer');
 const { pool } = require('../db');
 const { sendMail } = require('../lib/mailer');
 const { ensureAuthorized } = require('../lib/citrineAuth');
@@ -471,6 +474,42 @@ router.get('/ocpp-test/:ocppId/consumo', async (req, res) => {
     transaction_id: evento?.transactionInfo?.transactionId ?? null,
     ultimo_evento: result.rows[0].timestamp,
   });
+});
+
+// ---------------------------------------------------------------------------
+// Firmware update remoto y Diagnostico remoto (GetLog): el propio cargador
+// tiene que poder bajar el firmware y subir el log SIN Bearer token (no lo
+// manda), por eso estas 2 rutas van en public.js (nunca en admin.js, que
+// tiene auth global en router.use). Mismo patron de multer diskStorage +
+// GET sin auth ya usado en comercial.js para archivos que el navegador pide
+// via <img>/<a> sin el interceptor de axios.
+// ---------------------------------------------------------------------------
+const FIRMWARE_DIR = path.join(__dirname, '..', '..', 'uploads', 'firmware');
+fs.mkdirSync(FIRMWARE_DIR, { recursive: true });
+const DIAGNOSTICOS_DIR = path.join(__dirname, '..', '..', 'uploads', 'diagnosticos');
+fs.mkdirSync(DIAGNOSTICOS_DIR, { recursive: true });
+const uploadDiagnostico = multer({ storage: multer.diskStorage({ destination: DIAGNOSTICOS_DIR }), limits: { fileSize: 50 * 1024 * 1024 } });
+
+router.get('/firmware/:filename', (req, res) => {
+  const filePath = path.join(FIRMWARE_DIR, path.basename(req.params.filename));
+  if (!fs.existsSync(filePath)) return res.status(404).end();
+  res.sendFile(filePath);
+});
+
+// El cargador hace PUT a esta URL con el archivo de log (segun
+// log.remoteLocation que le mandamos en el GetLog.req) - guarda el archivo
+// y marca el diagnostico como completado. No hay negociacion de protocolo
+// de subida mas alla de HTTP PUT (algunos equipos usan FTP en cambio, ver
+// SupportedFileTransferProtocols de cada equipo antes de confiar en esto).
+router.put('/diagnosticos/:id/upload', uploadDiagnostico.single('file'), async (req, res) => {
+  const diagnostico = await pool.query('SELECT id FROM diagnosticos WHERE id = $1', [req.params.id]);
+  if (diagnostico.rowCount === 0) return res.status(404).end();
+  const filename = req.file?.filename ?? null;
+  await pool.query(
+    `UPDATE diagnosticos SET status = 'Subido', filename = $1 WHERE id = $2`,
+    [filename, req.params.id],
+  );
+  res.status(201).json({ ok: true });
 });
 
 module.exports = router;
