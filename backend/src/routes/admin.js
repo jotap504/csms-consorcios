@@ -7,7 +7,7 @@ const multer = require('multer');
 const XLSX = require('xlsx');
 const pdfParse = require('pdf-parse');
 const { pool } = require('../db');
-const { authenticate, requireRole, requirePermission } = require('../auth/middleware');
+const { authenticate, requirePermission } = require('../auth/middleware');
 const { generateToken } = require('../lib/tokens');
 // Mismo mailer (stub, loguea en vez de mandar SMTP real) que usa
 // superadmin.js para el flujo de invitacion de consorcio_admin - mismo
@@ -38,7 +38,7 @@ async function upsertUsuarioResidente(client, { email, nombre, consorcioId, ufId
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
 
 const router = express.Router();
-router.use(authenticate, requireRole('superadmin', 'instalador'));
+router.use(authenticate, requirePermission('admin_operaciones'));
 
 const CITRINEOS_REST_URL = process.env.CITRINEOS_REST_URL || 'http://citrineos-core:8080';
 
@@ -1158,14 +1158,14 @@ router.get('/consorcios/:id/reservas', async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// System User (RBAC acotado) - CRUD sobre la tabla usuarios ya existente,
-// SIN tocar requireRole ni el CHECK constraint de usuarios.rol. Full RBAC
-// dinamico (permisos granulares editables) requeriria reescribir el modelo
-// de autorizacion de toda la app (26 call sites de requireRole) - fuera de
-// alcance por riesgo, ver analisis-plataforma-grasen.md seccion 5 y el plan
-// de esta sesion. Solo roles "admin-facing" (superadmin/instalador/
-// comercial) - residente/proveedor/consorcio_admin ya se gestionan en sus
-// propios flujos (alta de UF, alta de consorcio, alta de proveedor).
+// System User - CRUD sobre la tabla usuarios ya existente. Los 6 roles
+// siguen fijos (mismo CHECK constraint), pero que puede hacer cada rol ya
+// es real y editable via rol_permisos/requirePermission (ver plan RBAC y
+// schema_permisos.sql) - lo que en la nota original de Nivel 3 estaba
+// documentado como fuera de alcance ya se construyo. Solo roles
+// "admin-facing" (superadmin/instalador/comercial) - residente/proveedor/
+// consorcio_admin ya se gestionan en sus propios flujos (alta de UF, alta
+// de consorcio, alta de proveedor).
 // ---------------------------------------------------------------------------
 const ROLES_SYSTEM_USER = ['superadmin', 'instalador', 'comercial'];
 const INVITE_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
