@@ -1,10 +1,10 @@
 const express = require('express');
 const { pool } = require('../db');
-const { authenticate, requireRole } = require('../auth/middleware');
+const { authenticate, requirePermission } = require('../auth/middleware');
 const { ensureAuthorized } = require('../lib/citrineAuth');
 
 const router = express.Router();
-router.use(authenticate, requireRole('proveedor'));
+router.use(authenticate, requirePermission('proveedor_panel'));
 const CITRINEOS_REST_URL = process.env.CITRINEOS_REST_URL || 'http://citrineos-core:8080';
 
 async function logTest(proveedorId, ocppId, usuarioId, accion, resultado, detalle) {

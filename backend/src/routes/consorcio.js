@@ -1,9 +1,9 @@
 const express = require('express');
 const { pool } = require('../db');
-const { authenticate, requireRole } = require('../auth/middleware');
+const { authenticate, requirePermission } = require('../auth/middleware');
 
 const router = express.Router();
-router.use(authenticate, requireRole('consorcio_admin'));
+router.use(authenticate, requirePermission('consorcio_admin_panel'));
 
 function liquidacionesQuery(periodo) {
   return {
@@ -80,7 +80,7 @@ router.get('/tarjetas', async (req, res) => {
 
 router.get('/live', async (req, res) => {
   const consorcioId = req.user.consorcioId;
-  const [cargadores, activos, lecturas, acumulados] = await Promise.all([
+  const [cargadores, activos, lecturas, medidorGeneral, acumulados] = await Promise.all([
     pool.query('SELECT id, ocpp_id, etiqueta FROM cargadores WHERE consorcio_id = $1', [consorcioId]),
     pool.query(
       'SELECT cargador_ocpp_id, transaction_id_ocpp, fecha_inicio FROM liquidacion_sesiones WHERE consorcio_id = $1 AND fecha_fin IS NULL',
@@ -89,6 +89,16 @@ router.get('/live', async (req, res) => {
     pool.query(
       `SELECT cargador_ocpp_id, "timestamp", kwh_acumulado, potencia_kw
        FROM lecturas_medidor
+       WHERE consorcio_id = $1 AND "timestamp" > NOW() - INTERVAL '30 minutes'
+       ORDER BY "timestamp" ASC`,
+      [consorcioId],
+    ),
+    // Medidor general del edificio (Modbus/Acrel), no por cargador - mismo
+    // criterio de ventana (30 min) que las lecturas por cargador de arriba,
+    // para que la solapa "tiempo real" muestre ambos con el mismo alcance.
+    pool.query(
+      `SELECT "timestamp", amps_l1, amps_l2, amps_l3, potencia_kw
+       FROM lecturas_consorcio
        WHERE consorcio_id = $1 AND "timestamp" > NOW() - INTERVAL '30 minutes'
        ORDER BY "timestamp" ASC`,
       [consorcioId],
@@ -144,8 +154,8 @@ router.get('/live', async (req, res) => {
   }
   const acumuladosByOcpp = new Map(acumulados.rows.map((r) => [r.cargador_ocpp_id, r]));
 
-  res.json(
-    cargadores.rows.map((c) => {
+  res.json({
+    cargadores: cargadores.rows.map((c) => {
       const readings = readingsByOcpp.get(c.ocpp_id) ?? [];
       const activa = activeByOcpp.get(c.ocpp_id);
       const activo = activa != null;
@@ -164,7 +174,11 @@ router.get('/live', async (req, res) => {
         kwh_mes: Number(acum?.kwh_mes ?? 0),
       };
     }),
-  );
+    medidor_general: {
+      readings: medidorGeneral.rows,
+      ultima_lectura: medidorGeneral.rows[medidorGeneral.rows.length - 1] ?? null,
+    },
+  });
 });
 
 router.post('/tarjetas', async (req, res) => {

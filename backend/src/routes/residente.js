@@ -1,10 +1,10 @@
 const express = require('express');
 const { pool } = require('../db');
-const { authenticate, requireRole } = require('../auth/middleware');
+const { authenticate, requirePermission } = require('../auth/middleware');
 const { ensureAuthorized } = require('../lib/citrineAuth');
 
 const router = express.Router();
-router.use(authenticate, requireRole('residente'));
+router.use(authenticate, requirePermission('residente_panel'));
 const CITRINEOS_REST_URL = process.env.CITRINEOS_REST_URL || 'http://citrineos-core:8080';
 const METER_STALE_MS = 90000;
 const ASSUMED_VOLTS = 220;
