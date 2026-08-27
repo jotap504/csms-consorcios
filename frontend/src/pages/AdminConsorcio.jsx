@@ -5,7 +5,9 @@ import {
   ArrowLeft, Plus, Pencil, Trash2, Activity, Download,
   Copy, PlugZap, CreditCard, Upload, Sparkles, X as XIcon, Wallet, Car,
 } from 'lucide-react';
-import { LineChart, Line, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer, CartesianGrid } from 'recharts';
+import {
+  LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer, CartesianGrid,
+} from 'recharts';
 import { api } from '@/lib/api';
 import { getSession } from '@/lib/auth';
 import { cn, formatElapsed } from '@/lib/utils';
@@ -163,9 +165,10 @@ export default function AdminConsorcio() {
   const [reporteElectrico, setReporteElectrico] = useState([]);
   const [vehiculos, setVehiculos] = useState([]);
   const [vehiculoForm, setVehiculoForm] = useState({ patente: '', vin: '', alias: '' });
+  const [tendencia, setTendencia] = useState([]);
 
   async function loadAll() {
-    const [c, ca, u, t, s, mm, ai, tf, v] = await Promise.all([
+    const [c, ca, u, t, s, mm, ai, tf, v, tk] = await Promise.all([
       api.get(`/admin/consorcios/${id}`),
       api.get(`/admin/consorcios/${id}/cargadores`),
       api.get(`/admin/consorcios/${id}/unidades`),
@@ -175,6 +178,7 @@ export default function AdminConsorcio() {
       api.get(`/admin/consorcios/${id}/abono-items`),
       api.get(`/admin/consorcios/${id}/facturas`),
       api.get(`/admin/consorcios/${id}/vehiculos`),
+      api.get(`/admin/consorcios/${id}/tendencia-kwh`),
     ]);
     setConsorcio(c.data);
     setParamsForm({
@@ -191,6 +195,7 @@ export default function AdminConsorcio() {
     setAbonoItems(ai.data);
     setTodasLasFacturas(tf.data);
     setVehiculos(v.data);
+    setTendencia(tk.data);
   }
 
   async function handleCreateVehiculo(e) {
@@ -1008,6 +1013,32 @@ export default function AdminConsorcio() {
           )}
         </DialogContent>
       </Dialog>
+
+      {tendencia.length > 0 && (
+        <Card className="mb-4">
+          <CardHeader>
+            <CardTitle>Tendencia de consumo (ultimos 15 dias)</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="h-56 w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart
+                  data={tendencia.map((t) => ({
+                    dia: new Date(t.dia).toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit' }),
+                    kWh: Number(t.kwh),
+                  }))}
+                >
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e1eaec" vertical={false} />
+                  <XAxis dataKey="dia" tick={{ fontSize: 11 }} stroke="#6c8189" />
+                  <YAxis tick={{ fontSize: 11 }} stroke="#6c8189" />
+                  <Tooltip formatter={(value) => [`${value} kWh`, 'Consumo']} />
+                  <Bar dataKey="kWh" name="kWh consumidos" fill="#14b8c6" radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <Tabs defaultValue="cargadores">
         <TabsList>

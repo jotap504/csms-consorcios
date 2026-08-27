@@ -727,6 +727,25 @@ router.delete('/vehiculos/:id', async (req, res) => {
   res.status(204).end();
 });
 
+// Tendencia diaria de consumo (ultimos 15 dias) para el grafico de barras
+// del panel del consorcio - equivalente a "Charging energy trend" de
+// GRASEN. Se agrega tambien monto_total_expensa aunque hoy no se
+// grafique (el ingreso no es prioridad todavia) para no tener que tocar
+// esta query cuando se decida activarlo.
+router.get('/consorcios/:id/tendencia-kwh', async (req, res) => {
+  const result = await pool.query(
+    `SELECT date_trunc('day', fecha_inicio) AS dia,
+            COALESCE(SUM(kwh_consumidos), 0) AS kwh,
+            COALESCE(SUM(monto_total_expensa), 0) AS monto
+     FROM liquidacion_sesiones
+     WHERE consorcio_id = $1 AND fecha_fin IS NOT NULL AND fecha_inicio >= NOW() - INTERVAL '15 days'
+     GROUP BY dia
+     ORDER BY dia`,
+    [req.params.id],
+  );
+  res.json(result.rows);
+});
+
 // Consumo en tiempo real: lecturas de los ultimos 30 min por cargador, mas
 // si tiene una sesion de carga activa en este momento.
 router.get('/consorcios/:id/live', async (req, res) => {
