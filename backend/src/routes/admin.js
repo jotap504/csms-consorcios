@@ -1417,12 +1417,12 @@ router.delete('/abono-items/:id', async (req, res) => {
 
 // Catalogo de plantillas de abono (valores predeterminados) - solo superadmin,
 // el instalador no toca precios.
-router.get('/abono-items-catalogo', requireRole('superadmin'), async (_req, res) => {
+router.get('/abono-items-catalogo', requirePermission('admin_facturacion_catalogo'), async (_req, res) => {
   const result = await pool.query('SELECT * FROM abono_items_catalogo ORDER BY nombre');
   res.json(result.rows);
 });
 
-router.post('/abono-items-catalogo', requireRole('superadmin'), async (req, res) => {
+router.post('/abono-items-catalogo', requirePermission('admin_facturacion_catalogo'), async (req, res) => {
   const {
     nombre, tipo, monto_sugerido, tipo_cliente,
   } = req.body ?? {};
@@ -1440,7 +1440,7 @@ router.post('/abono-items-catalogo', requireRole('superadmin'), async (req, res)
   res.status(201).json(result.rows[0]);
 });
 
-router.put('/abono-items-catalogo/:id', requireRole('superadmin'), async (req, res) => {
+router.put('/abono-items-catalogo/:id', requirePermission('admin_facturacion_catalogo'), async (req, res) => {
   const {
     nombre, tipo, monto_sugerido, tipo_cliente, activo,
   } = req.body ?? {};
@@ -1458,7 +1458,7 @@ router.put('/abono-items-catalogo/:id', requireRole('superadmin'), async (req, r
   res.json(result.rows[0]);
 });
 
-router.delete('/abono-items-catalogo/:id', requireRole('superadmin'), async (req, res) => {
+router.delete('/abono-items-catalogo/:id', requirePermission('admin_facturacion_catalogo'), async (req, res) => {
   const result = await pool.query('DELETE FROM abono_items_catalogo WHERE id = $1', [req.params.id]);
   if (result.rowCount === 0) return res.status(404).json({ error: 'Plantilla no encontrada.' });
   res.status(204).end();
@@ -1467,7 +1467,7 @@ router.delete('/abono-items-catalogo/:id', requireRole('superadmin'), async (req
 // Clona las plantillas del catalogo (activas, y que apliquen al tipo_cliente
 // de este edificio o sean genericas) como abono_items propios del consorcio,
 // editables despues sin afectar el catalogo.
-router.post('/consorcios/:id/abono-items/clonar-catalogo', requireRole('superadmin'), async (req, res) => {
+router.post('/consorcios/:id/abono-items/clonar-catalogo', requirePermission('admin_facturacion_catalogo'), async (req, res) => {
   const { catalogo_ids: catalogoIds } = req.body ?? {};
   const consorcio = await pool.query('SELECT tipo_cliente FROM consorcios WHERE id = $1', [req.params.id]);
   if (consorcio.rowCount === 0) return res.status(404).json({ error: 'Consorcio no encontrado.' });
@@ -1493,7 +1493,7 @@ router.post('/consorcios/:id/abono-items/clonar-catalogo', requireRole('superadm
 
 // Ajuste masivo por porcentaje - accion manual (no cron), pensada para el
 // cierre de fin de mes. consorcio_id ausente = aplica a TODOS los edificios.
-router.post('/abono-items/ajuste-masivo', requireRole('superadmin'), async (req, res) => {
+router.post('/abono-items/ajuste-masivo', requirePermission('admin_facturacion_catalogo'), async (req, res) => {
   const { porcentaje, consorcio_id: consorcioId } = req.body ?? {};
   if (typeof porcentaje !== 'number' || porcentaje === 0) {
     return res.status(400).json({ error: 'porcentaje es requerido y debe ser distinto de 0.' });
@@ -1507,7 +1507,7 @@ router.post('/abono-items/ajuste-masivo', requireRole('superadmin'), async (req,
   res.json({ actualizados: result.rowCount, items: result.rows });
 });
 
-router.post('/abono-items-catalogo/ajuste-masivo', requireRole('superadmin'), async (req, res) => {
+router.post('/abono-items-catalogo/ajuste-masivo', requirePermission('admin_facturacion_catalogo'), async (req, res) => {
   const { porcentaje } = req.body ?? {};
   if (typeof porcentaje !== 'number' || porcentaje === 0) {
     return res.status(400).json({ error: 'porcentaje es requerido y debe ser distinto de 0.' });
