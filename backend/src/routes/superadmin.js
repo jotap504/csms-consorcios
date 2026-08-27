@@ -1,24 +1,24 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const { pool } = require('../db');
-const { authenticate, requireRole } = require('../auth/middleware');
+const { authenticate, requireRole, requirePermission } = require('../auth/middleware');
 const { reloadPermissionsCache } = require('../auth/permissions');
 const { generateToken } = require('../lib/tokens');
 const { sendMail } = require('../lib/mailer');
 
 const router = express.Router();
-router.use(authenticate, requireRole('superadmin'));
+router.use(authenticate, requirePermission('superadmin_panel'));
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://192.168.1.38';
 const INVITE_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 dias
 
-// RBAC real: matriz rol x permiso para la pantalla Permission. Se queda en
-// requireRole('superadmin') liso (no requirePermission) a proposito - es la
-// segunda capa de defensa junto con el bypass de superadmin en el
-// middleware, para que no exista ningun camino donde una edicion deje a
-// todos los superadmin afuera de esta misma pantalla (ver plan RBAC).
+// RBAC real: matriz rol x permiso para la pantalla Permission. requireRole
+// ('superadmin') explicito aca (redundante con el bypass de superadmin en
+// requirePermission, a proposito) - segunda capa de defensa para que ningun
+// futuro cambio al bypass pueda dejar a todos los superadmin afuera de esta
+// misma pantalla (ver plan RBAC).
 const ROLES_RBAC = ['superadmin', 'instalador', 'comercial', 'consorcio_admin', 'proveedor', 'residente'];
 
-router.get('/permisos', async (_req, res) => {
+router.get('/permisos', requireRole('superadmin'), async (_req, res) => {
   const [permisos, rolPermisos] = await Promise.all([
     pool.query('SELECT id, clave, descripcion FROM permisos ORDER BY id'),
     pool.query('SELECT rol, permiso_id FROM rol_permisos'),
@@ -26,7 +26,7 @@ router.get('/permisos', async (_req, res) => {
   res.json({ roles: ROLES_RBAC, permisos: permisos.rows, rolPermisos: rolPermisos.rows });
 });
 
-router.put('/permisos', async (req, res) => {
+router.put('/permisos', requireRole('superadmin'), async (req, res) => {
   const { rol, clave, activo } = req.body ?? {};
   if (!ROLES_RBAC.includes(rol) || !clave || typeof activo !== 'boolean') {
     return res.status(400).json({ error: 'rol, clave y activo (boolean) son requeridos.' });
