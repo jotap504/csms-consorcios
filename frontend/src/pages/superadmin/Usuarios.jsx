@@ -17,33 +17,49 @@ import { SUPERADMIN_NAV } from './navConfig';
 // fabrica) y no pertenecen a esta pantalla. Ver admin.js ROLES_SYSTEM_USER.
 const ROLES_SYSTEM_USER = ['superadmin', 'instalador', 'comercial'];
 
-// Referencia de solo lectura: hoy los permisos NO son granulares (requireRole
-// contra 6 strings fijos con CHECK constraint en la DB), asi que se documenta
-// que puede hacer cada rol en vez de fingir checkboxes editables que no existen.
-const PERMISOS_POR_ROL = [
-  { rol: 'superadmin', desc: 'Acceso total: cargadores, consorcios, facturacion, fabricas, stock, usuarios del sistema.' },
-  { rol: 'instalador', desc: 'Alta y configuracion tecnica de cargadores y consorcios.' },
-  { rol: 'comercial', desc: 'Bandeja, campanias, presupuestos e informes comerciales.' },
-  { rol: 'consorcio_admin', desc: 'Panel del consorcio propio: unidades funcionales, tarjetas RFID, vehiculos.' },
-  { rol: 'proveedor', desc: 'Panel de fabrica: sus propios cargadores emparejados y tests OCPP.' },
-  { rol: 'residente', desc: 'Su propio cargador: iniciar/detener carga, reservas, tarjeta prepaga.' },
-];
-
 export default function Usuarios() {
   const [usuarios, setUsuarios] = useState([]);
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({ email: '', nombre: '', rol: 'instalador' });
   const [creando, setCreando] = useState(false);
+  const [permisos, setPermisos] = useState(null);
+  const [busyCell, setBusyCell] = useState(null);
 
   async function loadUsuarios() {
     const { data } = await api.get('/admin/usuarios');
     setUsuarios(data);
   }
 
+  async function loadPermisos() {
+    const { data } = await api.get('/superadmin/permisos');
+    setPermisos(data);
+  }
+
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     loadUsuarios();
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    loadPermisos();
   }, []);
+
+  function tienePermiso(rol, permisoId) {
+    return permisos?.rolPermisos.some((rp) => rp.rol === rol && rp.permiso_id === permisoId) ?? false;
+  }
+
+  async function togglePermiso(rol, clave, permisoId) {
+    if (rol === 'superadmin') return;
+    const cellKey = `${rol}:${clave}`;
+    setBusyCell(cellKey);
+    const activo = !tienePermiso(rol, permisoId);
+    try {
+      await api.put('/superadmin/permisos', { rol, clave, activo });
+      await loadPermisos();
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'No se pudo cambiar el permiso.');
+    } finally {
+      setBusyCell(null);
+    }
+  }
 
   async function handleCrear(e) {
     e.preventDefault();
@@ -157,28 +173,45 @@ export default function Usuarios() {
 
       <Card className="mt-4">
         <CardHeader>
-          <CardTitle>Permission (referencia)</CardTitle>
+          <CardTitle>Permission</CardTitle>
         </CardHeader>
         <CardContent>
           <p className="mb-3 text-xs text-muted-foreground">
-            Los permisos hoy son fijos por rol (no granulares/editables) - esta tabla es solo de consulta.
+            Que puede hacer cada rol, editable por modulo. Superadmin tiene acceso total fijo (no editable) - el resto se guarda al tocar el switch.
           </p>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Rol</TableHead>
-                <TableHead>Que puede hacer</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {PERMISOS_POR_ROL.map((p) => (
-                <TableRow key={p.rol}>
-                  <TableCell className="font-mono text-xs">{p.rol}</TableCell>
-                  <TableCell className="text-xs text-muted-foreground">{p.desc}</TableCell>
+          {!permisos ? (
+            <p className="text-sm text-muted-foreground">Cargando...</p>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Modulo</TableHead>
+                  {permisos.roles.map((rol) => (
+                    <TableHead key={rol} className="text-center font-mono">{rol}</TableHead>
+                  ))}
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+              </TableHeader>
+              <TableBody>
+                {permisos.permisos.map((p) => (
+                  <TableRow key={p.id}>
+                    <TableCell className="text-xs">
+                      <p className="font-medium">{p.clave}</p>
+                      <p className="text-muted-foreground">{p.descripcion}</p>
+                    </TableCell>
+                    {permisos.roles.map((rol) => (
+                      <TableCell key={rol} className="text-center">
+                        <Switch
+                          checked={rol === 'superadmin' ? true : tienePermiso(rol, p.id)}
+                          disabled={rol === 'superadmin' || busyCell === `${rol}:${p.clave}`}
+                          onCheckedChange={() => togglePermiso(rol, p.clave, p.id)}
+                        />
+                      </TableCell>
+                    ))}
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
         </CardContent>
       </Card>
     </AdminLayout>
