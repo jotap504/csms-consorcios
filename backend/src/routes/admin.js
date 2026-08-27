@@ -1738,7 +1738,7 @@ const MONTAJES_WALLBOX = ['pared', 'pie'];
 const OCPP_PROTOCOLOS_WALLBOX = ['1.6', '2.0.1', 'ambos'];
 const TIPOS_CORRIENTE_WALLBOX = ['AC', 'DC'];
 
-router.post('/productos-catalogo', requireRole('superadmin'), async (req, res) => {
+router.post('/productos-catalogo', requirePermission('admin_catalogo_productos_stock'), async (req, res) => {
   const {
     categoria, marca, modelo, descripcion, serializado, unidad,
     potencia_kw: potenciaKw, fases, conector, montaje,
@@ -1771,7 +1771,7 @@ router.post('/productos-catalogo', requireRole('superadmin'), async (req, res) =
   res.status(201).json(result.rows[0]);
 });
 
-router.put('/productos-catalogo/:id', requireRole('superadmin'), async (req, res) => {
+router.put('/productos-catalogo/:id', requirePermission('admin_catalogo_productos_stock'), async (req, res) => {
   const {
     categoria, marca, modelo, descripcion, activo,
     potencia_kw: potenciaKw, fases, conector, montaje,
@@ -1813,7 +1813,7 @@ router.put('/productos-catalogo/:id', requireRole('superadmin'), async (req, res
 
 // Ingreso de unidades serializadas (wallbox/medidor/router) - acepta un array
 // de identificadores para cargar un lote de una (ej: 10 wallbox importados).
-router.post('/stock-items', requireRole('superadmin'), async (req, res) => {
+router.post('/stock-items', requirePermission('admin_catalogo_productos_stock'), async (req, res) => {
   const {
     producto_id: productoId, identificadores, costo_compra: costoCompra, proveedor_id: proveedorId,
   } = req.body ?? {};
@@ -1861,7 +1861,7 @@ router.get('/stock-items', async (req, res) => {
   res.json(result.rows);
 });
 
-router.put('/stock-items/:id', requireRole('superadmin'), async (req, res) => {
+router.put('/stock-items/:id', requirePermission('admin_catalogo_productos_stock'), async (req, res) => {
   const { estado, costo_compra: costoCompra } = req.body ?? {};
   if (estado && !['en_stock', 'instalado', 'devuelto', 'baja'].includes(estado)) {
     return res.status(400).json({ error: 'estado invalido.' });
@@ -1877,7 +1877,7 @@ router.put('/stock-items/:id', requireRole('superadmin'), async (req, res) => {
 
 // Movimientos de productos NO serializados (ingreso/ajuste manual - el
 // egreso_instalacion se genera solo al crear una instalacion, ver abajo).
-router.post('/stock-movimientos', requireRole('superadmin'), async (req, res) => {
+router.post('/stock-movimientos', requirePermission('admin_catalogo_productos_stock'), async (req, res) => {
   const {
     producto_id: productoId, tipo, cantidad, costo_unitario: costoUnitario, nota, proveedor_id: proveedorId,
   } = req.body ?? {};
