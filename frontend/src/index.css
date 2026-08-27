@@ -2,25 +2,75 @@
 @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=Inter:wght@300;400;500;600;700&display=swap');
 @import 'tailwindcss';
 
+/* Modo oscuro por clase: <html class="dark"> fuerza oscuro, <html
+   class="light"> fuerza claro, y sin ninguna de las dos se sigue la
+   preferencia del sistema (ver bloque @media mas abajo). Permite usar
+   dark: en JSX si hiciera falta, aunque la estrategia principal de este
+   proyecto es redefinir los --color-* de @theme (asi todo lo que ya usa
+   bg-background/text-foreground/etc se adapta solo, sin tocar componente
+   por componente). */
+@custom-variant dark (&:where(.dark, .dark *));
+
 @theme {
   --font-sans: 'Fira Sans', system-ui, sans-serif;
   --font-mono: 'Fira Code', ui-monospace, monospace;
 
-  --color-primary: #1e3a5f;
+  --color-primary: #0c93a8;
   --color-primary-foreground: #ffffff;
-  --color-secondary: #2563eb;
-  --color-accent: #059669;
+  --color-secondary: #06b6d4;
+  --color-accent: #14b8c6;
   --color-accent-foreground: #ffffff;
-  --color-background: #f8fafc;
-  --color-foreground: #0f172a;
-  --color-muted: #f1f3f5;
-  --color-muted-foreground: #64748b;
-  --color-border: #e4e7eb;
+  --color-background: #f2f6f7;
+  --color-foreground: #16232e;
+  --color-muted: #eaf3f4;
+  --color-muted-foreground: #6c8189;
+  --color-border: #e1eaec;
   --color-destructive: #dc2626;
   --color-destructive-foreground: #ffffff;
-  --color-ring: #1e3a5f;
+  --color-ring: #14b8c6;
   --color-card: #ffffff;
-  --color-card-foreground: #0f172a;
+  --color-card-foreground: #16232e;
+}
+
+/* Paleta oscura: sigue la preferencia del sistema (prefers-color-scheme)
+   salvo que el usuario haya elegido manualmente (clase .dark/.light en
+   <html>, ver lib/theme.js), que siempre gana. */
+@media (prefers-color-scheme: dark) {
+  :root:not(.light) {
+    --color-primary: #22d3ee;
+    --color-primary-foreground: #04070d;
+    --color-secondary: #67e8f9;
+    --color-accent: #2dd4d4;
+    --color-accent-foreground: #04070d;
+    --color-background: #070b14;
+    --color-foreground: #e6eaf2;
+    --color-muted: #131d30;
+    --color-muted-foreground: #9aabc7;
+    --color-border: #263349;
+    --color-destructive: #f87171;
+    --color-destructive-foreground: #1a0505;
+    --color-ring: #22d3ee;
+    --color-card: #101a2c;
+    --color-card-foreground: #e6eaf2;
+  }
+}
+
+:root.dark {
+  --color-primary: #22d3ee;
+  --color-primary-foreground: #04070d;
+  --color-secondary: #67e8f9;
+  --color-accent: #2dd4d4;
+  --color-accent-foreground: #04070d;
+  --color-background: #070b14;
+  --color-foreground: #e6eaf2;
+  --color-muted: #131d30;
+  --color-muted-foreground: #9aabc7;
+  --color-border: #263349;
+  --color-destructive: #f87171;
+  --color-destructive-foreground: #1a0505;
+  --color-ring: #22d3ee;
+  --color-card: #101a2c;
+  --color-card-foreground: #e6eaf2;
 }
 
 @layer base {
@@ -96,6 +146,13 @@
   animation: zap-flicker 2.4s infinite, zap-glow 1.5s ease-in-out infinite;
 }
 
+/* Textura de grano sutil sobre video/imagen (usada por Hero3) - ruido SVG
+   feTurbulence en base64, sin depender de un asset externo. */
+.noise-overlay {
+  background-image: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyMDAiIGhlaWdodD0iMjAwIj48ZmlsdGVyIGlkPSJuIj48ZmVUdXJidWxlbmNlIHR5cGU9ImZyYWN0YWxOb2lzZSIgYmFzZUZyZXF1ZW5jeT0iMC44IiBudW1PY3RhdmVzPSIzIiBzdGl0Y2hUaWxlcz0ic3RpdGNoIi8+PC9maWx0ZXI+PHJlY3Qgd2lkdGg9IjEwMCUiIGhlaWdodD0iMTAwJSIgZmlsdGVyPSJ1cmwoI24pIi8+PC9zdmc+");
+  background-size: 180px 180px;
+}
+
 /* --- Landing page (BILON) --- */
 .landing {
   /* Chrome/Blink "scroll anchoring" latches onto the animated hero graphic
@@ -116,6 +173,28 @@
 
 .landing h1, .landing h2, .landing h3, .landing .lp-heading {
   font-family: 'Outfit', var(--font-sans);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not(.light) .landing {
+    --lp-bg: #070b14;
+    --lp-fg: #e6eaf2;
+    --lp-muted: #9aabc7;
+    --lp-border: #263349;
+    --lp-surface: #101a2c;
+    --lp-blue: #38bdf8;
+    --lp-green: #2dd4a1;
+  }
+}
+
+:root.dark .landing {
+  --lp-bg: #070b14;
+  --lp-fg: #e6eaf2;
+  --lp-muted: #9aabc7;
+  --lp-border: #263349;
+  --lp-surface: #101a2c;
+  --lp-blue: #38bdf8;
+  --lp-green: #2dd4a1;
 }
 
 @keyframes lp-pulse-line {
@@ -171,6 +250,19 @@
 @keyframes lp-hero-fade-up-kf {
   from { opacity: 0; transform: translateY(30px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes lp-carousel-scroll {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+
+.lp-carousel-track {
+  animation: lp-carousel-scroll 32s linear infinite;
+}
+
+.lp-carousel-track:hover {
+  animation-play-state: paused;
 }
 
 .lp-hero-fade-down {

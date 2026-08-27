@@ -4,16 +4,19 @@ import * as SelectPrimitive from '@radix-ui/react-select';
 import * as SwitchPrimitive from '@radix-ui/react-switch';
 import * as LabelPrimitive from '@radix-ui/react-label';
 import * as TabsPrimitive from '@radix-ui/react-tabs';
-import { ChevronDown, Check, X } from 'lucide-react';
+import { ChevronDown, Check, X, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { subscribeToasts, toast } from '@/lib/toast';
 
-export function Button({ className, variant = 'default', size = 'default', ...props }) {
+export function Button({
+  className, variant = 'default', size = 'default', loading = false, disabled, children, ...props
+}) {
   const variants = {
-    default: 'bg-primary text-primary-foreground hover:bg-primary/90',
-    accent: 'bg-accent text-accent-foreground hover:bg-accent/90',
-    outline: 'border border-border bg-transparent hover:bg-muted',
-    ghost: 'hover:bg-muted',
-    destructive: 'bg-destructive text-destructive-foreground hover:bg-destructive/90',
+    default: 'rounded-full bg-primary text-primary-foreground hover:bg-primary/90',
+    accent: 'rounded-full bg-accent text-accent-foreground hover:bg-accent/90',
+    outline: 'rounded-lg border border-border bg-transparent hover:bg-muted',
+    ghost: 'rounded-lg hover:bg-muted',
+    destructive: 'rounded-lg bg-destructive text-destructive-foreground hover:bg-destructive/90',
   };
   const sizes = {
     default: 'h-10 px-4 py-2 text-sm',
@@ -22,21 +25,26 @@ export function Button({ className, variant = 'default', size = 'default', ...pr
   };
   return (
     <button
+      disabled={disabled || loading}
+      aria-busy={loading || undefined}
       className={cn(
-        'inline-flex items-center justify-center gap-2 rounded-lg font-medium transition-colors duration-200 cursor-pointer disabled:pointer-events-none disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
+        'inline-flex items-center justify-center gap-2 font-medium transition-colors duration-200 cursor-pointer disabled:pointer-events-none disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
         variants[variant],
         sizes[size],
         className,
       )}
       {...props}
-    />
+    >
+      {loading && <Loader2 className="h-4 w-4 animate-spin" />}
+      {children}
+    </button>
   );
 }
 
 export function Card({ className, ...props }) {
   return (
     <div
-      className={cn('rounded-xl border border-border bg-card text-card-foreground shadow-sm', className)}
+      className={cn('rounded-2xl border border-border/60 bg-card text-card-foreground shadow-[0_1px_3px_rgba(16,40,48,0.06)]', className)}
       {...props}
     />
   );
@@ -58,7 +66,7 @@ export function Input({ className, ...props }) {
   return (
     <input
       className={cn(
-        'flex h-10 w-full rounded-lg border border-border bg-white px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50',
+        'flex h-10 w-full rounded-lg border border-border bg-card px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50',
         className,
       )}
       {...props}
@@ -102,7 +110,7 @@ export function Table({ className, ...props }) {
   );
 }
 export function TableHeader({ className, ...props }) {
-  return <thead className={cn('border-b border-border', className)} {...props} />;
+  return <thead className={cn('border-b border-border bg-muted/60', className)} {...props} />;
 }
 export function TableBody({ className, ...props }) {
   return <tbody className={cn('[&_tr:last-child]:border-0', className)} {...props} />;
@@ -119,7 +127,7 @@ export function TableHead({ className, ...props }) {
   return (
     <th
       className={cn(
-        'h-10 px-3 text-left align-middle text-xs font-semibold uppercase tracking-wide text-muted-foreground',
+        'h-11 px-3 text-left align-middle text-xs font-semibold text-foreground/70',
         className,
       )}
       {...props}
@@ -140,7 +148,7 @@ export function DialogContent({ className, children, ...props }) {
       <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/50 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=closed]:animate-out data-[state=closed]:fade-out-0" />
       <DialogPrimitive.Content
         className={cn(
-          'fixed left-1/2 top-1/2 z-50 w-full max-w-md -translate-x-1/2 -translate-y-1/2 rounded-xl border border-border bg-white p-6 shadow-lg',
+          'fixed left-1/2 top-1/2 z-50 max-h-[90vh] w-[calc(100%-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-xl border border-border bg-card p-4 shadow-lg sm:p-6',
           className,
         )}
         {...props}
@@ -171,7 +179,7 @@ export function SelectTrigger({ className, children, ...props }) {
   return (
     <SelectPrimitive.Trigger
       className={cn(
-        'flex h-10 w-full items-center justify-between rounded-lg border border-border bg-white px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+        'flex h-10 w-full items-center justify-between rounded-lg border border-border bg-card px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
         className,
       )}
       {...props}
@@ -188,7 +196,7 @@ export function SelectContent({ className, children, ...props }) {
   return (
     <SelectPrimitive.Portal>
       <SelectPrimitive.Content
-        className={cn('z-50 overflow-hidden rounded-lg border border-border bg-white shadow-md', className)}
+        className={cn('z-50 overflow-hidden rounded-lg border border-border bg-card shadow-md', className)}
         {...props}
       >
         <SelectPrimitive.Viewport className="p-1">{children}</SelectPrimitive.Viewport>
@@ -221,7 +229,7 @@ export function Tabs({ className, ...props }) {
 export function TabsList({ className, ...props }) {
   return (
     <TabsPrimitive.List
-      className={cn('inline-flex w-fit items-center gap-1 rounded-lg bg-muted p-1', className)}
+      className={cn('inline-flex max-w-full items-center gap-5 overflow-x-auto border-b border-border', className)}
       {...props}
     />
   );
@@ -230,7 +238,7 @@ export function TabsTrigger({ className, ...props }) {
   return (
     <TabsPrimitive.Trigger
       className={cn(
-        'cursor-pointer rounded-md px-3 py-1.5 text-sm font-medium text-muted-foreground transition-colors data-[state=active]:bg-white data-[state=active]:text-foreground data-[state=active]:shadow-sm',
+        'shrink-0 cursor-pointer whitespace-nowrap border-b-2 border-transparent px-1 py-2.5 text-sm font-medium text-muted-foreground transition-colors data-[state=active]:border-accent data-[state=active]:text-accent',
         className,
       )}
       {...props}
@@ -241,22 +249,32 @@ export function TabsContent({ className, ...props }) {
   return <TabsPrimitive.Content className={cn('outline-none', className)} {...props} />;
 }
 
-export function StatCard({ icon: Icon, label, value, hint }) {
+const STAT_CARD_COLORS = {
+  primary: 'from-teal-500 to-cyan-600',
+  blue: 'from-sky-500 to-blue-600',
+  emerald: 'from-emerald-500 to-teal-600',
+  amber: 'from-amber-500 to-orange-500',
+  violet: 'from-violet-500 to-purple-600',
+  rose: 'from-rose-500 to-pink-600',
+};
+
+export function StatCard({
+  icon: Icon, label, value, hint, color = 'primary',
+}) {
+  const gradient = STAT_CARD_COLORS[color] ?? STAT_CARD_COLORS.primary;
   return (
-    <Card>
-      <CardContent className="flex items-start justify-between p-5">
-        <div>
-          <p className="text-sm text-muted-foreground">{label}</p>
-          <p className="tabular-nums mt-1 text-2xl font-semibold">{value}</p>
-          {hint && <p className="mt-1 text-xs text-muted-foreground">{hint}</p>}
+    <div className={cn('flex items-center gap-3.5 overflow-hidden rounded-2xl bg-gradient-to-br p-4.5 text-white shadow-[0_4px_14px_rgba(16,80,90,0.18)]', gradient)}>
+      {Icon && (
+        <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-white/20">
+          <Icon className="h-5.5 w-5.5" />
         </div>
-        {Icon && (
-          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
-            <Icon className="h-4.5 w-4.5" />
-          </div>
-        )}
-      </CardContent>
-    </Card>
+      )}
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-xs font-medium text-white/85">{label}</p>
+        <p className="tabular-nums mt-0.5 text-2xl font-semibold">{value}</p>
+        {hint && <p className="mt-0.5 truncate text-xs text-white/75">{hint}</p>}
+      </div>
+    </div>
   );
 }
 
@@ -271,5 +289,46 @@ export function Switch({ className, ...props }) {
     >
       <SwitchPrimitive.Thumb className="pointer-events-none block h-5 w-5 translate-x-0.5 rounded-full bg-white shadow-sm transition-transform data-[state=checked]:translate-x-[22px]" />
     </SwitchPrimitive.Root>
+  );
+}
+
+// Feedback global (reemplaza alert()/exito silencioso) - montado una vez en
+// Layout, controlado desde cualquier lugar via toast.success()/toast.error().
+export function Toaster() {
+  const [items, setItems] = React.useState([]);
+
+  React.useEffect(() => subscribeToasts(setItems), []);
+
+  if (items.length === 0) return null;
+
+  return (
+    <div className="pointer-events-none fixed bottom-4 right-4 z-[100] flex w-full max-w-sm flex-col gap-2">
+      {items.map((item) => (
+        <div
+          key={item.id}
+          role="status"
+          aria-live="polite"
+          className={cn(
+            'pointer-events-auto flex items-start gap-2.5 rounded-lg border bg-card p-3.5 text-sm shadow-lg animate-in fade-in-0 slide-in-from-bottom-2',
+            item.variant === 'error' ? 'border-destructive/30' : 'border-accent/30',
+          )}
+        >
+          {item.variant === 'error' ? (
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+          ) : (
+            <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-accent" />
+          )}
+          <p className="flex-1 leading-snug text-foreground">{item.message}</p>
+          <button
+            type="button"
+            aria-label="Cerrar notificacion"
+            onClick={() => toast.dismiss(item.id)}
+            className="cursor-pointer text-muted-foreground hover:text-foreground"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      ))}
+    </div>
   );
 }
