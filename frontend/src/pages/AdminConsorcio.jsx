@@ -19,6 +19,7 @@ import {
   Badge, Button, Input, Label, Switch,
   Tabs, TabsList, TabsTrigger, TabsContent,
   Dialog, DialogTrigger, DialogContent, DialogHeader, DialogTitle, DialogDescription,
+  Select, SelectTrigger, SelectValue, SelectContent, SelectItem,
 } from '@/components/ui';
 import { SUPERADMIN_NAV } from './superadmin/navConfig';
 import { INSTALADOR_NAV } from './instalador/navConfig';
@@ -259,6 +260,16 @@ export default function AdminConsorcio() {
     if (!confirm('Borrar este cargador?')) return;
     await api.delete(`/admin/cargadores/${cargadorId}`);
     loadAll();
+  }
+
+  async function handleSetFase(cargadorId, fase) {
+    try {
+      await api.put(`/admin/cargadores/${cargadorId}`, { fase });
+      setQrOpen((prev) => (prev && prev.id === cargadorId ? { ...prev, fase } : prev));
+      await loadAll();
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'No se pudo asignar la fase.');
+    }
   }
 
   async function handleCreateSector(e) {
@@ -840,6 +851,19 @@ export default function AdminConsorcio() {
                       <span className="text-muted-foreground">Potencia</span><span>{qrOpen.potencia_kw ? `${qrOpen.potencia_kw} kW` : '-'}</span>
                       <span className="text-muted-foreground">Corriente</span><span>{qrOpen.tipo_corriente || '-'}</span>
                       <span className="text-muted-foreground">Fases</span><span>{FASES_LABELS[qrOpen.fases] ?? '-'}</span>
+                      {qrOpen.fases === 'monofasico' && (
+                        <>
+                          <span className="text-muted-foreground">Fase cableada</span>
+                          <Select value={qrOpen.fase ?? ''} onValueChange={(v) => handleSetFase(qrOpen.id, v)}>
+                            <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="Sin asignar" /></SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="L1">L1</SelectItem>
+                              <SelectItem value="L2">L2</SelectItem>
+                              <SelectItem value="L3">L3</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </>
+                      )}
                       <span className="text-muted-foreground">Conector</span><span>{CONECTOR_LABELS[qrOpen.conector] ?? '-'}</span>
                       <span className="text-muted-foreground">Montaje</span><span>{MONTAJE_LABELS[qrOpen.montaje] ?? '-'}</span>
                       <span className="text-muted-foreground">Protocolo soportado</span><span>{OCPP_PROTOCOLO_LABELS[qrOpen.ocpp_protocolo] ?? '-'}</span>

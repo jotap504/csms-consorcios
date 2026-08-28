@@ -221,12 +221,14 @@ async function getChargingProfileConfirmationStatus(ocppId, sentAt) {
 }
 
 // Ultima lectura del medidor de corriente de un sector, o del medidor
-// general del edificio si sectorId es null (consumo del RESTO del edificio,
-// sin contar los cargadores EV - ver nota de instalacion).
-// Devuelve null si no hay lectura o si es demasiado vieja (fail-safe: en ese
-// caso rebalanceGroup usa el limite estatico configurado, como si no
-// tuviera medidor dinamico).
-async function getConsumoMedidoAmps({ consorcioId, sectorId }) {
+// general del edificio si sectorId es null, CRUDA por fase (ver plan
+// "Balanceo de carga por fase") - a diferencia de la version anterior, no
+// colapsa a un solo numero (fase mas cargada), devuelve las 3 para que
+// rebalanceGroup pueda calcular disponibilidad independiente por fase.
+// Devuelve null si no hay lectura, es demasiado vieja, o el medidor no
+// reporta las 3 fases (fail-safe: rebalanceGroup usa el limite estatico
+// configurado, igual por fase, como si no tuviera medidor dinamico).
+async function getFasesMedidasAmps({ consorcioId, sectorId }) {
   const r = await pool.query(
     sectorId != null
       ? `SELECT amps_l1, amps_l2, amps_l3, potencia_kw, "timestamp"
@@ -240,19 +242,84 @@ async function getConsumoMedidoAmps({ consorcioId, sectorId }) {
   const ageMs = Date.now() - new Date(row.timestamp).getTime();
   if (ageMs > METER_STALE_MS) return null;
 
-  const fases = [row.amps_l1, row.amps_l2, row.amps_l3].filter((v) => v != null).map(Number);
-  if (fases.length > 0) return Math.max(...fases); // fase mas cargada, criterio conservador
-  if (row.potencia_kw != null) return (Number(row.potencia_kw) * 1000) / ASSUMED_VOLTS;
+  if (row.amps_l1 != null && row.amps_l2 != null && row.amps_l3 != null) {
+    return { L1: Number(row.amps_l1), L2: Number(row.amps_l2), L3: Number(row.amps_l3) };
+  }
+  if (row.potencia_kw != null) {
+    // Sin lectura por fase (medidor solo manda potencia total) - se asume
+    // pareja en las 3, mismo criterio conservador que antes del refactor.
+    const amps = (Number(row.potencia_kw) * 1000) / ASSUMED_VOLTS;
+    return { L1: amps, L2: amps, L3: amps };
+  }
   return null;
+}
+
+// Igual que getAmpsAsignadosTotales (mismo filtro: solo cargadores con
+// sesion activa) pero agrupado por fase. Un cargador trifasico -o uno
+// monofasico sin fase todavia clasificada, que cae en el mismo bucket
+// conservador que los trifasicos- dibuja su monto COMPLETO en cada una de
+// las 3 fases simultaneamente (no dividido entre ellas).
+async function getAmpsAsignadosPorFase(consorcioId) {
+  const r = await pool.query(
+    `SELECT ce.amps_asignados, ca.fase, p.fases AS producto_fases
+     FROM cargador_estado_actual ce
+     JOIN cargadores ca ON ca.ocpp_id = ce.cargador_ocpp_id
+     LEFT JOIN stock_items si ON si.id = ca.stock_item_id
+     LEFT JOIN productos_catalogo p ON p.id = si.producto_id
+     WHERE ca.consorcio_id = $1
+       AND EXISTS (
+         SELECT 1 FROM liquidacion_sesiones ls
+         WHERE ls.cargador_ocpp_id = ce.cargador_ocpp_id AND ls.fecha_fin IS NULL
+       )`,
+    [consorcioId],
+  );
+  const totales = { L1: 0, L2: 0, L3: 0 };
+  for (const row of r.rows) {
+    const amps = Number(row.amps_asignados);
+    const esMonofasicoConFase = row.producto_fases === 'monofasico' && ['L1', 'L2', 'L3'].includes(row.fase);
+    if (esMonofasicoConFase) {
+      totales[row.fase] += amps;
+    } else {
+      totales.L1 += amps;
+      totales.L2 += amps;
+      totales.L3 += amps;
+    }
+  }
+  return totales;
+}
+
+// Reparte "limite" amperios en partes iguales entre los cargadores de
+// "ordenados" (ya en orden FIFO por fecha_inicio), respetando un piso de
+// MIN_AMPS por cargador - lo que no entra queda "en cola" con 0A hasta que
+// se libera un cupo. Extraida de rebalanceGroup para poder llamarla una vez
+// por fase + una vez para el pool conservador en vez de una sola vez global.
+async function distribuirGrupo(ordenados, limite, etiqueta) {
+  if (ordenados.length === 0) return;
+  const maxCupos = Math.max(0, Math.floor(limite / MIN_AMPS));
+  const conCupo = ordenados.slice(0, maxCupos);
+  const enCola = ordenados.slice(maxCupos);
+  const perAmps = conCupo.length > 0 ? Math.floor(limite / conCupo.length) : 0;
+
+  console.log(
+    `[Balanceador] ${etiqueta} activos=${ordenados.length} cupos=${maxCupos} -> `
+    + `${conCupo.length}x${perAmps}A, ${enCola.length} en cola`,
+  );
+
+  await Promise.all([
+    ...conCupo.map((ocppId) => setCargadorEstado(ocppId, perAmps, false).then(() => pushChargingProfile(ocppId, perAmps))),
+    ...enCola.map((ocppId) => setCargadorEstado(ocppId, 0, true).then(() => pushChargingProfile(ocppId, 0))),
+  ]);
 }
 
 // Reparte el limite de amperios de un GRUPO (un sector especifico si el
 // cargador pertenece a uno, o el consorcio entero para los que no tienen
-// sector asignado) en partes iguales entre los cargadores con sesion activa
-// en ese grupo, respetando un piso de MIN_AMPS por cargador. Si entran mas
-// sesiones de las que el limite alcanza a cubrir con el piso, las mas nuevas
-// (por fecha_inicio, FIFO) quedan "en cola" con 0A hasta que se libera un
-// cupo (otra sesion del mismo grupo termina y se vuelve a llamar aca).
+// sector asignado) entre los cargadores con sesion activa en ese grupo,
+// AHORA por fase: los monofasicos con fase clasificada (ver
+// schema_fase_wallbox.sql) compiten solo por la disponibilidad de SU fase;
+// los trifasicos y los monofasicos todavia sin clasificar caen en un pool
+// conservador que usa la fase mas ajustada de las 3 (mismo criterio que
+// existia antes de este refactor, ahora aplicado solo a quien realmente lo
+// necesita en vez de a todos por igual).
 //
 // Cada sector tiene su propio circuito/balanceo independiente del resto del
 // edificio (ej: 3 subsuelos con acometidas separadas) - por eso el pool de
@@ -262,84 +329,96 @@ async function rebalanceGroup({ consorcioId, sectorId }) {
   if (consorcioId == null) return;
 
   let limite;
+  let usarMedidorDinamico = false;
   if (sectorId != null) {
     const sector = await pool.query(
       'SELECT limite_amperios_totales, usar_medidor_dinamico FROM sectores WHERE id = $1',
       [sectorId],
     );
     limite = sector.rows[0]?.limite_amperios_totales;
-    if (sector.rows[0]?.usar_medidor_dinamico && limite) {
-      const consumoMedido = await getConsumoMedidoAmps({ sectorId });
-      if (consumoMedido != null) {
-        const limiteOriginal = limite;
-        limite = Math.max(0, Math.floor(limite - consumoMedido));
-        console.log(
-          `[Balanceador] sector=${sectorId} medidor dinamico: resto_edificio=${consumoMedido.toFixed(1)}A, `
-          + `${limiteOriginal}A contratado -> ${limite}A disponibles para autos`,
-        );
-      }
-    }
+    usarMedidorDinamico = sector.rows[0]?.usar_medidor_dinamico;
   } else {
     const consorcio = await pool.query(
       'SELECT limite_amperios_totales, usar_medidor_dinamico FROM consorcios WHERE id = $1',
       [consorcioId],
     );
     limite = consorcio.rows[0]?.limite_amperios_totales;
-    if (consorcio.rows[0]?.usar_medidor_dinamico && limite) {
-      // El medidor general va en la acometida principal: ve TODO el edificio,
-      // wallboxes incluidos. Hay que descontar lo que nosotros mismos les
-      // asignamos a los autos para aislar el consumo real del "resto"
-      // (AC, hornos, ascensor, etc), que es lo que realmente compite por
-      // el limite contratado.
-      const consumoMedido = await getConsumoMedidoAmps({ consorcioId });
-      if (consumoMedido != null) {
-        const amperiosAsignadosAutos = await getAmpsAsignadosTotales(consorcioId);
-        const restoEdificio = Math.max(0, consumoMedido - amperiosAsignadosAutos);
-        const limiteOriginal = limite;
-        limite = Math.max(0, Math.floor(limite - restoEdificio));
-        console.log(
-          `[Balanceador] consorcio=${consorcioId} medidor dinamico (acometida principal): `
-          + `total_medido=${consumoMedido.toFixed(1)}A, autos_asignados=${amperiosAsignadosAutos}A, `
-          + `resto_edificio=${restoEdificio.toFixed(1)}A, ${limiteOriginal}A contratado -> ${limite}A disponibles para autos`,
-        );
-      }
-    }
+    usarMedidorDinamico = consorcio.rows[0]?.usar_medidor_dinamico;
   }
   if (!limite) return; // sin limite configurado, no hay nada para repartir
 
+  const grupoLabel = sectorId != null ? `sector=${sectorId}` : `consorcio=${consorcioId}`;
+
+  // "limite" es amperios contratados POR FASE (asi funciona el suministro
+  // trifasico) - sin medidor dinamico, cada fase parte del mismo techo
+  // estatico (no hay dato para diferenciarlas).
+  let disponible = { L1: limite, L2: limite, L3: limite };
+
+  if (usarMedidorDinamico) {
+    const fasesMedidas = await getFasesMedidasAmps({ consorcioId, sectorId });
+    if (fasesMedidas != null) {
+      // El branch de sector asume que el medidor del sector YA excluye los
+      // autos (no resta autosAsignados); el de consorcio-sin-sector ve TODO
+      // el edificio incluidos los autos y hay que aislar "el resto" restando
+      // lo que nosotros mismos les asignamos - misma asimetria que existia
+      // antes de este refactor, sin tocar (ver comentario historico de
+      // getAmpsAsignadosTotales).
+      const autosPorFase = sectorId != null
+        ? { L1: 0, L2: 0, L3: 0 }
+        : await getAmpsAsignadosPorFase(consorcioId);
+
+      disponible = {};
+      for (const fase of ['L1', 'L2', 'L3']) {
+        const restoEdificioLx = Math.max(0, fasesMedidas[fase] - autosPorFase[fase]);
+        disponible[fase] = Math.max(0, Math.floor(limite - restoEdificioLx));
+      }
+
+      console.log(
+        `[Balanceador] ${grupoLabel} medidor dinamico por fase (${limite}A contratado/fase): `
+        + `L1 medido=${fasesMedidas.L1.toFixed(1)}A->disp=${disponible.L1}A, `
+        + `L2 medido=${fasesMedidas.L2.toFixed(1)}A->disp=${disponible.L2}A, `
+        + `L3 medido=${fasesMedidas.L3.toFixed(1)}A->disp=${disponible.L3}A`,
+      );
+    }
+  }
+
   const activos = await pool.query(
     sectorId != null
-      ? `SELECT DISTINCT ON (ls.cargador_ocpp_id) ls.cargador_ocpp_id, ls.fecha_inicio
+      ? `SELECT DISTINCT ON (ls.cargador_ocpp_id) ls.cargador_ocpp_id, ls.fecha_inicio, ca.fase, p.fases AS producto_fases
          FROM liquidacion_sesiones ls
          JOIN cargadores ca ON ca.ocpp_id = ls.cargador_ocpp_id
+         LEFT JOIN stock_items si ON si.id = ca.stock_item_id
+         LEFT JOIN productos_catalogo p ON p.id = si.producto_id
          WHERE ca.sector_id = $1 AND ls.fecha_fin IS NULL
          ORDER BY ls.cargador_ocpp_id, ls.fecha_inicio ASC`
-      : `SELECT DISTINCT ON (ls.cargador_ocpp_id) ls.cargador_ocpp_id, ls.fecha_inicio
+      : `SELECT DISTINCT ON (ls.cargador_ocpp_id) ls.cargador_ocpp_id, ls.fecha_inicio, ca.fase, p.fases AS producto_fases
          FROM liquidacion_sesiones ls
          JOIN cargadores ca ON ca.ocpp_id = ls.cargador_ocpp_id
+         LEFT JOIN stock_items si ON si.id = ca.stock_item_id
+         LEFT JOIN productos_catalogo p ON p.id = si.producto_id
          WHERE ca.consorcio_id = $1 AND ca.sector_id IS NULL AND ls.fecha_fin IS NULL
          ORDER BY ls.cargador_ocpp_id, ls.fecha_inicio ASC`,
     [sectorId != null ? sectorId : consorcioId],
   );
-  const ordenados = activos.rows
-    .sort((a, b) => new Date(a.fecha_inicio) - new Date(b.fecha_inicio))
-    .map((r) => r.cargador_ocpp_id);
-  if (ordenados.length === 0) return;
+  if (activos.rowCount === 0) return;
 
-  const maxCupos = Math.max(0, Math.floor(limite / MIN_AMPS));
-  const conCupo = ordenados.slice(0, maxCupos);
-  const enCola = ordenados.slice(maxCupos);
-  const perAmps = conCupo.length > 0 ? Math.floor(limite / conCupo.length) : 0;
+  const ordenadosPorFecha = activos.rows.sort((a, b) => new Date(a.fecha_inicio) - new Date(b.fecha_inicio));
 
-  const grupoLabel = sectorId != null ? `sector=${sectorId}` : `consorcio=${consorcioId}`;
-  console.log(
-    `[Balanceador] ${grupoLabel} activos=${ordenados.length} cupos=${maxCupos} -> `
-    + `${conCupo.length}x${perAmps}A, ${enCola.length} en cola`,
-  );
+  const buckets = {
+    L1: [], L2: [], L3: [], conservador: [],
+  };
+  for (const row of ordenadosPorFecha) {
+    const esMonofasicoConFase = row.producto_fases === 'monofasico' && ['L1', 'L2', 'L3'].includes(row.fase);
+    (esMonofasicoConFase ? buckets[row.fase] : buckets.conservador).push(row.cargador_ocpp_id);
+  }
+
+  const limiteConservador = Math.min(disponible.L1, disponible.L2, disponible.L3);
 
   await Promise.all([
-    ...conCupo.map((ocppId) => setCargadorEstado(ocppId, perAmps, false).then(() => pushChargingProfile(ocppId, perAmps))),
-    ...enCola.map((ocppId) => setCargadorEstado(ocppId, 0, true).then(() => pushChargingProfile(ocppId, 0))),
+    distribuirGrupo(buckets.L1, disponible.L1, `${grupoLabel} fase=L1`),
+    distribuirGrupo(buckets.L2, disponible.L2, `${grupoLabel} fase=L2`),
+    distribuirGrupo(buckets.L3, disponible.L3, `${grupoLabel} fase=L3`),
+    distribuirGrupo(buckets.conservador, limiteConservador, `${grupoLabel} pool-conservador`),
   ]);
 }
 

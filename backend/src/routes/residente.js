@@ -11,8 +11,10 @@ const ASSUMED_VOLTS = 220;
 
 // Misma logica que rebalanceGroup en listener/index.js - duplicada aca
 // porque backend y listener son procesos/deploys separados sin modulo
-// compartido. Si se toca una, tocar la otra.
-async function getConsumoMedidoAmps({ consorcioId, sectorId }) {
+// compartido. Si se toca una, tocar la otra. Ver plan "Balanceo de carga
+// por fase" - devuelve las 3 fases crudas en vez de colapsar a un numero,
+// para que /disponibilidad pueda estimar por la fase real del cargador.
+async function getFasesMedidasAmps({ consorcioId, sectorId }) {
   const r = await pool.query(
     sectorId != null
       ? `SELECT amps_l1, amps_l2, amps_l3, potencia_kw, "timestamp"
@@ -26,17 +28,23 @@ async function getConsumoMedidoAmps({ consorcioId, sectorId }) {
   const ageMs = Date.now() - new Date(row.timestamp).getTime();
   if (ageMs > METER_STALE_MS) return null;
 
-  const fases = [row.amps_l1, row.amps_l2, row.amps_l3].filter((v) => v != null).map(Number);
-  if (fases.length > 0) return Math.max(...fases);
-  if (row.potencia_kw != null) return (Number(row.potencia_kw) * 1000) / ASSUMED_VOLTS;
+  if (row.amps_l1 != null && row.amps_l2 != null && row.amps_l3 != null) {
+    return { L1: Number(row.amps_l1), L2: Number(row.amps_l2), L3: Number(row.amps_l3) };
+  }
+  if (row.potencia_kw != null) {
+    const amps = (Number(row.potencia_kw) * 1000) / ASSUMED_VOLTS;
+    return { L1: amps, L2: amps, L3: amps };
+  }
   return null;
 }
 
-async function getAmpsAsignadosTotales(consorcioId) {
+async function getAmpsAsignadosPorFase(consorcioId) {
   const r = await pool.query(
-    `SELECT COALESCE(SUM(ce.amps_asignados), 0) AS total
+    `SELECT ce.amps_asignados, ca.fase, p.fases AS producto_fases
      FROM cargador_estado_actual ce
      JOIN cargadores ca ON ca.ocpp_id = ce.cargador_ocpp_id
+     LEFT JOIN stock_items si ON si.id = ca.stock_item_id
+     LEFT JOIN productos_catalogo p ON p.id = si.producto_id
      WHERE ca.consorcio_id = $1
        AND EXISTS (
          SELECT 1 FROM liquidacion_sesiones ls
@@ -44,7 +52,19 @@ async function getAmpsAsignadosTotales(consorcioId) {
        )`,
     [consorcioId],
   );
-  return Number(r.rows[0].total);
+  const totales = { L1: 0, L2: 0, L3: 0 };
+  for (const row of r.rows) {
+    const amps = Number(row.amps_asignados);
+    const esMonofasicoConFase = row.producto_fases === 'monofasico' && ['L1', 'L2', 'L3'].includes(row.fase);
+    if (esMonofasicoConFase) {
+      totales[row.fase] += amps;
+    } else {
+      totales.L1 += amps;
+      totales.L2 += amps;
+      totales.L3 += amps;
+    }
+  }
+  return totales;
 }
 
 // Mismo criterio que listener/index.js:getOcppVersion y admin.js - backend/
@@ -295,60 +315,83 @@ router.get('/cargadores/:ocppId/historial', async (req, res) => {
 
 // Preview de capacidad: "si tocara Iniciar ahora mismo, cuantos amps me
 // tocarian" - no reserva nada, solo informa antes de arrancar de verdad.
+// Por fase (ver plan "Balanceo de carga por fase"): si ESTE cargador es
+// monofasico con fase clasificada, solo compite con los activos de su
+// misma fase; si es trifasico o sin clasificar, usa el pool conservador
+// (misma logica de buckets que rebalanceGroup en el listener).
 router.get('/cargadores/:ocppId/disponibilidad', async (req, res) => {
   const own = await pool.query(
-    'SELECT consorcio_id, sector_id FROM cargadores WHERE ocpp_id = $1 AND uf_id = $2',
+    `SELECT ca.consorcio_id, ca.sector_id, ca.fase, p.fases AS producto_fases
+     FROM cargadores ca
+     LEFT JOIN stock_items si ON si.id = ca.stock_item_id
+     LEFT JOIN productos_catalogo p ON p.id = si.producto_id
+     WHERE ca.ocpp_id = $1 AND ca.uf_id = $2`,
     [req.params.ocppId, req.user.ufId],
   );
   if (own.rowCount === 0) {
     return res.status(404).json({ error: 'Este cargador no esta asignado a tu unidad.' });
   }
-  const { consorcio_id: consorcioId, sector_id: sectorId } = own.rows[0];
+  const {
+    consorcio_id: consorcioId, sector_id: sectorId, fase: propiaFase, producto_fases: propioProductoFases,
+  } = own.rows[0];
+  const esMonofasicoConFase = propioProductoFases === 'monofasico' && ['L1', 'L2', 'L3'].includes(propiaFase);
 
   let limite;
+  let usarMedidorDinamico = false;
   if (sectorId != null) {
     const sector = await pool.query('SELECT limite_amperios_totales, usar_medidor_dinamico FROM sectores WHERE id = $1', [sectorId]);
     limite = sector.rows[0]?.limite_amperios_totales;
-    if (sector.rows[0]?.usar_medidor_dinamico && limite) {
-      const consumoMedido = await getConsumoMedidoAmps({ sectorId });
-      if (consumoMedido != null) {
-        limite = Math.max(0, Math.floor(limite - consumoMedido));
-      }
-    }
+    usarMedidorDinamico = sector.rows[0]?.usar_medidor_dinamico;
   } else {
     const consorcio = await pool.query('SELECT limite_amperios_totales, usar_medidor_dinamico FROM consorcios WHERE id = $1', [consorcioId]);
     limite = consorcio.rows[0]?.limite_amperios_totales;
-    if (consorcio.rows[0]?.usar_medidor_dinamico && limite) {
-      // Medidor general en la acometida principal ve todo el edificio,
-      // wallboxes incluidos - hay que descontar lo que ya les asignamos a
-      // los autos para aislar el consumo real del resto (mismo criterio que
-      // rebalanceGroup en el listener).
-      const consumoMedido = await getConsumoMedidoAmps({ consorcioId });
-      if (consumoMedido != null) {
-        const amperiosAsignadosAutos = await getAmpsAsignadosTotales(consorcioId);
-        const restoEdificio = Math.max(0, consumoMedido - amperiosAsignadosAutos);
-        limite = Math.max(0, Math.floor(limite - restoEdificio));
-      }
-    }
+    usarMedidorDinamico = consorcio.rows[0]?.usar_medidor_dinamico;
   }
   if (!limite) {
     return res.json({ disponible: true, amps_estimados: null });
   }
 
+  let disponible = { L1: limite, L2: limite, L3: limite };
+  if (usarMedidorDinamico) {
+    const fasesMedidas = await getFasesMedidasAmps({ consorcioId, sectorId });
+    if (fasesMedidas != null) {
+      // Medidor general en la acometida principal ve todo el edificio,
+      // wallboxes incluidos - hay que descontar lo que ya les asignamos a
+      // los autos para aislar el consumo real del resto (mismo criterio que
+      // rebalanceGroup en el listener, y misma asimetria: el branch de
+      // sector no resta, el de consorcio si).
+      const autosPorFase = sectorId != null
+        ? { L1: 0, L2: 0, L3: 0 }
+        : await getAmpsAsignadosPorFase(consorcioId);
+      disponible = {};
+      for (const fase of ['L1', 'L2', 'L3']) {
+        const restoEdificioLx = Math.max(0, fasesMedidas[fase] - autosPorFase[fase]);
+        disponible[fase] = Math.max(0, Math.floor(limite - restoEdificioLx));
+      }
+    }
+  }
+
+  const limiteBucket = esMonofasicoConFase ? disponible[propiaFase] : Math.min(disponible.L1, disponible.L2, disponible.L3);
+
   const MIN_AMPS = 6;
   const activos = await pool.query(
-    `SELECT COUNT(DISTINCT ls.cargador_ocpp_id) AS n FROM liquidacion_sesiones ls
+    `SELECT ca.fase, p.fases AS producto_fases FROM liquidacion_sesiones ls
      JOIN cargadores ca ON ca.ocpp_id = ls.cargador_ocpp_id
+     LEFT JOIN stock_items si ON si.id = ca.stock_item_id
+     LEFT JOIN productos_catalogo p ON p.id = si.producto_id
      WHERE ls.fecha_fin IS NULL AND ls.cargador_ocpp_id != $1
        AND ca.consorcio_id = $2
        AND (($3::int IS NOT NULL AND ca.sector_id = $3) OR ($3::int IS NULL AND ca.sector_id IS NULL))`,
     [req.params.ocppId, consorcioId, sectorId],
   );
-  const activeCount = Number(activos.rows[0].n);
-  const maxCupos = Math.floor(limite / MIN_AMPS);
+  const activeCount = activos.rows.filter((row) => {
+    const rowEsMonofasicoConFase = row.producto_fases === 'monofasico' && ['L1', 'L2', 'L3'].includes(row.fase);
+    return esMonofasicoConFase ? (rowEsMonofasicoConFase && row.fase === propiaFase) : !rowEsMonofasicoConFase;
+  }).length;
+  const maxCupos = Math.floor(limiteBucket / MIN_AMPS);
 
   if (activeCount < maxCupos) {
-    return res.json({ disponible: true, amps_estimados: Math.floor(limite / (activeCount + 1)) });
+    return res.json({ disponible: true, amps_estimados: Math.floor(limiteBucket / (activeCount + 1)) });
   }
   res.json({ disponible: false, amps_estimados: 0 });
 });

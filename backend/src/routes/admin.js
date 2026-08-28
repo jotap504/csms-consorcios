@@ -132,7 +132,7 @@ router.get('/consorcios/:id/cargadores', async (req, res) => {
 
 router.put('/cargadores/:id', async (req, res) => {
   const {
-    etiqueta, charge_point_vendor, charge_point_model, cochera_id: cocheraId, sector_id, ocpp_version,
+    etiqueta, charge_point_vendor, charge_point_model, cochera_id: cocheraId, sector_id, ocpp_version, fase,
   } = req.body ?? {};
   const sendsCochera = 'cochera_id' in (req.body ?? {});
   let consorcioId = null;
@@ -173,12 +173,14 @@ router.put('/cargadores/:id', async (req, res) => {
        cochera_id = CASE WHEN $4 THEN $5::int ELSE cochera_id END,
        uf_id = CASE WHEN $4 THEN $10::int ELSE uf_id END,
        sector_id = CASE WHEN $6 THEN $7::int ELSE sector_id END,
-       ocpp_version = COALESCE($9, ocpp_version)
+       ocpp_version = COALESCE($9, ocpp_version),
+       fase = COALESCE($11, fase)
      WHERE id = $8 RETURNING *`,
     [etiqueta ?? null, charge_point_vendor ?? null, charge_point_model ?? null,
       sendsCochera, cocheraId ?? null,
       'sector_id' in (req.body ?? {}), sector_id ?? null, req.params.id,
-      ocpp_version === '1.6' || ocpp_version === '2.0.1' ? ocpp_version : null, ufId],
+      ocpp_version === '1.6' || ocpp_version === '2.0.1' ? ocpp_version : null, ufId,
+      ['L1', 'L2', 'L3'].includes(fase) ? fase : null],
   );
   if (result.rowCount === 0) return res.status(404).json({ error: 'Cargador no encontrado.' });
   res.json(result.rows[0]);
