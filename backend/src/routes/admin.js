@@ -1236,7 +1236,7 @@ const DIAGNOSTICOS_DIR = path.join(__dirname, '..', '..', 'uploads', 'diagnostic
 const uploadFirmware = multer({ storage: multer.diskStorage({ destination: FIRMWARE_DIR }), limits: { fileSize: 100 * 1024 * 1024 } });
 // Dominio publico real (nginx enruta /api/* a este backend) - el cargador
 // necesita una URL alcanzable desde afuera, no el nombre del contenedor.
-const BACKEND_PUBLIC_URL = process.env.BACKEND_PUBLIC_URL || 'https://bilon.pagarqr.ar/api';
+const BACKEND_PUBLIC_URL = process.env.BACKEND_PUBLIC_URL || 'https://bilon.com.ar/api';
 
 router.post('/firmware', requirePermission('admin_firmware_ota'), uploadFirmware.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'Falta el archivo.' });
