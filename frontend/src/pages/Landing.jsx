@@ -9,6 +9,10 @@ import {
 import { api } from '@/lib/api';
 import EnergyFlowDiagram from '@/components/landing/EnergyFlowDiagram';
 import ShaderHero from '@/components/landing/ShaderHero';
+import MarketGrowthChart from '@/components/landing/MarketGrowthChart';
+import BrandsCarousel from '@/components/landing/BrandsCarousel';
+import ThemeToggle from '@/components/ThemeToggle';
+import Logo from '@/components/Logo';
 
 const fadeUp = {
   hidden: { opacity: 0, y: 24 },
@@ -36,14 +40,13 @@ function Nav() {
     { href: '#inicio', label: 'Inicio' },
     { href: '#solucion', label: 'Solucion' },
     { href: '#plataforma', label: 'Plataforma' },
-    { href: '#videos', label: 'Videos' },
     { href: '#contacto', label: 'Contacto' },
   ];
   return (
-    <header className="sticky top-0 z-40 border-b border-[var(--lp-border)] bg-white/95">
+    <header className="sticky top-0 z-40 border-b border-[var(--lp-border)] bg-[var(--lp-bg)]/95">
       <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
         <a href="#inicio" className="flex items-center">
-          <img src="/logo.png" alt="BILON Smart Buildings" className="h-8 w-auto" />
+          <Logo alt="BILON Smart Buildings" className="h-8 w-auto" />
         </a>
         <nav className="hidden items-center gap-8 md:flex">
           {links.map((l) => (
@@ -52,22 +55,26 @@ function Nav() {
             </a>
           ))}
         </nav>
-        <div className="hidden items-center md:flex">
+        <div className="hidden items-center gap-2 md:flex">
+          <ThemeToggle />
           <Link
             to="/login"
-            className="inline-flex h-10 cursor-pointer items-center rounded-lg bg-[var(--lp-fg)] px-4 text-sm font-medium text-white transition-colors hover:bg-black"
+            className="inline-flex h-10 cursor-pointer items-center rounded-lg bg-[var(--lp-fg)] px-4 text-sm font-medium text-[var(--lp-bg)] transition-colors hover:opacity-90"
           >
             Acceso Clientes
           </Link>
         </div>
-        <button
-          type="button"
-          className="cursor-pointer md:hidden"
-          aria-label="Abrir menu"
-          onClick={() => setOpen((v) => !v)}
-        >
-          <Menu className="h-6 w-6" />
-        </button>
+        <div className="flex items-center gap-1 md:hidden">
+          <ThemeToggle />
+          <button
+            type="button"
+            className="cursor-pointer p-2"
+            aria-label="Abrir menu"
+            onClick={() => setOpen((v) => !v)}
+          >
+            <Menu className="h-6 w-6" />
+          </button>
+        </div>
       </div>
       {open && (
         <div className="flex flex-col gap-1 border-t border-[var(--lp-border)] px-6 py-4 md:hidden">
@@ -76,7 +83,7 @@ function Nav() {
               {l.label}
             </a>
           ))}
-          <Link to="/login" className="mt-2 inline-flex h-10 items-center justify-center rounded-lg bg-[var(--lp-fg)] text-sm font-medium text-white">
+          <Link to="/login" className="mt-2 inline-flex h-10 items-center justify-center rounded-lg bg-[var(--lp-fg)] text-sm font-medium text-[var(--lp-bg)]">
             Acceso Clientes
           </Link>
         </div>
@@ -115,6 +122,26 @@ function Hero() {
   );
 }
 
+function MarketGrowth() {
+  return (
+    <section className="px-6 py-24">
+      <div className="mx-auto max-w-5xl">
+        <Reveal>
+          <h2 className="lp-heading text-3xl font-bold tracking-tight text-[var(--lp-fg)] md:text-4xl">
+            El mercado ya explotó. La infraestructura, todavía no.
+          </h2>
+          <p className="mt-4 max-w-2xl text-[var(--lp-muted)]">
+            Patentamientos de vehiculos electricos e hibridos enchufables en Argentina, año a año. La curva es exponencial - los edificios que se preparen ahora van a estar un paso adelante.
+          </p>
+        </Reveal>
+        <Reveal delay={0.1} className="mt-12">
+          <MarketGrowthChart />
+        </Reveal>
+      </div>
+    </section>
+  );
+}
+
 const PROBLEMS = [
   { icon: Cable, text: 'Cada propietario instala su propio cable, sin planificacion.' },
   { icon: AlertTriangle, text: 'Las cañerias y ductos del edificio se llenan sin control.' },
@@ -138,7 +165,7 @@ function Problem() {
         <div className="mt-12 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {PROBLEMS.map((p, i) => (
             <Reveal key={p.text} delay={i * 0.05}>
-              <div className="flex h-full items-start gap-3 rounded-xl border border-[var(--lp-border)] bg-white p-5">
+              <div className="flex h-full items-start gap-3 rounded-xl border border-[var(--lp-border)] bg-[var(--lp-bg)] p-5">
                 <p.icon className="mt-0.5 h-5 w-5 shrink-0 text-[var(--lp-blue)]" />
                 <p className="text-sm leading-relaxed text-[var(--lp-fg)]">{p.text}</p>
               </div>
@@ -259,7 +286,6 @@ function HowItWorks() {
 }
 
 const BENEFITS = [
-  { icon: Wallet, title: 'Sin inversion inicial del consorcio', text: 'La infraestructura se financia con quienes realmente utilizan el sistema.' },
   { icon: TrendingUp, title: 'Preparado para el futuro', text: 'El edificio queda listo para incorporar nuevos vehiculos electricos durante muchos años.' },
   { icon: Settings2, title: 'Instalacion ordenada', text: 'Sin cables improvisados. Sin modificaciones permanentes. Todo planificado desde el inicio.' },
   { icon: ShieldCheck, title: 'Seguridad electrica', text: 'El sistema controla permanentemente la potencia disponible.' },
@@ -294,7 +320,7 @@ function Benefits() {
 
 function MockScreen({ title, items }) {
   return (
-    <div className="rounded-2xl border border-[var(--lp-border)] bg-white p-2 shadow-[0_20px_60px_rgb(0,0,0,0.08)]">
+    <div className="rounded-2xl border border-[var(--lp-border)] bg-[var(--lp-bg)] p-2 shadow-[0_20px_60px_rgb(0,0,0,0.08)]">
       <div className="rounded-xl bg-[var(--lp-surface)] p-6">
         <div className="mb-4 flex items-center gap-1.5">
           <span className="h-2.5 w-2.5 rounded-full bg-[var(--lp-border)]" />
@@ -304,7 +330,7 @@ function MockScreen({ title, items }) {
         <p className="lp-heading mb-4 text-sm font-semibold text-[var(--lp-fg)]">{title}</p>
         <div className="space-y-2.5">
           {items.map((it) => (
-            <div key={it} className="flex items-center gap-2 rounded-lg bg-white px-3 py-2.5 text-xs text-[var(--lp-fg)] shadow-sm">
+            <div key={it} className="flex items-center gap-2 rounded-lg bg-[var(--lp-bg)] px-3 py-2.5 text-xs text-[var(--lp-fg)] shadow-sm">
               <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-[var(--lp-green)]" />
               {it}
             </div>
@@ -367,6 +393,23 @@ function WhoPays() {
         </div>
         <Reveal delay={0.3}>
           <p className="mt-6 font-medium text-[var(--lp-fg)]">De esta manera, unicamente pagan quienes utilizan el servicio.</p>
+        </Reveal>
+      </div>
+    </section>
+  );
+}
+
+function BrandsWall() {
+  return (
+    <section className="px-6 py-16">
+      <div className="mx-auto max-w-6xl">
+        <Reveal>
+          <p className="text-center text-sm font-semibold uppercase tracking-wide text-[var(--lp-muted)]">
+            Compatible con las principales marcas de vehiculos electricos e hibridos enchufables
+          </p>
+        </Reveal>
+        <Reveal delay={0.1} className="mt-8">
+          <BrandsCarousel />
         </Reveal>
       </div>
     </section>
@@ -447,7 +490,7 @@ function LeadForm() {
 
   if (status === 'sent') {
     return (
-      <div className="rounded-2xl border border-[var(--lp-border)] bg-white p-8 text-center">
+      <div className="rounded-2xl border border-[var(--lp-border)] bg-[var(--lp-bg)] p-8 text-center">
         <CheckCircle2 className="mx-auto h-8 w-8 text-[var(--lp-green)]" />
         <p className="lp-heading mt-3 font-semibold text-[var(--lp-fg)]">Listo, recibimos tu consulta.</p>
         <p className="mt-1 text-sm text-[var(--lp-muted)]">Te contactamos a la brevedad.</p>
@@ -456,7 +499,7 @@ function LeadForm() {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="rounded-2xl border border-[var(--lp-border)] bg-white p-8">
+    <form onSubmit={handleSubmit} className="rounded-2xl border border-[var(--lp-border)] bg-[var(--lp-bg)] p-8">
       <div className="grid gap-4 sm:grid-cols-2">
         <input required placeholder="Tu nombre" value={form.nombre} onChange={(e) => setForm({ ...form, nombre: e.target.value })}
           className="h-11 rounded-lg border border-[var(--lp-border)] px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-[var(--lp-blue)]" />
@@ -498,7 +541,7 @@ function FinalCta() {
         </Reveal>
         <Reveal delay={0.15}>
           <a
-            href="https://wa.me/5491100000000"
+            href="https://wa.me/5491167258498"
             target="_blank"
             rel="noreferrer"
             className="mt-4 inline-flex h-11 cursor-pointer items-center gap-2 text-sm font-medium text-[var(--lp-green)] hover:underline"
@@ -556,8 +599,11 @@ function Footer() {
     <footer className="border-t border-[var(--lp-border)] px-6 py-12">
       <div className="mx-auto flex max-w-6xl flex-col items-center gap-6 sm:flex-row sm:items-start sm:justify-between">
         <div className="flex flex-col items-center gap-3 sm:items-start">
-          <img src="/logo.png" alt="BILON Smart Buildings" className="h-7 w-auto" />
-          <p className="text-xs text-[var(--lp-muted)]">Av. Corrientes 1234, CABA, Argentina</p>
+          <Logo alt="BILON Smart Buildings" className="h-7 w-auto" />
+          <p className="text-xs text-[var(--lp-muted)]">Av. San Martin 5060</p>
+          <p className="text-xs text-[var(--lp-muted)]">
+            <a href="mailto:bilonpresupuestos@gmail.com" className="hover:underline">bilonpresupuestos@gmail.com</a>
+          </p>
           <p className="text-xs text-[var(--lp-muted)]">© {new Date().getFullYear()} BILON. Infraestructura inteligente para movilidad electrica.</p>
         </div>
         <div className="flex items-center gap-3">
@@ -582,7 +628,7 @@ function Footer() {
 function ChatWidget() {
   const [open, setOpen] = useState(false);
   const [messages, setMessages] = useState([
-    { role: 'assistant', content: 'Hola! Soy Jimena, CEO de BILON y ademas la rompo toda al padel. Pero si viniste aca es para hablar de vehiculos electricos, o no? Contame como te llamas y cual es tu consulta.' },
+    { role: 'assistant', content: 'Hola! Soy Jimena de Bilon, en que te puedo ayudar?' },
   ]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -612,7 +658,7 @@ function ChatWidget() {
   return (
     <div className="fixed bottom-4 right-4 z-50 sm:bottom-6 sm:right-6">
       {open && (
-        <div className="mb-3 flex h-[min(28rem,70dvh)] w-[min(20rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-2xl border border-[var(--lp-border)] bg-white shadow-2xl">
+        <div className="mb-3 flex h-[min(28rem,70dvh)] w-[min(20rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-2xl border border-[var(--lp-border)] bg-[var(--lp-bg)] shadow-2xl">
           <div className="flex items-center justify-between border-b border-[var(--lp-border)] bg-[var(--lp-fg)] px-4 py-3">
             <span className="text-sm font-semibold text-white">Asistente BILON</span>
             <button type="button" onClick={() => setOpen(false)} className="cursor-pointer text-white/80 hover:text-white" aria-label="Cerrar chat">
@@ -661,14 +707,16 @@ export default function Landing() {
       <Nav />
       <Hero />
       <Problem />
+      <MarketGrowth />
       <Solution />
       <LiveDemo />
       <HowItWorks />
       <Benefits />
       <Platform />
       <WhoPays />
+      <BrandsWall />
       <Compatibility />
-      <Videos />
+      {/* Videos oculto por el momento - reactivar cuando haya contenido real */}
       <FinalCta />
       <Footer />
       <ChatWidget />
