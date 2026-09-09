@@ -274,10 +274,11 @@
   opacity: 0;
 }
 
-.lp-hero-delay-1 { animation-delay: 0.2s; }
-.lp-hero-delay-2 { animation-delay: 0.4s; }
-.lp-hero-delay-3 { animation-delay: 0.6s; }
-.lp-hero-delay-4 { animation-delay: 0.8s; }
+.lp-hero-delay-1 { animation-delay: 0.3s; }
+.lp-hero-delay-2 { animation-delay: 1.6s; }
+.lp-hero-delay-3 { animation-delay: 2.9s; }
+.lp-hero-delay-4 { animation-delay: 4.2s; }
+.lp-hero-delay-5 { animation-delay: 5.3s; }
 
 @keyframes lp-hero-bg-pan {
   0%, 100% { transform: scale(1.08) translate(0, 0); }

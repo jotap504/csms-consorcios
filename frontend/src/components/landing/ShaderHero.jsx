@@ -265,7 +265,7 @@ function useShaderBackground() {
   return canvasRef;
 }
 
-export default function ShaderHero({ headline, subtitle, buttons, className = '' }) {
+export default function ShaderHero({ stages, buttons, className = '' }) {
   const canvasRef = useShaderBackground();
 
   return (
@@ -284,24 +284,26 @@ export default function ShaderHero({ headline, subtitle, buttons, className = ''
       <div className="absolute inset-0 bg-gradient-to-b from-[#050b16]/40 via-transparent to-[#050b16]/70" aria-hidden="true" />
 
       <div className="relative z-10 flex min-h-dvh flex-col items-center justify-center px-6 py-24 text-white">
-        <div className="mx-auto max-w-5xl space-y-6 text-center">
-          <div className="space-y-1">
-            <h1 className="lp-hero-fade-up lp-hero-delay-1 lp-heading bg-gradient-to-r from-sky-200 via-blue-300 to-cyan-200 bg-clip-text text-4xl font-bold text-transparent md:text-6xl lg:text-7xl">
-              {headline.line1}
-            </h1>
-            <h1 className="lp-hero-fade-up lp-hero-delay-2 lp-heading bg-gradient-to-r from-blue-300 via-cyan-300 to-sky-200 bg-clip-text text-4xl font-bold text-transparent md:text-6xl lg:text-7xl">
-              {headline.line2}
-            </h1>
-          </div>
-
-          <div className="lp-hero-fade-up lp-hero-delay-3 mx-auto max-w-2xl">
-            <p className="text-lg leading-relaxed font-semibold text-sky-50 md:text-xl [text-shadow:0_2px_8px_rgba(0,0,0,0.6)]">
-              {subtitle}
-            </p>
+        <div className="mx-auto max-w-4xl text-center">
+          <div className="rounded-3xl border border-white/10 bg-[#050b16]/65 px-6 py-10 shadow-2xl shadow-black/40 backdrop-blur-md sm:px-12 sm:py-12">
+            <div className="space-y-4">
+              {stages.map((stage, i) => (
+                <p
+                  key={i}
+                  className={`lp-hero-fade-up lp-hero-delay-${i + 1} lp-heading bg-gradient-to-r bg-clip-text font-bold text-transparent [text-shadow:0_2px_10px_rgba(0,0,0,0.5)] ${
+                    stage.emphasis
+                      ? 'from-emerald-200 via-cyan-200 to-sky-200 text-2xl md:text-4xl lg:text-5xl'
+                      : 'from-sky-200 via-blue-300 to-cyan-200 text-xl md:text-3xl lg:text-4xl'
+                  }`}
+                >
+                  {stage.text}
+                </p>
+              ))}
+            </div>
           </div>
 
           {buttons && (
-            <div className="lp-hero-fade-up lp-hero-delay-4 mt-8 flex flex-col justify-center gap-4 sm:flex-row">
+            <div className="lp-hero-fade-up lp-hero-delay-5 mt-8 flex flex-col justify-center gap-4 sm:flex-row">
               {buttons.primary && (
                 <button
                   type="button"

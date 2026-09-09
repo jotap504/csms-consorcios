@@ -100,18 +100,15 @@ function Hero() {
   return (
     <section id="inicio">
       <ShaderHero
-        headline={{
-          line1: '¿Querés cargar tu auto eléctrico en tu cochera?',
-          line2: (
-            <>Bilon tiene la <span className="text-emerald-300">solución</span>.</>
-          ),
-        }}
-        subtitle={(
-          <>
-            ¿Sabés si el edificio tiene <span className="font-medium text-cyan-200">potencia disponible</span>? ¿Y qué pasará
-            cuando sean <span className="font-medium text-cyan-200">3, 7 o 10 autos</span>?
-          </>
-        )}
+        stages={[
+          { text: '¿Compraste o estás por comprar un auto eléctrico?' },
+          { text: '¿Sabés si lo podés cargar en tu edificio?' },
+          { text: '¿Y qué pasará cuando haya 3, 7 o 10 autos?' },
+          {
+            text: 'Bilon analiza la potencia y prepara tu edificio con un sistema de balanceo inteligente y seguro.',
+            emphasis: true,
+          },
+        ]}
         buttons={{
           primary: { text: 'Solicitar asesoramiento', onClick: () => scrollToId('contacto') },
           secondary: { text: 'Ver como funciona', onClick: () => scrollToId('solucion') },
