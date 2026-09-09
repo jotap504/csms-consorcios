@@ -585,7 +585,7 @@ function TiktokIcon(props) {
 }
 
 const SOCIALS = [
-  { icon: InstagramIcon, label: 'Instagram', href: 'https://instagram.com/bilonsmartbuildings' },
+  { icon: InstagramIcon, label: 'Instagram', href: 'https://instagram.com/bilonsmart' },
   { icon: TiktokIcon, label: 'TikTok', href: 'https://tiktok.com/@bilonsmartbuildings' },
   { icon: LinkedinIcon, label: 'LinkedIn', href: 'https://linkedin.com/company/bilon-smart-buildings' },
 ];
