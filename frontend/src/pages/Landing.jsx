@@ -5,6 +5,7 @@ import {
   Zap, Cable, AlertTriangle, Gauge, ShieldCheck, TrendingUp, Wifi, BarChart3,
   Users, CheckCircle2, MessageCircle, X, Send, Car,
   Wallet, Settings2, FileText, PlugZap, Menu, PlayCircle,
+  Building2, Handshake,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import EnergyFlowDiagram from '@/components/landing/EnergyFlowDiagram';
@@ -367,28 +368,45 @@ function Platform() {
 }
 
 function WhoPays() {
-  const items = ['Su instalacion', 'Su cargador (cuando corresponda)', 'El mantenimiento y operacion mediante un abono mensual'];
+  const schemes = [
+    {
+      icon: Building2,
+      title: 'Inversion a cargo del edificio',
+      desc: 'El consorcio financia la instalacion troncal completa y mantiene la propiedad del activo desde el primer momento.',
+    },
+    {
+      icon: Handshake,
+      title: 'Financiamiento mixto',
+      desc: 'Bilon aporta parte de la inversion troncal, el edificio pone el resto, y se recupera mediante el abono mensual de los usuarios.',
+    },
+  ];
   return (
     <section className="px-6 py-24">
       <div className="mx-auto max-w-4xl">
         <Reveal>
-          <h2 className="lp-heading text-3xl font-bold tracking-tight text-[var(--lp-fg)] md:text-4xl">¿Quien paga?</h2>
+          <h2 className="lp-heading text-3xl font-bold tracking-tight text-[var(--lp-fg)] md:text-4xl">¿Quien financia la instalacion?</h2>
           <p className="mt-4 leading-relaxed text-[var(--lp-muted)]">
-            El edificio no necesita realizar una inversion importante. Cada propietario que incorpora un vehiculo electrico financia:
+            Analizamos cada edificio puntualmente y proponemos el esquema que mejor se ajusta a su caso. No hay una formula unica.
           </p>
         </Reveal>
-        <div className="mt-8 space-y-3">
-          {items.map((t, i) => (
-            <Reveal key={t} delay={i * 0.08}>
-              <div className="flex items-center gap-3 rounded-xl border border-[var(--lp-border)] p-4">
-                <Wallet className="h-5 w-5 shrink-0 text-[var(--lp-green)]" />
-                <p className="text-[var(--lp-fg)]">{t}</p>
+        <div className="mt-8 grid gap-4 sm:grid-cols-2">
+          {schemes.map(({ icon: Icon, title, desc }, i) => (
+            <Reveal key={title} delay={i * 0.08}>
+              <div className="h-full rounded-xl border border-[var(--lp-border)] p-5">
+                <Icon className="h-6 w-6 text-[var(--lp-green)]" />
+                <p className="mt-3 font-semibold text-[var(--lp-fg)]">{title}</p>
+                <p className="mt-2 text-sm leading-relaxed text-[var(--lp-muted)]">{desc}</p>
               </div>
             </Reveal>
           ))}
         </div>
-        <Reveal delay={0.3}>
-          <p className="mt-6 font-medium text-[var(--lp-fg)]">De esta manera, unicamente pagan quienes utilizan el servicio.</p>
+        <Reveal delay={0.2}>
+          <div className="mt-6 flex items-center gap-3 rounded-xl border border-[var(--lp-border)] p-4">
+            <Wallet className="h-5 w-5 shrink-0 text-[var(--lp-green)]" />
+            <p className="text-[var(--lp-fg)]">
+              En todos los casos, cada propietario que incorpora un vehiculo electrico paga su cargador individual y el abono mensual de uso y mantenimiento.
+            </p>
+          </div>
         </Reveal>
       </div>
     </section>
