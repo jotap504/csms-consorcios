@@ -285,21 +285,22 @@ export default function ShaderHero({ stages, buttons, className = '' }) {
 
       <div className="relative z-10 flex min-h-dvh flex-col items-center justify-center px-6 py-24 text-white">
         <div className="mx-auto max-w-4xl text-center">
-          <div className="rounded-3xl border border-white/10 bg-[#050b16]/65 px-6 py-10 shadow-2xl shadow-black/40 backdrop-blur-md sm:px-12 sm:py-12">
-            <div className="space-y-4">
-              {stages.map((stage, i) => (
-                <p
-                  key={i}
-                  className={`lp-hero-fade-up lp-hero-delay-${i + 1} lp-heading bg-gradient-to-r bg-clip-text font-bold text-transparent [text-shadow:0_2px_10px_rgba(0,0,0,0.5)] ${
-                    stage.emphasis
-                      ? 'from-emerald-200 via-cyan-200 to-sky-200 text-2xl md:text-4xl lg:text-5xl'
-                      : 'from-sky-200 via-blue-300 to-cyan-200 text-xl md:text-3xl lg:text-4xl'
-                  }`}
-                >
-                  {stage.text}
-                </p>
-              ))}
-            </div>
+          <div className="space-y-3">
+            {stages.map((stage, i) => (
+              <div key={i} className={`lp-hero-fade-up lp-hero-delay-${i + 1}`}>
+                <span className="inline-block rounded-2xl bg-[#050b16]/70 px-4 py-1.5 shadow-lg shadow-black/30 backdrop-blur-sm md:px-6 md:py-2">
+                  <span
+                    className={`lp-heading bg-gradient-to-r bg-clip-text font-bold text-transparent ${
+                      stage.emphasis
+                        ? 'from-emerald-200 via-cyan-200 to-sky-200 text-2xl md:text-4xl lg:text-5xl'
+                        : 'from-sky-200 via-blue-300 to-cyan-200 text-xl md:text-3xl lg:text-4xl'
+                    }`}
+                  >
+                    {stage.text}
+                  </span>
+                </span>
+              </div>
+            ))}
           </div>
 
           {buttons && (
