@@ -101,16 +101,15 @@ function Hero() {
     <section id="inicio">
       <ShaderHero
         headline={{
-          line1: 'Los edificios no fueron diseñados',
+          line1: '¿Querés cargar tu auto eléctrico en tu cochera?',
           line2: (
-            <>para cargar autos <span className="text-emerald-300">ELÉCTRICOS</span>. Nosotros <span className="text-emerald-300">SÍ</span>.</>
+            <>Bilon tiene la <span className="text-emerald-300">solución</span>.</>
           ),
         }}
         subtitle={(
           <>
-            Cada año mas propietarios compran vehiculos <span className="font-medium text-cyan-200">ELÉCTRICOS</span>. Las instalaciones
-            tradicionales no estan preparadas para soportar esa demanda. <span className="font-medium text-cyan-200">BILON</span> instala
-            una infraestructura <span className="font-medium text-cyan-200">INTELIGENTE</span> preparada para el presente y para el futuro.
+            ¿Sabés si el edificio tiene <span className="font-medium text-cyan-200">potencia disponible</span>? ¿Y qué pasará
+            cuando sean <span className="font-medium text-cyan-200">3, 7 o 10 autos</span>?
           </>
         )}
         buttons={{
