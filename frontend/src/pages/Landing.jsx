@@ -377,7 +377,7 @@ function WhoPays() {
     {
       icon: Handshake,
       title: 'Financiamiento mixto',
-      desc: 'Bilon aporta parte de la inversion troncal, el edificio pone el resto, y se recupera mediante el abono mensual de los usuarios.',
+      desc: 'Analizamos junto al consorcio la combinacion de inversion mas conveniente, repartiendo el costo de la instalacion troncal entre ambas partes.',
     },
   ];
   return (
