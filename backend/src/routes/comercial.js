@@ -13,9 +13,12 @@ const pdfParse = require('pdf-parse');
 const { pool } = require('../db');
 const { authenticate, requirePermission } = require('../auth/middleware');
 const { calcularTroncal, DISCLAIMER_PREDIMENSIONADO } = require('../lib/electricoEV');
+const { tokenBaja } = require('../lib/tokenBaja');
 const {
   mailConfigurado, enviarMail, enviarYRegistrarMail, revisarBandeja,
 } = require('../services/mail');
+const { elasticEmailConfigurado } = require('../services/elasticEmail');
+const { evaluarUmbrales } = require('../services/campaniaRamp');
 
 const UPLOADS_DIR = path.join(__dirname, '..', '..', 'uploads', 'comercial');
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
@@ -23,13 +26,6 @@ const AGENTE_DIR = path.join(UPLOADS_DIR, 'agente-informes');
 fs.mkdirSync(AGENTE_DIR, { recursive: true });
 
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://192.168.1.38';
-
-// Token simple para el link de "darse de baja" en campañas: no hace falta
-// login para clickearlo desde el mail, pero tampoco queremos que cualquiera
-// pueda dar de baja a otro contacto adivinando su id.
-function tokenBaja(contactoId) {
-  return crypto.createHmac('sha256', process.env.JWT_SECRET || 'dev-secret').update(String(contactoId)).digest('hex').slice(0, 16);
-}
 
 const upload = multer({
   storage: multer.diskStorage({
@@ -69,6 +65,57 @@ router.get('/baja', async (req, res) => {
   }
   await pool.query('UPDATE comercial_contactos SET no_contactar = TRUE WHERE id = $1', [contactoId]);
   res.send('<html><body style="font-family:sans-serif;text-align:center;padding:60px"><p>Listo, no vas a recibir mas campañas de mail nuestras.</p></body></html>');
+});
+
+// Sin autenticacion de sesion a proposito: lo llama Elastic Email, no un
+// usuario logueado. Protegido con un secreto compartido en la query string
+// (configurado como parte de la URL del webhook en el dashboard de Elastic
+// Email), no con Bearer token.
+router.post('/elastic-email/webhook', async (req, res) => {
+  if (req.query.key !== process.env.ELASTIC_EMAIL_WEBHOOK_SECRET) return res.status(403).json({ error: 'Secreto invalido.' });
+
+  const eventos = Array.isArray(req.body) ? req.body : [req.body];
+  for (const evento of eventos) {
+    const messageId = evento?.MessageID || evento?.messageid || evento?.TransactionID;
+    const categoria = (evento?.Status || evento?.Category || evento?.status || '').toLowerCase();
+    if (!messageId || !categoria) continue; // eslint-disable-line no-continue
+
+    // eslint-disable-next-line no-await-in-loop
+    const destRes = await pool.query(
+      `SELECT d.id AS destinatario_id, d.envio_id, d.contacto_id FROM comercial_campania_envios_destinatarios d
+        WHERE d.elastic_message_id = $1`,
+      [messageId],
+    );
+    const dest = destRes.rows[0];
+    if (!dest) continue; // eslint-disable-line no-continue
+
+    if (categoria.includes('bounce')) {
+      // eslint-disable-next-line no-await-in-loop
+      await pool.query(`UPDATE comercial_campania_envios_destinatarios SET estado = 'rebotado' WHERE id = $1`, [dest.destinatario_id]);
+      // eslint-disable-next-line no-await-in-loop
+      await pool.query(`UPDATE comercial_campania_envios SET rebotados = rebotados + 1, actualizado_en = NOW() WHERE id = $1`, [dest.envio_id]);
+    } else if (categoria.includes('complaint') || categoria.includes('abuse') || categoria.includes('spam')) {
+      // eslint-disable-next-line no-await-in-loop
+      await pool.query(`UPDATE comercial_campania_envios_destinatarios SET estado = 'queja' WHERE id = $1`, [dest.destinatario_id]);
+      // eslint-disable-next-line no-await-in-loop
+      await pool.query(`UPDATE comercial_campania_envios SET quejas = quejas + 1, actualizado_en = NOW() WHERE id = $1`, [dest.envio_id]);
+    } else if (categoria.includes('unsubscribe')) {
+      if (dest.contacto_id) {
+        // eslint-disable-next-line no-await-in-loop
+        await pool.query('UPDATE comercial_contactos SET no_contactar = TRUE WHERE id = $1', [dest.contacto_id]);
+      }
+      continue; // eslint-disable-line no-continue
+    } else {
+      continue; // eslint-disable-line no-continue
+    }
+
+    // eslint-disable-next-line no-await-in-loop
+    const runRes = await pool.query('SELECT * FROM comercial_campania_envios WHERE id = $1', [dest.envio_id]);
+    // eslint-disable-next-line no-await-in-loop
+    if (runRes.rows[0]) await evaluarUmbrales(runRes.rows[0]);
+  }
+
+  res.json({});
 });
 
 router.use(authenticate, requirePermission('comercial'));
@@ -1908,9 +1955,15 @@ router.get('/mail/estado', (_req, res) => {
 
 router.get('/campanias', async (_req, res) => {
   const result = await pool.query(
-    `SELECT id, asunto, LEFT(regexp_replace(cuerpo_html, '<[^>]+>', ' ', 'g'), 160) AS resumen,
-            creado_por_nombre, creado_en, actualizado_en, veces_enviada, ultimo_envio_en
-       FROM comercial_campanias ORDER BY actualizado_en DESC`,
+    `SELECT ca.id, ca.asunto, LEFT(regexp_replace(ca.cuerpo_html, '<[^>]+>', ' ', 'g'), 160) AS resumen,
+            ca.creado_por_nombre, ca.creado_en, ca.actualizado_en, ca.veces_enviada, ca.ultimo_envio_en,
+            e.id AS envio_id, e.estado AS envio_estado, e.enviados AS envio_enviados, e.total_destinatarios AS envio_total
+       FROM comercial_campanias ca
+       LEFT JOIN LATERAL (
+         SELECT id, estado, enviados, total_destinatarios FROM comercial_campania_envios
+          WHERE campania_id = ca.id ORDER BY creado_en DESC LIMIT 1
+       ) e ON TRUE
+       ORDER BY ca.actualizado_en DESC`,
   );
   res.json(result.rows);
 });
@@ -1945,13 +1998,24 @@ router.put('/campanias/:id', async (req, res) => {
 });
 
 router.delete('/campanias/:id', async (req, res) => {
+  const activo = await pool.query(
+    `SELECT 1 FROM comercial_campania_envios WHERE campania_id = $1 AND estado IN ('en_curso', 'pausado')`,
+    [req.params.id],
+  );
+  if (activo.rowCount > 0) return res.status(409).json({ error: 'Hay un envío en curso o pausado para esta campaña. Cancelalo antes de borrarla.' });
   const result = await pool.query('DELETE FROM comercial_campanias WHERE id = $1', [req.params.id]);
   if (result.rowCount === 0) return res.status(404).json({ error: 'Campaña no encontrada.' });
   res.json({ eliminada: true });
 });
 
-router.post('/campanias/:id/enviar', async (req, res) => {
-  if (!mailConfigurado()) return res.status(500).json({ error: 'Mail no configurado en el servidor.' });
+// ---------------------------------------------------------------------------
+// Envios masivos (rampa de warm-up via Elastic Email): crear un envio arma
+// la corrida (lista de destinatarios congelada) pero no manda nada todavia -
+// lo va mandando de a lotes crecientes por dia el ticker de campaniaRamp.js.
+// ---------------------------------------------------------------------------
+
+router.post('/campanias/:id/envios', async (req, res) => {
+  if (!elasticEmailConfigurado()) return res.status(500).json({ error: 'Elastic Email no configurado en el servidor.' });
   const { contacto_ids: contactoIds } = req.body ?? {};
   if (!Array.isArray(contactoIds) || contactoIds.length === 0) {
     return res.status(400).json({ error: 'contacto_ids debe ser una lista no vacia.' });
@@ -1961,106 +2025,91 @@ router.post('/campanias/:id/enviar', async (req, res) => {
   if (campania.rowCount === 0) return res.status(404).json({ error: 'Campaña no encontrada.' });
   const { asunto, cuerpo_html: cuerpoHtml } = campania.rows[0];
 
-  const responsableNombre = await responsableActual(req);
-
-  // Las imagenes propias (subidas al editor de campanias, servidas desde
-  // /api/comercial/archivos/:filename) se mandan como adjunto inline (CID) en
-  // vez de <img src="https://..."> remoto: la mayoria de los clientes de mail
-  // (Gmail incluido) bloquean imagenes externas por defecto en la primera
-  // vista ("mostrar imagenes"), pero un adjunto inline viaja con el mail y se
-  // ve siempre. Se calcula una sola vez, es igual para todos los contactos.
-  const attachmentsBase = [];
-  let cuerpoConImagenesInline = cuerpoHtml;
-  const imgRegex = /<img([^>]*)\ssrc=["']([^"']*\/api\/comercial\/archivos\/([a-zA-Z0-9._-]+))["']([^>]*)>/gi;
-  let imgMatch;
-  let cidIndex = 0;
-  // eslint-disable-next-line no-cond-assign
-  while ((imgMatch = imgRegex.exec(cuerpoHtml)) !== null) {
-    const [full, before, , filename, after] = imgMatch;
-    const filePath = path.join(UPLOADS_DIR, path.basename(filename));
-    if (fs.existsSync(filePath)) {
-      cidIndex += 1;
-      const cid = `campania${req.params.id}img${cidIndex}@bilon`;
-      attachmentsBase.push({ filename: path.basename(filename), path: filePath, cid });
-      cuerpoConImagenesInline = cuerpoConImagenesInline.replace(full, `<img${before} src="cid:${cid}"${after}>`);
-    }
-  }
+  const activo = await pool.query(
+    `SELECT 1 FROM comercial_campania_envios WHERE campania_id = $1 AND estado IN ('en_curso', 'pausado')`,
+    [req.params.id],
+  );
+  if (activo.rowCount > 0) return res.status(409).json({ error: 'Ya hay un envío en curso o pausado para esta campaña.' });
 
   const contactos = await pool.query(
-    'SELECT id, apellido, nombre, email FROM comercial_contactos WHERE id = ANY($1) AND no_contactar = FALSE AND email IS NOT NULL',
+    'SELECT id, email FROM comercial_contactos WHERE id = ANY($1) AND no_contactar = FALSE AND email IS NOT NULL',
     [contactoIds],
   );
+  if (contactos.rowCount === 0) return res.status(400).json({ error: 'Ningún contacto seleccionado tiene mail válido o no está dado de baja.' });
 
-  let enviados = 0;
-  const fallidos = [];
-  for (const [i, c] of contactos.rows.entries()) {
-    const bajaUrl = `${FRONTEND_URL}/api/comercial/baja?c=${c.id}&t=${tokenBaja(c.id)}`;
-    const footerHtml = `<p style="margin-top:24px;font-size:11px;color:#999;">Si no queres recibir mas mails nuestros, <a href="${bajaUrl}" style="color:#999;">hace click aca para darte de baja</a>.</p>`;
-    // Reemplazo de marcadores por contacto - la IA que redacta la campania
-    // escribe estos placeholders (ver campaniaSystemPrompt) esperando que se
-    // completen por destinatario; sin esto llegaban literales ("Hola [Nombre],").
-    const nombreCompleto = `${c.nombre || ''} ${c.apellido || ''}`.trim();
-    const cuerpoPersonalizado = cuerpoConImagenesInline
-      .replace(/\[Nombre Completo\]/gi, nombreCompleto || 'estimado/a')
-      .replace(/\[Nombre\]/gi, c.nombre || 'estimado/a')
-      .replace(/\[Apellido\]/gi, c.apellido || '');
-    const cuerpoHtmlConFooter = cuerpoPersonalizado + footerHtml;
-    const cuerpoTexto = `${cuerpoHtmlConFooter.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()}\n\nDarte de baja: ${bajaUrl}`;
-
-    // Throttle: dejamos ~1.2s entre mails para no mandar todo en un solo
-    // pico (Gmail SMTP personal, no un servicio pensado para bulk).
-    // eslint-disable-next-line no-await-in-loop
-    if (i > 0) await new Promise((r) => { setTimeout(r, 1200); });
-
-    let intentos = 0;
-    let enviado = false;
-    let ultimoError = null;
-    while (intentos < 2 && !enviado) {
-      intentos += 1;
-      try {
-        // eslint-disable-next-line no-await-in-loop
-        await enviarYRegistrarMail({
-          to: c.email,
-          subject: asunto,
-          html: cuerpoHtmlConFooter,
-          text: cuerpoTexto,
-          contactoId: c.id,
-          responsableNombre,
-          attachments: attachmentsBase,
-        });
-        enviado = true;
-      } catch (err) {
-        ultimoError = err;
-        if (intentos < 2) {
-          // eslint-disable-next-line no-await-in-loop
-          await new Promise((r) => { setTimeout(r, 2000); });
-        }
-      }
-    }
-
-    if (enviado) {
-      // eslint-disable-next-line no-await-in-loop
-      await pool.query(
-        `INSERT INTO comercial_seguimientos (contacto_id, fecha, canal, tipo_actividad, resultado_resumen, responsable_usuario_id, responsable_nombre)
-         VALUES ($1, CURRENT_DATE, 'Email', 'Campaña', $2, $3, $4)`,
-        [c.id, asunto, req.user.sub, responsableNombre],
-      );
-      // eslint-disable-next-line no-await-in-loop
-      await pool.query(`UPDATE comercial_contactos SET ultimo_contacto = CURRENT_DATE WHERE id = $1`, [c.id]);
-      enviados += 1;
-    } else {
-      console.error(`Error enviando campania a contacto ${c.id}:`, ultimoError);
-      fallidos.push({ contacto_id: c.id, nombre: `${c.apellido}, ${c.nombre}` });
-    }
-  }
+  const responsableNombre = await responsableActual(req);
+  const envio = await pool.query(
+    `INSERT INTO comercial_campania_envios
+       (campania_id, asunto_snapshot, cuerpo_html_snapshot, total_destinatarios, creado_por_usuario_id, creado_por_nombre)
+     VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+    [req.params.id, asunto, cuerpoHtml, contactos.rowCount, req.user.sub, responsableNombre],
+  );
+  const envioId = envio.rows[0].id;
 
   await pool.query(
-    `UPDATE comercial_campanias SET veces_enviada = veces_enviada + 1, ultimo_envio_en = NOW() WHERE id = $1`,
-    [req.params.id],
+    `INSERT INTO comercial_campania_envios_destinatarios (envio_id, contacto_id, email)
+     SELECT $1, id, email FROM comercial_contactos WHERE id = ANY($2)`,
+    [envioId, contactos.rows.map((c) => c.id)],
   );
 
   const omitidosSinEmail = contactoIds.length - contactos.rowCount;
-  res.json({ enviados, fallidos, omitidos_sin_email_o_no_contactar: omitidosSinEmail });
+  res.status(201).json({ envio_id: envioId, total_destinatarios: contactos.rowCount, omitidos_sin_email_o_no_contactar: omitidosSinEmail });
+});
+
+router.get('/campanias/:id/envios', async (req, res) => {
+  const result = await pool.query(
+    'SELECT * FROM comercial_campania_envios WHERE campania_id = $1 ORDER BY creado_en DESC',
+    [req.params.id],
+  );
+  res.json(result.rows);
+});
+
+router.get('/envios/:envioId', async (req, res) => {
+  const result = await pool.query(
+    `SELECT e.*, c.asunto AS campania_asunto FROM comercial_campania_envios e
+       JOIN comercial_campanias c ON c.id = e.campania_id
+      WHERE e.id = $1`,
+    [req.params.envioId],
+  );
+  if (result.rowCount === 0) return res.status(404).json({ error: 'Envío no encontrado.' });
+  const envio = result.rows[0];
+  const base = Math.max(envio.enviados, 1);
+  res.json({
+    ...envio,
+    tasa_rebote: envio.rebotados / base,
+    tasa_queja: envio.quejas / base,
+  });
+});
+
+router.post('/envios/:envioId/pausar', async (req, res) => {
+  const responsableNombre = await responsableActual(req);
+  const result = await pool.query(
+    `UPDATE comercial_campania_envios SET estado = 'pausado', pausado_motivo = $2, actualizado_en = NOW()
+       WHERE id = $1 AND estado = 'en_curso' RETURNING *`,
+    [req.params.envioId, `Pausado manualmente por ${responsableNombre || 'usuario'}`],
+  );
+  if (result.rowCount === 0) return res.status(404).json({ error: 'Envío no encontrado o no está en curso.' });
+  res.json(result.rows[0]);
+});
+
+router.post('/envios/:envioId/reanudar', async (req, res) => {
+  const result = await pool.query(
+    `UPDATE comercial_campania_envios SET estado = 'en_curso', pausado_motivo = NULL, actualizado_en = NOW()
+       WHERE id = $1 AND estado = 'pausado' RETURNING *`,
+    [req.params.envioId],
+  );
+  if (result.rowCount === 0) return res.status(404).json({ error: 'Envío no encontrado o no está pausado.' });
+  res.json(result.rows[0]);
+});
+
+router.post('/envios/:envioId/cancelar', async (req, res) => {
+  const result = await pool.query(
+    `UPDATE comercial_campania_envios SET estado = 'cancelado', actualizado_en = NOW()
+       WHERE id = $1 AND estado IN ('en_curso', 'pausado') RETURNING *`,
+    [req.params.envioId],
+  );
+  if (result.rowCount === 0) return res.status(404).json({ error: 'Envío no encontrado o ya está terminado.' });
+  res.json(result.rows[0]);
 });
 
 // ---------------------------------------------------------------------------

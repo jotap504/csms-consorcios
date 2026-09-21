@@ -1,0 +1,15 @@
+[Unit]
+Description=CSMS modbus-sim (simulador de medidor Acrel via Modbus-TCP)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=wallbox
+WorkingDirectory=/home/wallbox/hardware-sim
+ExecStart=/usr/bin/node modbus-sim.js
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

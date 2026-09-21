@@ -22,6 +22,7 @@ import ComercialContactos from '@/pages/comercial/Contactos';
 import ComercialContactoDetalle from '@/pages/comercial/ContactoDetalle';
 import ComercialBandeja from '@/pages/comercial/Bandeja';
 import ComercialCampanias from '@/pages/comercial/Campanias';
+import ComercialEnvioDetalle from '@/pages/comercial/EnvioDetalle';
 import ComercialCatalogo from '@/pages/comercial/Catalogo';
 import PresupuestoEditor from '@/pages/comercial/PresupuestoEditor';
 import PresupuestoImprimir from '@/pages/comercial/PresupuestoImprimir';
@@ -198,6 +199,14 @@ export default function App() {
         element={
           <ProtectedRoute roles={['superadmin', 'comercial']}>
             <ComercialCampanias />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/comercial/envios/:envioId"
+        element={
+          <ProtectedRoute roles={['superadmin', 'comercial']}>
+            <ComercialEnvioDetalle />
           </ProtectedRoute>
         }
       />

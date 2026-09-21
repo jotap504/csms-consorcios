@@ -4,10 +4,12 @@
   "description": "Simulador fisico de cargador OCPP 2.0.1 para Raspberry Pi 4 (rele + LEDs + boton)",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "start:modbus": "node modbus-sim.js"
   },
   "dependencies": {
     "dotenv": "^16.4.5",
+    "modbus-serial": "^8.0.20",
     "ws": "^8.18.0"
   }
 }
