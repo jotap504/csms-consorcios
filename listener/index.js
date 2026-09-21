@@ -1,6 +1,7 @@
 require('dotenv').config();
 const amqp = require('amqplib');
 const { Pool } = require('pg');
+const { startModbusPolling } = require('./modbus-poller');
 
 const AMQP_URL = process.env.AMQP_URL;
 const DATABASE_URL = process.env.DATABASE_URL;
@@ -11,6 +12,8 @@ const MIN_AMPS = 6; // IEC 61851 minimum safe charging current
 const REBALANCE_INTERVAL_MS = 60000;
 const METER_STALE_MS = 90000; // lectura de medidor mas vieja que esto se ignora (fail-safe al limite estatico)
 const ASSUMED_VOLTS = 220; // solo si el medidor manda potencia_kw en vez de amps por fase
+const CHARGING_PROFILE_CONFIRM_TIMEOUT_MS = 4000; // cuanto esperar la respuesta real del cargador a SetChargingProfile
+const CHARGING_PROFILE_POLL_MS = 400;
 
 const pool = new Pool({ connectionString: DATABASE_URL });
 
@@ -53,6 +56,16 @@ function powerKw(meterValue) {
 }
 
 async function getOcppVersion(stationId) {
+  // CitrineOS graba el protocolo REALMENTE negociado en la conexion WS actual
+  // (ChargingStations.protocol) - confiar en eso antes que en ocpp_version
+  // configurado a mano en cargadores/proveedor_cargadores, que puede quedar
+  // desactualizado si el equipo termina negociando otra version (paso justo
+  // con un wallbox de proveedor: quedo cargado como 1.6, conecto por 2.0.1,
+  // y CitrineOS rechazaba el SetChargingProfile por mismatch de protocolo).
+  const cs = await pool.query('SELECT protocol FROM "ChargingStations" WHERE id = $1', [stationId]);
+  const protocol = cs.rows[0]?.protocol;
+  if (protocol) return protocol.includes('1.6') ? '1.6' : '2.0.1';
+
   const r = await pool.query('SELECT ocpp_version FROM cargadores WHERE ocpp_id = $1', [stationId]);
   if (r.rowCount > 0) return r.rows[0].ocpp_version;
   const p = await pool.query('SELECT ocpp_version FROM proveedor_cargadores WHERE ocpp_id = $1', [stationId]);
@@ -83,6 +96,33 @@ async function getActiveGroupForStation(stationId) {
   );
   if (r.rowCount === 0) return null;
   return { consorcioId: r.rows[0].consorcio_id, sectorId: r.rows[0].sector_id };
+}
+
+// Suma de amperios actualmente asignados a TODOS los wallbox del edificio
+// con sesion activa (todos los sectores + los sin sector). Se usa para
+// descontar el consumo de los propios autos de la lectura del medidor
+// general, cuando ese medidor esta en la acometida principal y ve todo el
+// edificio (wallboxes incluidos) en vez de solo "el resto".
+//
+// Solo cuenta cargadores con sesion abierta (fecha_fin IS NULL): endSession
+// nunca resetea amps_asignados a 0 cuando termina una carga (rebalanceGroup
+// corta antes por "ordenados.length === 0"), asi que sumar la columna sin
+// filtrar arrastraria para siempre el ultimo valor asignado de autos que ya
+// dejaron de cargar. Tambien evita contar el piso de MIN_AMPS que se le
+// asigna a un cargador recien reconectado sin sesion (handleBootNotification).
+async function getAmpsAsignadosTotales(consorcioId) {
+  const r = await pool.query(
+    `SELECT COALESCE(SUM(ce.amps_asignados), 0) AS total
+     FROM cargador_estado_actual ce
+     JOIN cargadores ca ON ca.ocpp_id = ce.cargador_ocpp_id
+     WHERE ca.consorcio_id = $1
+       AND EXISTS (
+         SELECT 1 FROM liquidacion_sesiones ls
+         WHERE ls.cargador_ocpp_id = ce.cargador_ocpp_id AND ls.fecha_fin IS NULL
+       )`,
+    [consorcioId],
+  );
+  return Number(r.rows[0].total);
 }
 
 async function setCargadorEstado(ocppId, ampsAsignados, enCola) {
@@ -133,6 +173,7 @@ async function pushChargingProfile(ocppId, maxAmps) {
         ],
       },
     };
+  const sentAt = new Date();
   try {
     const res = await fetch(url, {
       method: 'POST',
@@ -142,42 +183,143 @@ async function pushChargingProfile(ocppId, maxAmps) {
     const data = await res.json();
     const confirmation = Array.isArray(data) ? data[0] : data;
     if (!confirmation?.success) {
-      console.warn(`[Balanceador] ${ocppId} rechazo el perfil de ${maxAmps}A:`, confirmation?.payload);
+      console.warn(`[Balanceador] No se pudo enviar perfil a ${ocppId}:`, confirmation?.payload);
+      return;
+    }
+    // El REST de CitrineOS para SetChargingProfile es fire-and-forget:
+    // success=true solo confirma que el CALL salio, NO lo que respondio el
+    // cargador (un CALLRESULT bien formado con payload.status="Rejected"
+    // tambien da success=true). La respuesta real llega async y CitrineOS la
+    // persiste en su propia tabla OCPPMessages - hay que ir a buscarla ahi.
+    // Bug real detectado con un wallbox de proveedor (goiot c13) que
+    // rechazaba TODOS los perfiles y nunca se vio en logs por esto.
+    const status = await getChargingProfileConfirmationStatus(ocppId, sentAt);
+    if (status && status !== 'Accepted') {
+      console.warn(`[Balanceador] ${ocppId} rechazo el perfil de ${maxAmps}A: status=${status}`);
     }
   } catch (err) {
     console.warn(`[Balanceador] No se pudo enviar perfil a ${ocppId}:`, err.message);
   }
 }
 
-// Ultima lectura del medidor de corriente de un sector (consumo del RESTO
-// del edificio, sin contar los cargadores EV - ver nota de instalacion).
-// Devuelve null si no hay lectura o si es demasiado vieja (fail-safe: en ese
-// caso rebalanceGroup usa el limite estatico configurado, como si no
-// tuviera medidor dinamico).
-async function getConsumoMedidoAmps(sectorId) {
+// Poll corto contra la tabla propia de CitrineOS donde persiste la respuesta
+// real del cargador (ver comentario en pushChargingProfile). Si no llega a
+// tiempo devuelve null y no se bloquea el balanceo por eso.
+async function getChargingProfileConfirmationStatus(ocppId, sentAt) {
+  const deadline = Date.now() + CHARGING_PROFILE_CONFIRM_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, CHARGING_PROFILE_POLL_MS));
+    const r = await pool.query(
+      `SELECT message FROM "OCPPMessages"
+       WHERE "stationId" = $1 AND action = 'SetChargingProfile' AND state = '2' AND "timestamp" >= $2
+       ORDER BY "timestamp" ASC LIMIT 1`,
+      [ocppId, sentAt],
+    );
+    if (r.rowCount > 0) return r.rows[0].message?.[2]?.status ?? null;
+  }
+  return null;
+}
+
+// Ultima lectura del medidor de corriente de un sector, o del medidor
+// general del edificio si sectorId es null, CRUDA por fase (ver plan
+// "Balanceo de carga por fase") - a diferencia de la version anterior, no
+// colapsa a un solo numero (fase mas cargada), devuelve las 3 para que
+// rebalanceGroup pueda calcular disponibilidad independiente por fase.
+// Devuelve null si no hay lectura, es demasiado vieja, o el medidor no
+// reporta las 3 fases (fail-safe: rebalanceGroup usa el limite estatico
+// configurado, igual por fase, como si no tuviera medidor dinamico).
+async function getFasesMedidasAmps({ consorcioId, sectorId }) {
   const r = await pool.query(
-    `SELECT amps_l1, amps_l2, amps_l3, potencia_kw, "timestamp"
-     FROM lecturas_sector WHERE sector_id = $1 ORDER BY "timestamp" DESC LIMIT 1`,
-    [sectorId],
+    sectorId != null
+      ? `SELECT amps_l1, amps_l2, amps_l3, potencia_kw, "timestamp"
+         FROM lecturas_sector WHERE sector_id = $1 ORDER BY "timestamp" DESC LIMIT 1`
+      : `SELECT amps_l1, amps_l2, amps_l3, potencia_kw, "timestamp"
+         FROM lecturas_consorcio WHERE consorcio_id = $1 ORDER BY "timestamp" DESC LIMIT 1`,
+    [sectorId != null ? sectorId : consorcioId],
   );
   if (r.rowCount === 0) return null;
   const row = r.rows[0];
   const ageMs = Date.now() - new Date(row.timestamp).getTime();
   if (ageMs > METER_STALE_MS) return null;
 
-  const fases = [row.amps_l1, row.amps_l2, row.amps_l3].filter((v) => v != null).map(Number);
-  if (fases.length > 0) return Math.max(...fases); // fase mas cargada, criterio conservador
-  if (row.potencia_kw != null) return (Number(row.potencia_kw) * 1000) / ASSUMED_VOLTS;
+  if (row.amps_l1 != null && row.amps_l2 != null && row.amps_l3 != null) {
+    return { L1: Number(row.amps_l1), L2: Number(row.amps_l2), L3: Number(row.amps_l3) };
+  }
+  if (row.potencia_kw != null) {
+    // Sin lectura por fase (medidor solo manda potencia total) - se asume
+    // pareja en las 3, mismo criterio conservador que antes del refactor.
+    const amps = (Number(row.potencia_kw) * 1000) / ASSUMED_VOLTS;
+    return { L1: amps, L2: amps, L3: amps };
+  }
   return null;
+}
+
+// Igual que getAmpsAsignadosTotales (mismo filtro: solo cargadores con
+// sesion activa) pero agrupado por fase. Un cargador trifasico -o uno
+// monofasico sin fase todavia clasificada, que cae en el mismo bucket
+// conservador que los trifasicos- dibuja su monto COMPLETO en cada una de
+// las 3 fases simultaneamente (no dividido entre ellas).
+async function getAmpsAsignadosPorFase(consorcioId) {
+  const r = await pool.query(
+    `SELECT ce.amps_asignados, ca.fase, p.fases AS producto_fases
+     FROM cargador_estado_actual ce
+     JOIN cargadores ca ON ca.ocpp_id = ce.cargador_ocpp_id
+     LEFT JOIN stock_items si ON si.id = ca.stock_item_id
+     LEFT JOIN productos_catalogo p ON p.id = si.producto_id
+     WHERE ca.consorcio_id = $1
+       AND EXISTS (
+         SELECT 1 FROM liquidacion_sesiones ls
+         WHERE ls.cargador_ocpp_id = ce.cargador_ocpp_id AND ls.fecha_fin IS NULL
+       )`,
+    [consorcioId],
+  );
+  const totales = { L1: 0, L2: 0, L3: 0 };
+  for (const row of r.rows) {
+    const amps = Number(row.amps_asignados);
+    const esMonofasicoConFase = row.producto_fases === 'monofasico' && ['L1', 'L2', 'L3'].includes(row.fase);
+    if (esMonofasicoConFase) {
+      totales[row.fase] += amps;
+    } else {
+      totales.L1 += amps;
+      totales.L2 += amps;
+      totales.L3 += amps;
+    }
+  }
+  return totales;
+}
+
+// Reparte "limite" amperios en partes iguales entre los cargadores de
+// "ordenados" (ya en orden FIFO por fecha_inicio), respetando un piso de
+// MIN_AMPS por cargador - lo que no entra queda "en cola" con 0A hasta que
+// se libera un cupo. Extraida de rebalanceGroup para poder llamarla una vez
+// por fase + una vez para el pool conservador en vez de una sola vez global.
+async function distribuirGrupo(ordenados, limite, etiqueta) {
+  if (ordenados.length === 0) return;
+  const maxCupos = Math.max(0, Math.floor(limite / MIN_AMPS));
+  const conCupo = ordenados.slice(0, maxCupos);
+  const enCola = ordenados.slice(maxCupos);
+  const perAmps = conCupo.length > 0 ? Math.floor(limite / conCupo.length) : 0;
+
+  console.log(
+    `[Balanceador] ${etiqueta} activos=${ordenados.length} cupos=${maxCupos} -> `
+    + `${conCupo.length}x${perAmps}A, ${enCola.length} en cola`,
+  );
+
+  await Promise.all([
+    ...conCupo.map((ocppId) => setCargadorEstado(ocppId, perAmps, false).then(() => pushChargingProfile(ocppId, perAmps))),
+    ...enCola.map((ocppId) => setCargadorEstado(ocppId, 0, true).then(() => pushChargingProfile(ocppId, 0))),
+  ]);
 }
 
 // Reparte el limite de amperios de un GRUPO (un sector especifico si el
 // cargador pertenece a uno, o el consorcio entero para los que no tienen
-// sector asignado) en partes iguales entre los cargadores con sesion activa
-// en ese grupo, respetando un piso de MIN_AMPS por cargador. Si entran mas
-// sesiones de las que el limite alcanza a cubrir con el piso, las mas nuevas
-// (por fecha_inicio, FIFO) quedan "en cola" con 0A hasta que se libera un
-// cupo (otra sesion del mismo grupo termina y se vuelve a llamar aca).
+// sector asignado) entre los cargadores con sesion activa en ese grupo,
+// AHORA por fase: los monofasicos con fase clasificada (ver
+// schema_fase_wallbox.sql) compiten solo por la disponibilidad de SU fase;
+// los trifasicos y los monofasicos todavia sin clasificar caen en un pool
+// conservador que usa la fase mas ajustada de las 3 (mismo criterio que
+// existia antes de este refactor, ahora aplicado solo a quien realmente lo
+// necesita en vez de a todos por igual).
 //
 // Cada sector tiene su propio circuito/balanceo independiente del resto del
 // edificio (ej: 3 subsuelos con acometidas separadas) - por eso el pool de
@@ -187,62 +329,96 @@ async function rebalanceGroup({ consorcioId, sectorId }) {
   if (consorcioId == null) return;
 
   let limite;
+  let usarMedidorDinamico = false;
   if (sectorId != null) {
     const sector = await pool.query(
       'SELECT limite_amperios_totales, usar_medidor_dinamico FROM sectores WHERE id = $1',
       [sectorId],
     );
     limite = sector.rows[0]?.limite_amperios_totales;
-    if (sector.rows[0]?.usar_medidor_dinamico && limite) {
-      const consumoMedido = await getConsumoMedidoAmps(sectorId);
-      if (consumoMedido != null) {
-        const limiteOriginal = limite;
-        limite = Math.max(0, Math.floor(limite - consumoMedido));
-        console.log(
-          `[Balanceador] sector=${sectorId} medidor dinamico: resto_edificio=${consumoMedido.toFixed(1)}A, `
-          + `${limiteOriginal}A contratado -> ${limite}A disponibles para autos`,
-        );
-      }
-    }
+    usarMedidorDinamico = sector.rows[0]?.usar_medidor_dinamico;
   } else {
-    const consorcio = await pool.query('SELECT limite_amperios_totales FROM consorcios WHERE id = $1', [consorcioId]);
+    const consorcio = await pool.query(
+      'SELECT limite_amperios_totales, usar_medidor_dinamico FROM consorcios WHERE id = $1',
+      [consorcioId],
+    );
     limite = consorcio.rows[0]?.limite_amperios_totales;
+    usarMedidorDinamico = consorcio.rows[0]?.usar_medidor_dinamico;
   }
   if (!limite) return; // sin limite configurado, no hay nada para repartir
 
+  const grupoLabel = sectorId != null ? `sector=${sectorId}` : `consorcio=${consorcioId}`;
+
+  // "limite" es amperios contratados POR FASE (asi funciona el suministro
+  // trifasico) - sin medidor dinamico, cada fase parte del mismo techo
+  // estatico (no hay dato para diferenciarlas).
+  let disponible = { L1: limite, L2: limite, L3: limite };
+
+  if (usarMedidorDinamico) {
+    const fasesMedidas = await getFasesMedidasAmps({ consorcioId, sectorId });
+    if (fasesMedidas != null) {
+      // El branch de sector asume que el medidor del sector YA excluye los
+      // autos (no resta autosAsignados); el de consorcio-sin-sector ve TODO
+      // el edificio incluidos los autos y hay que aislar "el resto" restando
+      // lo que nosotros mismos les asignamos - misma asimetria que existia
+      // antes de este refactor, sin tocar (ver comentario historico de
+      // getAmpsAsignadosTotales).
+      const autosPorFase = sectorId != null
+        ? { L1: 0, L2: 0, L3: 0 }
+        : await getAmpsAsignadosPorFase(consorcioId);
+
+      disponible = {};
+      for (const fase of ['L1', 'L2', 'L3']) {
+        const restoEdificioLx = Math.max(0, fasesMedidas[fase] - autosPorFase[fase]);
+        disponible[fase] = Math.max(0, Math.floor(limite - restoEdificioLx));
+      }
+
+      console.log(
+        `[Balanceador] ${grupoLabel} medidor dinamico por fase (${limite}A contratado/fase): `
+        + `L1 medido=${fasesMedidas.L1.toFixed(1)}A->disp=${disponible.L1}A, `
+        + `L2 medido=${fasesMedidas.L2.toFixed(1)}A->disp=${disponible.L2}A, `
+        + `L3 medido=${fasesMedidas.L3.toFixed(1)}A->disp=${disponible.L3}A`,
+      );
+    }
+  }
+
   const activos = await pool.query(
     sectorId != null
-      ? `SELECT DISTINCT ON (ls.cargador_ocpp_id) ls.cargador_ocpp_id, ls.fecha_inicio
+      ? `SELECT DISTINCT ON (ls.cargador_ocpp_id) ls.cargador_ocpp_id, ls.fecha_inicio, ca.fase, p.fases AS producto_fases
          FROM liquidacion_sesiones ls
          JOIN cargadores ca ON ca.ocpp_id = ls.cargador_ocpp_id
+         LEFT JOIN stock_items si ON si.id = ca.stock_item_id
+         LEFT JOIN productos_catalogo p ON p.id = si.producto_id
          WHERE ca.sector_id = $1 AND ls.fecha_fin IS NULL
          ORDER BY ls.cargador_ocpp_id, ls.fecha_inicio ASC`
-      : `SELECT DISTINCT ON (ls.cargador_ocpp_id) ls.cargador_ocpp_id, ls.fecha_inicio
+      : `SELECT DISTINCT ON (ls.cargador_ocpp_id) ls.cargador_ocpp_id, ls.fecha_inicio, ca.fase, p.fases AS producto_fases
          FROM liquidacion_sesiones ls
          JOIN cargadores ca ON ca.ocpp_id = ls.cargador_ocpp_id
+         LEFT JOIN stock_items si ON si.id = ca.stock_item_id
+         LEFT JOIN productos_catalogo p ON p.id = si.producto_id
          WHERE ca.consorcio_id = $1 AND ca.sector_id IS NULL AND ls.fecha_fin IS NULL
          ORDER BY ls.cargador_ocpp_id, ls.fecha_inicio ASC`,
     [sectorId != null ? sectorId : consorcioId],
   );
-  const ordenados = activos.rows
-    .sort((a, b) => new Date(a.fecha_inicio) - new Date(b.fecha_inicio))
-    .map((r) => r.cargador_ocpp_id);
-  if (ordenados.length === 0) return;
+  if (activos.rowCount === 0) return;
 
-  const maxCupos = Math.max(0, Math.floor(limite / MIN_AMPS));
-  const conCupo = ordenados.slice(0, maxCupos);
-  const enCola = ordenados.slice(maxCupos);
-  const perAmps = conCupo.length > 0 ? Math.floor(limite / conCupo.length) : 0;
+  const ordenadosPorFecha = activos.rows.sort((a, b) => new Date(a.fecha_inicio) - new Date(b.fecha_inicio));
 
-  const grupoLabel = sectorId != null ? `sector=${sectorId}` : `consorcio=${consorcioId}`;
-  console.log(
-    `[Balanceador] ${grupoLabel} activos=${ordenados.length} cupos=${maxCupos} -> `
-    + `${conCupo.length}x${perAmps}A, ${enCola.length} en cola`,
-  );
+  const buckets = {
+    L1: [], L2: [], L3: [], conservador: [],
+  };
+  for (const row of ordenadosPorFecha) {
+    const esMonofasicoConFase = row.producto_fases === 'monofasico' && ['L1', 'L2', 'L3'].includes(row.fase);
+    (esMonofasicoConFase ? buckets[row.fase] : buckets.conservador).push(row.cargador_ocpp_id);
+  }
+
+  const limiteConservador = Math.min(disponible.L1, disponible.L2, disponible.L3);
 
   await Promise.all([
-    ...conCupo.map((ocppId) => setCargadorEstado(ocppId, perAmps, false).then(() => pushChargingProfile(ocppId, perAmps))),
-    ...enCola.map((ocppId) => setCargadorEstado(ocppId, 0, true).then(() => pushChargingProfile(ocppId, 0))),
+    distribuirGrupo(buckets.L1, disponible.L1, `${grupoLabel} fase=L1`),
+    distribuirGrupo(buckets.L2, disponible.L2, `${grupoLabel} fase=L2`),
+    distribuirGrupo(buckets.L3, disponible.L3, `${grupoLabel} fase=L3`),
+    distribuirGrupo(buckets.conservador, limiteConservador, `${grupoLabel} pool-conservador`),
   ]);
 }
 
@@ -280,25 +456,27 @@ async function startSession({ stationId, transactionId, idTag, timestamp, startW
   const precioKwh = consorcio.rows[0]?.costo_kwh_electricidad ?? 0;
 
   let ufId = null;
+  let tarjetaId = null;
   if (idTag) {
     const uf = await pool.query(
-      `SELECT uf.id FROM unidades_funcionales uf
+      `SELECT uf.id AS uf_id, t.id AS tarjeta_id FROM unidades_funcionales uf
        JOIN tarjetas_rfid t ON t.uf_id = uf.id
        WHERE t.id_tag_ocpp = $1 AND t.activa = TRUE`,
       [idTag],
     );
-    ufId = uf.rows[0]?.id ?? null;
+    ufId = uf.rows[0]?.uf_id ?? null;
+    tarjetaId = uf.rows[0]?.tarjeta_id ?? null;
   }
 
   await pool.query(
     `INSERT INTO liquidacion_sesiones
       (transaction_id_ocpp, consorcio_id, uf_id, cargador_ocpp_id, fecha_inicio,
-       kwh_consumidos, precio_kwh_aplicado, monto_total_expensa, liquidado_en_expensas)
-     VALUES ($1, $2, $3, $4, $5, 0, $6, 0, FALSE)`,
-    [String(transactionId), consorcioId, ufId, stationId, timestamp, precioKwh],
+       kwh_consumidos, precio_kwh_aplicado, monto_total_expensa, liquidado_en_expensas, tarjeta_id)
+     VALUES ($1, $2, $3, $4, $5, 0, $6, 0, FALSE, $7)`,
+    [String(transactionId), consorcioId, ufId, stationId, timestamp, precioKwh, tarjetaId],
   );
 
-  openSessions.set(sessionKey(stationId, transactionId), { startWh, precioKwh, consorcioId, sectorId });
+  openSessions.set(sessionKey(stationId, transactionId), { startWh, precioKwh, consorcioId, sectorId, tarjetaId });
   await recordLectura(stationId, transactionId, consorcioId, timestamp, { wh: startWh, powerKw: null });
   console.log(`[Started] ${stationId} tx=${transactionId} uf=${ufId ?? '-'} precioKwh=${precioKwh}`);
   await rebalanceGroup({ consorcioId, sectorId });
@@ -320,11 +498,11 @@ async function updateSession({ stationId, transactionId, timestamp, wh, powerKw:
 async function endSession({ stationId, transactionId, timestamp, endWh: endWhInput }) {
   const key = sessionKey(stationId, transactionId);
 
-  let { startWh, precioKwh, consorcioId, sectorId } = openSessions.get(key) ?? {};
+  let { startWh, precioKwh, consorcioId, sectorId, tarjetaId } = openSessions.get(key) ?? {};
   if (startWh === undefined) {
     console.warn(`[Ended] No hay estado en memoria para ${key}; se intenta recuperar de la DB.`);
     const row = await pool.query(
-      `SELECT ls.precio_kwh_aplicado, ca.consorcio_id, ca.sector_id
+      `SELECT ls.precio_kwh_aplicado, ls.tarjeta_id, ca.consorcio_id, ca.sector_id
        FROM liquidacion_sesiones ls
        JOIN cargadores ca ON ca.ocpp_id = ls.cargador_ocpp_id
        WHERE ls.transaction_id_ocpp = $1 AND ls.cargador_ocpp_id = $2 AND ls.fecha_fin IS NULL`,
@@ -348,6 +526,7 @@ async function endSession({ stationId, transactionId, timestamp, endWh: endWhInp
     startWh = 0;
     consorcioId = row.rows[0].consorcio_id;
     sectorId = row.rows[0].sector_id;
+    tarjetaId = row.rows[0].tarjeta_id;
   }
 
   const endWh = endWhInput ?? startWh;
@@ -355,20 +534,93 @@ async function endSession({ stationId, transactionId, timestamp, endWh: endWhInp
   const monto = kwh * precioKwh;
   const periodo = timestamp.slice(0, 7);
 
-  await pool.query(
-    `UPDATE liquidacion_sesiones
-     SET fecha_fin = $1, kwh_consumidos = $2, monto_total_expensa = $3, periodo_expensa = $4
-     WHERE transaction_id_ocpp = $5 AND cargador_ocpp_id = $6 AND fecha_fin IS NULL`,
-    [timestamp, kwh, monto, periodo, String(transactionId), stationId],
-  );
+  // Saldo prepago (opt-in por consorcio) - deduccion atomica en la misma
+  // transaccion que el cierre de la sesion, para que nunca queden
+  // desincronizados si algo falla a mitad de camino.
+  const usarSaldo = consorcioId != null && tarjetaId != null
+    ? (await pool.query('SELECT usar_saldo_prepago FROM consorcios WHERE id = $1', [consorcioId])).rows[0]?.usar_saldo_prepago
+    : false;
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(
+      `UPDATE liquidacion_sesiones
+       SET fecha_fin = $1, kwh_consumidos = $2, monto_total_expensa = $3, periodo_expensa = $4
+       WHERE transaction_id_ocpp = $5 AND cargador_ocpp_id = $6 AND fecha_fin IS NULL`,
+      [timestamp, kwh, monto, periodo, String(transactionId), stationId],
+    );
+    if (usarSaldo && monto > 0) {
+      const liquidacion = await client.query(
+        'SELECT id FROM liquidacion_sesiones WHERE transaction_id_ocpp = $1 AND cargador_ocpp_id = $2',
+        [String(transactionId), stationId],
+      );
+      await client.query('UPDATE tarjetas_rfid SET saldo = saldo - $1 WHERE id = $2', [monto, tarjetaId]);
+      await client.query(
+        `INSERT INTO tarjeta_movimientos (tarjeta_id, tipo, monto, liquidacion_sesion_id)
+         VALUES ($1, 'consumo', $2, $3)`,
+        [tarjetaId, -monto, liquidacion.rows[0]?.id ?? null],
+      );
+    }
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 
   if (consorcioId != null) {
     await recordLectura(stationId, transactionId, consorcioId, timestamp, { wh: endWh, powerKw: 0 });
   }
 
   openSessions.delete(key);
-  console.log(`[Ended] ${stationId} tx=${transactionId} kwh=${kwh.toFixed(3)} monto=${monto.toFixed(2)}`);
+  console.log(`[Ended] ${stationId} tx=${transactionId} kwh=${kwh.toFixed(3)} monto=${monto.toFixed(2)}${usarSaldo ? ' (saldo descontado)' : ''}`);
   await rebalanceGroup({ consorcioId, sectorId });
+}
+
+// Sesiones huerfanas: la sesion sigue "activa" en liquidacion_sesiones (nunca
+// llego un Ended valido - ej. el station mando un Stop mal formado que
+// CitrineOS rechazo por formato antes de que nos llegara por AMQP, algo
+// confirmado con un stress test) pero CitrineOS reporta el cargador
+// desconectado hace rato. Sin esto, ese cargador queda "cargando" para
+// siempre en la base, ocupando un cupo del balanceador de por vida.
+const ORPHAN_STALE_MS = 30 * 60 * 1000; // 30 min offline sin Ended = huerfana
+
+async function reconcileOrphanSessions() {
+  const cutoff = new Date(Date.now() - ORPHAN_STALE_MS);
+  const result = await pool.query(
+    `SELECT ls.transaction_id_ocpp, ls.cargador_ocpp_id, cs."latestOcppMessageTimestamp"
+     FROM liquidacion_sesiones ls
+     JOIN "ChargingStations" cs ON cs.id = ls.cargador_ocpp_id
+     WHERE ls.fecha_fin IS NULL
+       AND cs."isOnline" = FALSE
+       AND cs."latestOcppMessageTimestamp" < $1`,
+    [cutoff],
+  );
+  for (const row of result.rows) {
+    console.warn(
+      `[Reconciliacion] Sesion huerfana: ${row.cargador_ocpp_id} tx=${row.transaction_id_ocpp}, `
+      + `offline desde ${row.latestOcppMessageTimestamp}. Cerrando con la ultima lectura conocida.`,
+    );
+    const ultimaLectura = await pool.query(
+      `SELECT kwh_acumulado FROM lecturas_medidor
+       WHERE transaction_id_ocpp = $1 AND cargador_ocpp_id = $2
+       ORDER BY "timestamp" DESC LIMIT 1`,
+      [row.transaction_id_ocpp, row.cargador_ocpp_id],
+    );
+    const endWh = ultimaLectura.rows[0] ? Number(ultimaLectura.rows[0].kwh_acumulado) * 1000 : null;
+    try {
+      await endSession({
+        stationId: row.cargador_ocpp_id,
+        transactionId: row.transaction_id_ocpp,
+        timestamp: new Date().toISOString(),
+        endWh,
+      });
+    } catch (err) {
+      console.error(`[Reconciliacion] Error cerrando ${row.cargador_ocpp_id}:`, err.message);
+    }
+  }
 }
 
 async function handleTransactionEvent(context, payload) {
@@ -486,6 +738,43 @@ async function handleStatusNotification(context, payload) {
     [stationId, conectado, status],
   );
   console.log(`[StatusNotification] ${stationId} status=${status} conectado=${conectado}`);
+
+  // Alarmas historicas: solo se guarda un evento real (Faulted), no cada
+  // transicion Available/Occupied/Charging - eso ya lo cubre en vivo
+  // cargador_estado_actual de arriba, guardar todo aca seria puro ruido.
+  if (status === 'Faulted') {
+    await pool.query(
+      'INSERT INTO cargador_alarmas (cargador_ocpp_id, status_ocpp, error_code) VALUES ($1, $2, $3)',
+      [stationId, status, payload.errorCode ?? null],
+    );
+  }
+}
+
+// FirmwareStatusNotification/LogStatusNotification no traen de vuelta nada
+// que correlacione con nuestro row salvo el stationId (no guardamos el
+// requestId numerico que le mandamos a CitrineOS) - se actualiza la fila mas
+// reciente de ese cargador, suficiente porque en la practica no hay mas de
+// un firmware/diagnostico en curso por equipo a la vez.
+async function handleFirmwareStatusNotification(context, payload) {
+  const stationId = context.ocppConnectionName ?? context.stationId;
+  const status = payload.status;
+  await pool.query(
+    `UPDATE firmware_updates SET status = $1
+     WHERE id = (SELECT id FROM firmware_updates WHERE cargador_ocpp_id = $2 ORDER BY creado_en DESC LIMIT 1)`,
+    [status, stationId],
+  );
+  console.log(`[FirmwareStatusNotification] ${stationId} status=${status}`);
+}
+
+async function handleLogStatusNotification(context, payload) {
+  const stationId = context.ocppConnectionName ?? context.stationId;
+  const status = payload.status;
+  await pool.query(
+    `UPDATE diagnosticos SET status = $1
+     WHERE id = (SELECT id FROM diagnosticos WHERE cargador_ocpp_id = $2 ORDER BY creado_en DESC LIMIT 1)`,
+    [status, stationId],
+  );
+  console.log(`[LogStatusNotification] ${stationId} status=${status}`);
 }
 
 async function main() {
@@ -545,11 +834,14 @@ async function main() {
 
   console.log(`Escuchando eventos OCPP 2.0.1 (TransactionEvent) y 1.6 (Start/Stop/MeterValues) en cola "${QUEUE}"...`);
 
+  startModbusPolling(pool);
+
   // Safety net: re-balance periodically in case a Started/Ended event was
   // missed (e.g. listener was briefly down) and the last pushed profile is
   // stale. Groups by (consorcio, sector) so cada sector se rebalancea aparte.
   setInterval(async () => {
     try {
+      await reconcileOrphanSessions();
       const result = await pool.query(
         `SELECT DISTINCT ca.consorcio_id, ca.sector_id
          FROM liquidacion_sesiones ls
@@ -588,6 +880,10 @@ async function main() {
         await handleOcpp16MeterValues(context, payload);
       } else if (action === 'TransactionEvent') {
         await handleTransactionEvent(context, payload);
+      } else if (action === 'FirmwareStatusNotification') {
+        await handleFirmwareStatusNotification(context, payload);
+      } else if (action === 'LogStatusNotification' || action === 'DiagnosticsStatusNotification') {
+        await handleLogStatusNotification(context, payload);
       }
       channel.ack(msg);
     } catch (err) {

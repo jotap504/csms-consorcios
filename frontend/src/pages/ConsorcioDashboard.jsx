@@ -22,7 +22,7 @@ export default function ConsorcioDashboard() {
   const [periodo, setPeriodo] = useState('');
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({ id_tag_ocpp: '', uf_id: '' });
-  const [live, setLive] = useState([]);
+  const [live, setLive] = useState({ cargadores: [], medidor_general: null });
   const liveIntervalRef = useRef(null);
 
   async function loadAll(currentPeriodo) {
@@ -163,7 +163,7 @@ export default function ConsorcioDashboard() {
                 <Activity className="h-3.5 w-3.5" />
                 Consumo total ahora:
                 <span className="tabular-nums font-semibold text-foreground">
-                  {live.filter((c) => c.activo && c.potencia_actual_kw != null).reduce((sum, c) => sum + Number(c.potencia_actual_kw), 0).toFixed(1)} kW
+                  {live.cargadores.filter((c) => c.activo && c.potencia_actual_kw != null).reduce((sum, c) => sum + Number(c.potencia_actual_kw), 0).toFixed(1)} kW
                 </span>
               </p>
             </CardHeader>
@@ -186,7 +186,7 @@ export default function ConsorcioDashboard() {
                   </TableHeader>
                   <TableBody>
                     {cargadores.map((c) => {
-                      const l = live.find((x) => x.ocpp_id === c.ocpp_id);
+                      const l = live.cargadores.find((x) => x.ocpp_id === c.ocpp_id);
                       return (
                       <TableRow key={c.id}>
                         <TableCell className="font-mono text-xs">{c.ocpp_id}</TableCell>
@@ -249,7 +249,7 @@ export default function ConsorcioDashboard() {
 
         <TabsContent value="tarjetas">
           <Card>
-            <CardHeader className="flex-row items-center justify-between">
+            <CardHeader className="flex-row flex-wrap items-center justify-between gap-2">
               <CardTitle>Tarjetas RFID</CardTitle>
               <Dialog open={open} onOpenChange={setOpen}>
                 <DialogTrigger asChild>
@@ -275,7 +275,7 @@ export default function ConsorcioDashboard() {
                         required
                         value={form.uf_id}
                         onChange={(e) => setForm({ ...form, uf_id: e.target.value })}
-                        className="flex h-10 w-full rounded-lg border border-border bg-white px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        className="flex h-10 w-full rounded-lg border border-border bg-card px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       >
                         <option value="">Selecciona una unidad</option>
                         {unidades.map((u) => (
@@ -324,23 +324,59 @@ export default function ConsorcioDashboard() {
             <Activity className="h-4 w-4" />
             Actualiza cada 5 segundos - ultimos 30 minutos
           </div>
-          {live.filter((c) => c.readings.length > 0).length === 0 ? (
+
+          {live.medidor_general?.ultima_lectura && (
+            <Card className="mb-4 min-w-0">
+              <CardHeader className="flex-row flex-wrap items-center justify-between gap-2">
+                <CardTitle className="flex items-center gap-2"><Zap className="h-4 w-4" />Medidor general del edificio</CardTitle>
+                <span className="tabular-nums text-xs text-muted-foreground">
+                  {[
+                    live.medidor_general.ultima_lectura.amps_l1 != null && `L1: ${Number(live.medidor_general.ultima_lectura.amps_l1).toFixed(1)}A`,
+                    live.medidor_general.ultima_lectura.amps_l2 != null && `L2: ${Number(live.medidor_general.ultima_lectura.amps_l2).toFixed(1)}A`,
+                    live.medidor_general.ultima_lectura.amps_l3 != null && `L3: ${Number(live.medidor_general.ultima_lectura.amps_l3).toFixed(1)}A`,
+                    live.medidor_general.ultima_lectura.potencia_kw != null && `${Number(live.medidor_general.ultima_lectura.potencia_kw).toFixed(1)} kW`,
+                  ].filter(Boolean).join(' - ')}
+                </span>
+              </CardHeader>
+              <CardContent>
+                <div className="h-56 w-full">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart
+                      data={live.medidor_general.readings.map((r) => ({
+                        hora: new Date(r.timestamp).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+                        kW: r.potencia_kw != null ? Number(r.potencia_kw) : null,
+                      }))}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" stroke="#e4e7eb" vertical={false} />
+                      <XAxis dataKey="hora" tick={{ fontSize: 11 }} stroke="#64748b" />
+                      <YAxis tick={{ fontSize: 11 }} stroke="#64748b" />
+                      <Tooltip formatter={(value) => [`${value} kW`, 'Potencia']} />
+                      <Legend wrapperStyle={{ fontSize: 12 }} />
+                      <Line type="monotone" dataKey="kW" name="Potencia (kW)" stroke="#2563eb" strokeWidth={2} dot={false} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {live.cargadores.filter((c) => c.readings.length > 0).length === 0 ? (
             <Card>
               <CardContent className="p-5 text-sm text-muted-foreground">
                 Ningun cargador tiene lecturas recientes. Los graficos aparecen cuando hay una sesion de carga activa.
               </CardContent>
             </Card>
           ) : (
-            <div className="grid gap-4 lg:grid-cols-2">
-              {live.filter((c) => c.readings.length > 0).map((c) => {
+            <div className="grid min-w-0 gap-4 lg:grid-cols-2">
+              {live.cargadores.filter((c) => c.readings.length > 0).map((c) => {
                 const chartData = c.readings.map((r) => ({
                   hora: new Date(r.timestamp).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
                   kWh: Number(r.kwh_acumulado),
                 }));
                 const last = c.readings[c.readings.length - 1];
                 return (
-                  <Card key={c.ocpp_id}>
-                    <CardHeader className="flex-row items-center justify-between">
+                  <Card key={c.ocpp_id} className="min-w-0">
+                    <CardHeader className="flex-row flex-wrap items-center justify-between gap-2">
                       <CardTitle>{c.etiqueta || c.ocpp_id}</CardTitle>
                       <div className="flex items-center gap-2">
                         {c.activo && <Badge variant="accent">Cargando</Badge>}

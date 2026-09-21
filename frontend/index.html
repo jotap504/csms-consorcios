@@ -5,6 +5,20 @@
     <link rel="icon" type="image/png" href="/logo.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>CSMS Consorcios</title>
+    <script>
+      // Corre antes de pintar (bloqueante, no type=module) para que no haya
+      // flash del tema equivocado. Misma logica que lib/theme.js: usa la
+      // eleccion manual guardada, o si no hay, la preferencia del sistema.
+      (function () {
+        try {
+          var stored = localStorage.getItem('bilon-theme');
+          var theme = stored === 'light' || stored === 'dark'
+            ? stored
+            : (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+          document.documentElement.classList.add(theme);
+        } catch (e) { /* localStorage no disponible - se queda en claro por defecto */ }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
