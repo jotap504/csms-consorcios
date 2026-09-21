@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams, Link } from 'react-router-dom';
 import { AlertCircle, CheckCircle2 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { Button, Card, CardContent, CardHeader, CardTitle, CardDescription, Input, Label } from '@/components/ui';
+import Logo from '@/components/Logo';
 
 export default function ResetPassword() {
   const navigate = useNavigate();
@@ -37,7 +38,7 @@ export default function ResetPassword() {
     <div className="flex min-h-dvh items-center justify-center bg-background px-4">
       <Card className="w-full max-w-sm">
         <CardHeader className="items-center text-center">
-          <img src="/logo.png" alt="Bilon Smart Buildings" className="mb-2 h-12 w-auto" />
+          <Logo className="mb-2 h-12 w-auto" />
           <CardTitle className="text-xl">Elegi tu contrasena</CardTitle>
           <CardDescription>Minimo 8 caracteres</CardDescription>
         </CardHeader>

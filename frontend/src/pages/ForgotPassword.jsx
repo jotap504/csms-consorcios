@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { ArrowLeft } from 'lucide-react';
 import { api } from '@/lib/api';
 import { Button, Card, CardContent, CardHeader, CardTitle, CardDescription, Input, Label } from '@/components/ui';
+import Logo from '@/components/Logo';
 
 export default function ForgotPassword() {
   const [email, setEmail] = useState('');
@@ -24,7 +25,7 @@ export default function ForgotPassword() {
     <div className="flex min-h-dvh items-center justify-center bg-background px-4">
       <Card className="w-full max-w-sm">
         <CardHeader className="items-center text-center">
-          <img src="/logo.png" alt="Bilon Smart Buildings" className="mb-2 h-12 w-auto" />
+          <Logo className="mb-2 h-12 w-auto" />
           <CardTitle className="text-xl">Recuperar contrasena</CardTitle>
           <CardDescription>Te enviamos un link para elegir una nueva</CardDescription>
         </CardHeader>

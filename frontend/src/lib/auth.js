@@ -27,6 +27,8 @@ export function homeForRole(rol) {
       return '/residente';
     case 'proveedor':
       return '/proveedor';
+    case 'comercial':
+      return '/comercial';
     default:
       return '/login';
   }

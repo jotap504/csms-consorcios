@@ -33,7 +33,7 @@ export function FlowLine({ vertical = false }) {
 function Node({ icon: Icon, label, sub }) {
   return (
     <div className="flex flex-col items-center gap-2 text-center">
-      <div className="flex h-14 w-14 items-center justify-center rounded-xl border border-[var(--lp-border)] bg-white shadow-sm">
+      <div className="flex h-14 w-14 items-center justify-center rounded-xl border border-[var(--lp-border)] bg-[var(--lp-bg)] shadow-sm">
         <Icon className="h-6 w-6 text-[var(--lp-fg)]" />
       </div>
       <div>
@@ -87,7 +87,7 @@ export default function EnergyFlowDiagram() {
   const isHigh = demand === HIGH;
 
   return (
-    <div className="rounded-3xl border border-[var(--lp-border)] bg-white p-6 shadow-[0_20px_60px_rgb(0,0,0,0.06)] sm:p-10">
+    <div className="rounded-3xl border border-[var(--lp-border)] bg-[var(--lp-bg)] p-6 shadow-[0_20px_60px_rgb(0,0,0,0.06)] sm:p-10">
       {/* Source chain */}
       <div className="flex items-center justify-center gap-2 sm:gap-4">
         <Node icon={Zap} label="Suministro" />

@@ -103,7 +103,7 @@ export default function ProveedorDashboard() {
 
   return (
     <Layout title="Panel Proveedor" navItems={navItems}>
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <p className="text-sm text-muted-foreground">
           Empareja tus wallbox de prueba y proba el flujo completo (setear amperaje, iniciar/detener carga) sin afectar
           ningun consorcio real.
@@ -128,7 +128,7 @@ export default function ProveedorDashboard() {
                   id="ocpp_version"
                   value={form.ocpp_version}
                   onChange={(e) => setForm({ ...form, ocpp_version: e.target.value })}
-                  className="flex h-10 w-full rounded-lg border border-border bg-white px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="flex h-10 w-full rounded-lg border border-border bg-card px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   <option value="2.0.1">2.0.1</option>
                   <option value="1.6">1.6J</option>
