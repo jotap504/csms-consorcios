@@ -91,6 +91,9 @@ export default function EnvioDetalle() {
           <div>
             <CardTitle>{envio.campania_asunto}</CardTitle>
             <p className="mt-1 text-xs text-muted-foreground">Día {envio.dia_actual} · Último lote: {formatFechaHora(envio.ultimo_lote_en)}</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Plan: {envio.ramp_schedule?.length ? `${envio.ramp_schedule.join(', ')}, resto` : 'default'}
+            </p>
           </div>
           <Badge variant={badge.variant}>{badge.label}</Badge>
         </CardHeader>

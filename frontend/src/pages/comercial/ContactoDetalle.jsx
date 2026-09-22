@@ -169,6 +169,7 @@ export default function ContactoDetalle() {
               <Badge variant={contacto.alerta === 'Vencido' ? 'destructive' : contacto.alerta === 'Hoy' ? 'default' : 'muted'}>{contacto.alerta}</Badge>
               {contacto.fecha_proxima_accion && <span className="text-xs text-muted-foreground">{contacto.proxima_accion} - {String(contacto.fecha_proxima_accion).slice(0, 10)}</span>}
             </div>
+            {contacto.motivo_baja && <p className="text-xs text-muted-foreground">Motivo: {contacto.motivo_baja}</p>}
             {contacto.observaciones && (
               <div className="mt-2 border-t border-border pt-3">
                 <p className="text-xs text-muted-foreground">Observaciones</p>

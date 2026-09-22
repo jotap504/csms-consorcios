@@ -28,11 +28,91 @@ function rampSchedule() {
   return override.split(',').map((n) => Number(n.trim())).filter((n) => Number.isFinite(n) && n > 0);
 }
 
-function objetivoAcumulado(dia) {
-  const schedule = rampSchedule();
+function objetivoAcumulado(dia, schedule) {
   if (dia <= 0) return 0;
   if (dia <= schedule.length) return schedule.slice(0, dia).reduce((a, b) => a + b, 0);
   return Infinity; // pasado el largo del schedule: mandar todo lo que quede
+}
+
+const EVENTOS_API_URL = 'https://api.elasticemail.com/v4/events?limit=1000';
+
+// Motivo por tipo de evento - se guarda en comercial_contactos.motivo_baja y
+// en comercial_contactos_bajas_automaticas, visible en la UI de contactos.
+function motivoPorEvento(categoria) {
+  if (categoria.includes('bounce')) return { campo: 'rebotado', motivo: 'Rebote duro (campaña)' };
+  if (categoria.includes('complaint') || categoria.includes('abuse') || categoria.includes('spam')) return { campo: 'queja', motivo: 'Queja de spam (campaña)' };
+  if (categoria.includes('unsubscribe')) return { campo: null, motivo: 'Dado de baja (link en mail)' };
+  return null;
+}
+
+// Reemplazo del webhook de Elastic Email (resultó ser función PRO, "Access
+// Denied" en el plan free) - consulta el log de eventos de la cuenta y
+// aplica rebotes/quejas/bajas a los destinatarios todavia 'enviado'. Sin
+// cursor/paginacion persistida: reescanear los ultimos 1000 eventos en cada
+// tick es barato con el volumen de esta cuenta, y es idempotente porque un
+// destinatario ya resuelto no vuelve a matchear 'enviado'.
+async function sincronizarEventosElasticEmail() {
+  let response;
+  try {
+    response = await fetch(EVENTOS_API_URL, { headers: { 'X-ElasticEmail-ApiKey': process.env.ELASTIC_EMAIL_API_KEY } });
+  } catch (err) {
+    console.error('[envios] Error consultando /v4/events:', err.message);
+    return;
+  }
+  if (!response.ok) return;
+  const eventos = await response.json().catch(() => []);
+  const runsAfectados = new Set();
+
+  // eslint-disable-next-line no-restricted-syntax
+  for (const evento of eventos) {
+    const categoria = String(evento?.EventType || '').toLowerCase();
+    const info = motivoPorEvento(categoria);
+    if (!info || !evento?.TransactionID) continue; // eslint-disable-line no-continue
+
+    // eslint-disable-next-line no-await-in-loop
+    const destRes = await pool.query(
+      `SELECT id AS destinatario_id, envio_id, contacto_id FROM comercial_campania_envios_destinatarios
+         WHERE elastic_message_id = $1 AND estado = 'enviado'`,
+      [evento.TransactionID],
+    );
+    const dest = destRes.rows[0];
+    if (!dest) continue; // eslint-disable-line no-continue
+
+    if (info.campo === 'rebotado') {
+      // eslint-disable-next-line no-await-in-loop
+      await pool.query(`UPDATE comercial_campania_envios_destinatarios SET estado = 'rebotado' WHERE id = $1`, [dest.destinatario_id]);
+      // eslint-disable-next-line no-await-in-loop
+      await pool.query(`UPDATE comercial_campania_envios SET rebotados = rebotados + 1, actualizado_en = NOW() WHERE id = $1`, [dest.envio_id]);
+    } else if (info.campo === 'queja') {
+      // eslint-disable-next-line no-await-in-loop
+      await pool.query(`UPDATE comercial_campania_envios_destinatarios SET estado = 'queja' WHERE id = $1`, [dest.destinatario_id]);
+      // eslint-disable-next-line no-await-in-loop
+      await pool.query(`UPDATE comercial_campania_envios SET quejas = quejas + 1, actualizado_en = NOW() WHERE id = $1`, [dest.envio_id]);
+    }
+
+    if (dest.contacto_id) {
+      // eslint-disable-next-line no-await-in-loop
+      await pool.query(
+        `UPDATE comercial_contactos SET no_contactar = TRUE, motivo_baja = $2 WHERE id = $1`,
+        [dest.contacto_id, info.motivo],
+      );
+      // eslint-disable-next-line no-await-in-loop
+      await pool.query(
+        `INSERT INTO comercial_contactos_bajas_automaticas (contacto_id, envio_id, email, motivo) VALUES ($1, $2, $3, $4)`,
+        [dest.contacto_id, dest.envio_id, evento.To || '', info.motivo],
+      );
+    }
+
+    runsAfectados.add(dest.envio_id);
+  }
+
+  // eslint-disable-next-line no-restricted-syntax
+  for (const envioId of runsAfectados) {
+    // eslint-disable-next-line no-await-in-loop
+    const runRes = await pool.query('SELECT * FROM comercial_campania_envios WHERE id = $1', [envioId]);
+    // eslint-disable-next-line no-await-in-loop
+    if (runRes.rows[0]) await evaluarUmbrales(runRes.rows[0]);
+  }
 }
 
 function delay(ms) {
@@ -61,8 +141,9 @@ async function procesarRun(run) {
   const hoy = new Date().toISOString().slice(0, 10);
   if (run.ultimo_lote_en && run.ultimo_lote_en.toISOString().slice(0, 10) >= hoy) return; // ya se mando hoy
 
+  const schedule = run.ramp_schedule && run.ramp_schedule.length > 0 ? run.ramp_schedule : rampSchedule();
   const diaSiguiente = run.dia_actual + 1;
-  const objetivo = objetivoAcumulado(diaSiguiente);
+  const objetivo = objetivoAcumulado(diaSiguiente, schedule);
   const batchSize = objetivo === Infinity ? run.total_destinatarios : Math.max(objetivo - run.enviados, 0);
   if (batchSize === 0 && objetivo !== Infinity) {
     // Nada que mandar todavia en el objetivo de hoy (no deberia pasar salvo
@@ -172,6 +253,7 @@ async function procesarRun(run) {
 
 async function tickRamp() {
   if (!elasticEmailConfigurado()) return { procesados: 0 };
+  await sincronizarEventosElasticEmail();
   const { rows: runs } = await pool.query(`SELECT * FROM comercial_campania_envios WHERE estado = 'en_curso' ORDER BY id`);
   let procesados = 0;
   // eslint-disable-next-line no-restricted-syntax

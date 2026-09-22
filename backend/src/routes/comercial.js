@@ -18,7 +18,6 @@ const {
   mailConfigurado, enviarMail, enviarYRegistrarMail, revisarBandeja,
 } = require('../services/mail');
 const { elasticEmailConfigurado } = require('../services/elasticEmail');
-const { evaluarUmbrales } = require('../services/campaniaRamp');
 
 const UPLOADS_DIR = path.join(__dirname, '..', '..', 'uploads', 'comercial');
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
@@ -65,57 +64,6 @@ router.get('/baja', async (req, res) => {
   }
   await pool.query('UPDATE comercial_contactos SET no_contactar = TRUE WHERE id = $1', [contactoId]);
   res.send('<html><body style="font-family:sans-serif;text-align:center;padding:60px"><p>Listo, no vas a recibir mas campañas de mail nuestras.</p></body></html>');
-});
-
-// Sin autenticacion de sesion a proposito: lo llama Elastic Email, no un
-// usuario logueado. Protegido con un secreto compartido en la query string
-// (configurado como parte de la URL del webhook en el dashboard de Elastic
-// Email), no con Bearer token.
-router.post('/elastic-email/webhook', async (req, res) => {
-  if (req.query.key !== process.env.ELASTIC_EMAIL_WEBHOOK_SECRET) return res.status(403).json({ error: 'Secreto invalido.' });
-
-  const eventos = Array.isArray(req.body) ? req.body : [req.body];
-  for (const evento of eventos) {
-    const messageId = evento?.MessageID || evento?.messageid || evento?.TransactionID;
-    const categoria = (evento?.Status || evento?.Category || evento?.status || '').toLowerCase();
-    if (!messageId || !categoria) continue; // eslint-disable-line no-continue
-
-    // eslint-disable-next-line no-await-in-loop
-    const destRes = await pool.query(
-      `SELECT d.id AS destinatario_id, d.envio_id, d.contacto_id FROM comercial_campania_envios_destinatarios d
-        WHERE d.elastic_message_id = $1`,
-      [messageId],
-    );
-    const dest = destRes.rows[0];
-    if (!dest) continue; // eslint-disable-line no-continue
-
-    if (categoria.includes('bounce')) {
-      // eslint-disable-next-line no-await-in-loop
-      await pool.query(`UPDATE comercial_campania_envios_destinatarios SET estado = 'rebotado' WHERE id = $1`, [dest.destinatario_id]);
-      // eslint-disable-next-line no-await-in-loop
-      await pool.query(`UPDATE comercial_campania_envios SET rebotados = rebotados + 1, actualizado_en = NOW() WHERE id = $1`, [dest.envio_id]);
-    } else if (categoria.includes('complaint') || categoria.includes('abuse') || categoria.includes('spam')) {
-      // eslint-disable-next-line no-await-in-loop
-      await pool.query(`UPDATE comercial_campania_envios_destinatarios SET estado = 'queja' WHERE id = $1`, [dest.destinatario_id]);
-      // eslint-disable-next-line no-await-in-loop
-      await pool.query(`UPDATE comercial_campania_envios SET quejas = quejas + 1, actualizado_en = NOW() WHERE id = $1`, [dest.envio_id]);
-    } else if (categoria.includes('unsubscribe')) {
-      if (dest.contacto_id) {
-        // eslint-disable-next-line no-await-in-loop
-        await pool.query('UPDATE comercial_contactos SET no_contactar = TRUE WHERE id = $1', [dest.contacto_id]);
-      }
-      continue; // eslint-disable-line no-continue
-    } else {
-      continue; // eslint-disable-line no-continue
-    }
-
-    // eslint-disable-next-line no-await-in-loop
-    const runRes = await pool.query('SELECT * FROM comercial_campania_envios WHERE id = $1', [dest.envio_id]);
-    // eslint-disable-next-line no-await-in-loop
-    if (runRes.rows[0]) await evaluarUmbrales(runRes.rows[0]);
-  }
-
-  res.json({});
 });
 
 router.use(authenticate, requirePermission('comercial'));
@@ -2037,12 +1985,23 @@ router.post('/campanias/:id/envios', async (req, res) => {
   );
   if (contactos.rowCount === 0) return res.status(400).json({ error: 'Ningún contacto seleccionado tiene mail válido o no está dado de baja.' });
 
+  // Plan de envio por dia, armado en la UI (Contactos.jsx). Opcional: si no
+  // viene, procesarRun() en campaniaRamp.js usa el default global.
+  const { ramp_schedule: rampScheduleRaw } = req.body ?? {};
+  let rampSchedule = null;
+  if (rampScheduleRaw !== undefined && rampScheduleRaw !== null) {
+    if (!Array.isArray(rampScheduleRaw) || rampScheduleRaw.some((n) => !Number.isInteger(n) || n <= 0)) {
+      return res.status(400).json({ error: 'ramp_schedule debe ser una lista de enteros positivos.' });
+    }
+    rampSchedule = rampScheduleRaw;
+  }
+
   const responsableNombre = await responsableActual(req);
   const envio = await pool.query(
     `INSERT INTO comercial_campania_envios
-       (campania_id, asunto_snapshot, cuerpo_html_snapshot, total_destinatarios, creado_por_usuario_id, creado_por_nombre)
-     VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-    [req.params.id, asunto, cuerpoHtml, contactos.rowCount, req.user.sub, responsableNombre],
+       (campania_id, asunto_snapshot, cuerpo_html_snapshot, total_destinatarios, ramp_schedule, creado_por_usuario_id, creado_por_nombre)
+     VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+    [req.params.id, asunto, cuerpoHtml, contactos.rowCount, rampSchedule, req.user.sub, responsableNombre],
   );
   const envioId = envio.rows[0].id;
 

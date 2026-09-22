@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
-  Plus, Upload, Sparkles, Send, Inbox, CheckSquare, Square, Megaphone,
+  Plus, Upload, Sparkles, Send, Inbox, CheckSquare, Square, Megaphone, Trash2,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { toast } from '@/lib/toast';
@@ -28,6 +28,8 @@ const FILTROS = [
   { value: 'inactivos_30d', label: 'Sin contacto hace +30 dias' },
   { value: 'sin_email', label: 'Sin email cargado' },
 ];
+
+const RAMP_SCHEDULE_DEFAULT = [200, 200, 400, 400, 600, 600, 1000, 1000];
 
 const EMPTY_FORM = {
   apellido: '', nombre: '', tipo_contacto: 'Otros', email: '', administracion_empresa: '',
@@ -64,6 +66,7 @@ export default function Contactos() {
   const [campaniasLoading, setCampaniasLoading] = useState(false);
   const [campaniasError, setCampaniasError] = useState(false);
   const [campaniaElegidaId, setCampaniaElegidaId] = useState(null);
+  const [rampSchedule, setRampSchedule] = useState(RAMP_SCHEDULE_DEFAULT);
   const [enviandoCampania, setEnviandoCampania] = useState(false);
   const [revisandoBandeja, setRevisandoBandeja] = useState(false);
 
@@ -186,16 +189,33 @@ export default function Contactos() {
     });
   }
 
+  function actualizarDiaSchedule(idx, valor) {
+    const n = Number(valor);
+    setRampSchedule((prev) => prev.map((v, i) => (i === idx ? (Number.isFinite(n) && n > 0 ? n : 0) : v)));
+  }
+
+  function agregarDiaSchedule() {
+    setRampSchedule((prev) => [...prev, 100]);
+  }
+
+  function quitarDiaSchedule(idx) {
+    setRampSchedule((prev) => prev.filter((_, i) => i !== idx));
+  }
+
+  const totalProgramado = rampSchedule.reduce((a, b) => a + (b || 0), 0);
+
   async function handleEnviarCampaniaElegida() {
     if (!campaniaElegidaId) return;
     setEnviandoCampania(true);
     try {
       const { data } = await api.post(`/comercial/campanias/${campaniaElegidaId}/envios`, {
         contacto_ids: [...contactosSeleccionados],
+        ramp_schedule: rampSchedule.filter((n) => n > 0),
       });
       toast.success(`Envío iniciado para ${data.total_destinatarios} contacto(s). Se va a completar en varios días (revisá el progreso en la campaña).`);
       setPickerOpen(false);
       setCampaniaElegidaId(null);
+      setRampSchedule(RAMP_SCHEDULE_DEFAULT);
       setContactosSeleccionados(new Set());
       load();
     } catch (err) {
@@ -274,7 +294,7 @@ export default function Contactos() {
             {contactosSeleccionados.size > 0 && (
               <Dialog
                 open={pickerOpen}
-                onOpenChange={(o) => { setPickerOpen(o); if (!o) setCampaniaElegidaId(null); }}
+                onOpenChange={(o) => { setPickerOpen(o); if (!o) { setCampaniaElegidaId(null); setRampSchedule(RAMP_SCHEDULE_DEFAULT); } }}
               >
                 <DialogTrigger asChild>
                   <Button size="sm" variant="outline" onClick={abrirPicker}>
@@ -317,6 +337,36 @@ export default function Contactos() {
                         ))}
                       </div>
                       <Link to="/comercial/campanias" className="text-xs font-medium text-accent hover:underline">+ Crear otra campaña</Link>
+
+                      {campaniaElegidaId && (
+                        <div className="flex flex-col gap-2 rounded-lg border border-border p-3">
+                          <p className="text-sm font-medium">Plan de envío</p>
+                          <p className="text-xs text-muted-foreground">Cuántos contactos se mandan por día - va subiendo de a poco para no quemar la reputación del remitente.</p>
+                          {rampSchedule.map((cantidad, i) => (
+                            <div key={i} className="flex items-center gap-2">
+                              <span className="w-14 shrink-0 text-xs text-muted-foreground">Día {i + 1}</span>
+                              <Input
+                                type="number"
+                                min={1}
+                                value={cantidad}
+                                onChange={(e) => actualizarDiaSchedule(i, e.target.value)}
+                                className="h-8 w-24"
+                              />
+                              <Button size="sm" variant="ghost" onClick={() => quitarDiaSchedule(i)}>
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </Button>
+                            </div>
+                          ))}
+                          <Button size="sm" variant="outline" onClick={agregarDiaSchedule} className="self-start">
+                            <Plus className="h-3.5 w-3.5" />Agregar día
+                          </Button>
+                          <p className="text-xs text-muted-foreground">
+                            Programados: {totalProgramado} de {contactosSeleccionados.size}.
+                            {totalProgramado < contactosSeleccionados.size && ` El resto (${contactosSeleccionados.size - totalProgramado}) se manda el día ${rampSchedule.length + 1}.`}
+                          </p>
+                        </div>
+                      )}
+
                       <Button
                         className="self-end"
                         loading={enviandoCampania}
@@ -501,7 +551,10 @@ export default function Contactos() {
                     </TableCell>
                     <TableCell className="hidden text-sm text-muted-foreground lg:table-cell">{c.responsable_nombre || '-'}</TableCell>
                     <TableCell className="hidden text-xs text-muted-foreground lg:table-cell">{c.fecha_proxima_accion ? String(c.fecha_proxima_accion).slice(0, 10) : '-'}</TableCell>
-                    <TableCell className="hidden sm:table-cell"><Badge variant={ALERTA_BADGE[c.alerta] ?? 'muted'}>{c.alerta}</Badge></TableCell>
+                    <TableCell className="hidden sm:table-cell">
+                      <Badge variant={ALERTA_BADGE[c.alerta] ?? 'muted'}>{c.alerta}</Badge>
+                      {c.motivo_baja && <p className="mt-1 text-[11px] text-muted-foreground">{c.motivo_baja}</p>}
+                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>
