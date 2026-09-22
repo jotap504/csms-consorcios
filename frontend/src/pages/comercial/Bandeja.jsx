@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
-  Inbox, RefreshCw, Send, ArrowUpRight, ArrowDownLeft, ArrowLeft, Mail as MailIcon, Trash2, Forward, Sparkles,
+  Inbox, RefreshCw, Send, ArrowUpRight, ArrowDownLeft, ArrowLeft, Mail as MailIcon, Trash2, Forward, Sparkles, Plus,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { toast } from '@/lib/toast';
 import AdminLayout from '@/components/AdminLayout';
 import {
   Card, CardContent, Button, Badge, Switch, Label, Input,
+  Dialog, DialogTrigger, DialogContent, DialogHeader, DialogTitle, DialogDescription,
 } from '@/components/ui';
 import { SUPERADMIN_NAV } from '../superadmin/navConfig';
 
@@ -40,6 +41,9 @@ export default function Bandeja() {
   const [reenviarOpen, setReenviarOpen] = useState(false);
   const [reenviarForm, setReenviarForm] = useState({ to: '', mensaje: '' });
   const [reenviando, setReenviando] = useState(false);
+  const [nuevoOpen, setNuevoOpen] = useState(false);
+  const [nuevoForm, setNuevoForm] = useState({ to: '', subject: '', cuerpo: '' });
+  const [nuevoEnviando, setNuevoEnviando] = useState(false);
 
   const cargarLista = useCallback(() => {
     setLoading(true);
@@ -121,12 +125,27 @@ export default function Bandeja() {
       .finally(() => setReenviando(false));
   };
 
+  const handleNuevoMail = (e) => {
+    e.preventDefault();
+    if (!nuevoForm.to.trim() || !nuevoForm.subject.trim() || !nuevoForm.cuerpo.trim()) return;
+    setNuevoEnviando(true);
+    api.post('/comercial/mails', nuevoForm)
+      .then(() => {
+        toast.success('Mail enviado.');
+        setNuevoOpen(false);
+        setNuevoForm({ to: '', subject: '', cuerpo: '' });
+        cargarLista();
+      })
+      .catch((err) => toast.error(err.response?.data?.error || 'No se pudo enviar el mail.'))
+      .finally(() => setNuevoEnviando(false));
+  };
+
   const totalPages = Math.max(1, Math.ceil(total / 30));
 
   return (
     <AdminLayout title="Bandeja" navItems={SUPERADMIN_NAV}>
       <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:flex-wrap lg:items-center lg:justify-between">
-        <p className="text-sm text-muted-foreground">Mails de ventasbilonsmart@gmail.com - entrantes y respuestas enviadas.</p>
+        <p className="text-sm text-muted-foreground">Mails de comercial@bilon.com.ar - entrantes y respuestas enviadas.</p>
         <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:gap-4">
           <div className="flex items-center gap-1 self-start rounded-lg border border-border p-1">
             {[
@@ -151,6 +170,54 @@ export default function Bandeja() {
           <Button size="sm" variant="outline" loading={revisando} onClick={handleRevisarBandeja} className="self-start">
             <RefreshCw className="h-4 w-4" />Revisar ahora
           </Button>
+          <Dialog open={nuevoOpen} onOpenChange={(o) => { setNuevoOpen(o); if (!o) setNuevoForm({ to: '', subject: '', cuerpo: '' }); }}>
+            <DialogTrigger asChild>
+              <Button size="sm" className="self-start">
+                <Plus className="h-4 w-4" />Nuevo mail
+              </Button>
+            </DialogTrigger>
+            <DialogContent className="max-w-lg">
+              <DialogHeader>
+                <DialogTitle>Nuevo mail</DialogTitle>
+                <DialogDescription>Se manda desde comercial@bilon.com.ar. Si el destinatario coincide con un contacto existente, queda linkeado.</DialogDescription>
+              </DialogHeader>
+              <form onSubmit={handleNuevoMail} className="flex flex-col gap-2">
+                <Label htmlFor="nuevoTo">Para</Label>
+                <Input
+                  id="nuevoTo"
+                  type="email"
+                  required
+                  placeholder="destinatario@ejemplo.com"
+                  value={nuevoForm.to}
+                  onChange={(e) => setNuevoForm({ ...nuevoForm, to: e.target.value })}
+                />
+                <Label htmlFor="nuevoSubject">Asunto</Label>
+                <Input
+                  id="nuevoSubject"
+                  required
+                  value={nuevoForm.subject}
+                  onChange={(e) => setNuevoForm({ ...nuevoForm, subject: e.target.value })}
+                />
+                <Label htmlFor="nuevoCuerpo">Mensaje</Label>
+                <textarea
+                  id="nuevoCuerpo"
+                  rows={6}
+                  required
+                  className="flex w-full rounded-lg border border-border bg-card px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  value={nuevoForm.cuerpo}
+                  onChange={(e) => setNuevoForm({ ...nuevoForm, cuerpo: e.target.value })}
+                />
+                <Button
+                  type="submit"
+                  className="self-end"
+                  loading={nuevoEnviando}
+                  disabled={!nuevoForm.to.trim() || !nuevoForm.subject.trim() || !nuevoForm.cuerpo.trim()}
+                >
+                  <Send className="h-4 w-4" />Enviar
+                </Button>
+              </form>
+            </DialogContent>
+          </Dialog>
         </div>
       </div>
 

@@ -2351,6 +2351,45 @@ router.get('/mails/:id', async (req, res) => {
   res.json(result.rows[0]);
 });
 
+// Mail nuevo desde cero (no respuesta/reenvio de uno existente) - la Bandeja
+// solo mostraba entrantes/respuestas hasta ahora, sin forma de arrancar una
+// conversacion. Si el destinatario matchea un contacto existente por email,
+// queda linkeado (seguimiento + ultimo_contacto) igual que responder/reenviar.
+router.post('/mails', async (req, res) => {
+  if (!mailConfigurado()) return res.status(500).json({ error: 'Mail no configurado en el servidor.' });
+  const { to, subject, cuerpo } = req.body ?? {};
+  if (!to?.trim() || !subject?.trim() || !cuerpo?.trim()) {
+    return res.status(400).json({ error: 'to, subject y cuerpo son requeridos.' });
+  }
+
+  const destino = await pool.query('SELECT id FROM comercial_contactos WHERE LOWER(email) = LOWER($1) LIMIT 1', [to.trim()]);
+  const contactoId = destino.rowCount > 0 ? destino.rows[0].id : null;
+  const responsableNombre = await responsableActual(req);
+
+  try {
+    await enviarYRegistrarMail({
+      to: to.trim(),
+      subject: subject.trim(),
+      html: cuerpo.replace(/\n/g, '<br>'),
+      text: cuerpo,
+      contactoId,
+      responsableNombre,
+    });
+    if (contactoId) {
+      await pool.query(
+        `INSERT INTO comercial_seguimientos (contacto_id, fecha, canal, tipo_actividad, resultado_resumen, responsable_usuario_id, responsable_nombre)
+         VALUES ($1, CURRENT_DATE, 'Email', 'Mail nuevo', $2, $3, $4)`,
+        [contactoId, subject.trim(), req.user.sub, responsableNombre],
+      );
+      await pool.query(`UPDATE comercial_contactos SET ultimo_contacto = CURRENT_DATE WHERE id = $1`, [contactoId]);
+    }
+    res.status(201).json({ enviado: true });
+  } catch (err) {
+    console.error('Error enviando mail nuevo:', err);
+    res.status(502).json({ error: 'No se pudo enviar el mail.' });
+  }
+});
+
 router.post('/mails/:id/responder', async (req, res) => {
   if (!mailConfigurado()) return res.status(500).json({ error: 'Mail no configurado en el servidor.' });
   const { cuerpo } = req.body ?? {};
