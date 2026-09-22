@@ -21,6 +21,18 @@ export default function AdminLayout({
   const navigate = useNavigate();
   const session = getSession();
 
+  // El rol comercial solo ve la seccion "Comercial" del sidebar (nada de
+  // Operaciones ni el Dashboard de superadmin) - se filtra aca, en un solo
+  // lugar, en vez de tocar cada pagina que pasa SUPERADMIN_NAV.
+  let visibleNavItems = navItems;
+  if (session?.rol === 'comercial') {
+    let currentSection = null;
+    visibleNavItems = navItems.filter((item) => {
+      if (item.section) currentSection = item.section;
+      return currentSection === 'Comercial';
+    });
+  }
+
   function handleLogout() {
     clearSession();
     navigate('/login');
@@ -36,7 +48,7 @@ export default function AdminLayout({
           </div>
         </div>
         <nav className="flex flex-1 flex-col gap-0.5 p-2 md:p-3">
-          {navItems.map(({
+          {visibleNavItems.map(({
             to, label, icon: Icon, end, section,
           }, i) => (
             <div key={to}>
