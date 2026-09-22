@@ -1,36 +1,39 @@
-// Envio de campanias y lectura/resumen de la bandeja de entrada comercial
-// (ventasbilonsmart@gmail.com por ahora - App Password + SMTP/IMAP estandar,
-// sin OAuth. Cuando este Cloudflare Email Routing armado sobre bilon.com.ar,
-// alcanza con reenviar ventas@/info@ a esta MISMA casilla; nada de esto
-// cambia). Ver marketing/preguntas_modulo_ventas.md.
+// Envio de cotizaciones/informes 1 a 1 y lectura/resumen de la bandeja de
+// entrada comercial (comercial@bilon.com.ar via Zoho Mail - contraseña o
+// app password + SMTP/IMAP estandar, sin OAuth). Antes era Gmail
+// (ventasbilonsmart@gmail.com); se migro para centralizar todo el mail
+// comercial (campanias, cotizaciones, informes, respuestas) en una sola
+// casilla que se revisa. Ver marketing/preguntas_modulo_ventas.md.
 
 const nodemailer = require('nodemailer');
 const { ImapFlow } = require('imapflow');
 const { simpleParser } = require('mailparser');
 const { pool } = require('../db');
 
-const GMAIL_USER = process.env.GMAIL_USER;
-const GMAIL_APP_PASSWORD = process.env.GMAIL_APP_PASSWORD;
+const MAIL_USER = process.env.MAIL_USER;
+const MAIL_PASSWORD = process.env.MAIL_PASSWORD;
+const MAIL_HOST_SMTP = process.env.MAIL_HOST_SMTP || 'smtp.zoho.com';
+const MAIL_HOST_IMAP = process.env.MAIL_HOST_IMAP || 'imap.zoho.com';
 
 function mailConfigurado() {
-  return Boolean(GMAIL_USER && GMAIL_APP_PASSWORD);
+  return Boolean(MAIL_USER && MAIL_PASSWORD);
 }
 
 function transporter() {
   return nodemailer.createTransport({
-    host: 'smtp.gmail.com',
+    host: MAIL_HOST_SMTP,
     port: 465,
     secure: true,
-    auth: { user: GMAIL_USER, pass: GMAIL_APP_PASSWORD },
+    auth: { user: MAIL_USER, pass: MAIL_PASSWORD },
   });
 }
 
 async function enviarMail({
   to, subject, html, text, attachments = [],
 }) {
-  if (!mailConfigurado()) throw new Error('Mail no configurado (falta GMAIL_USER/GMAIL_APP_PASSWORD).');
+  if (!mailConfigurado()) throw new Error('Mail no configurado (falta MAIL_USER/MAIL_PASSWORD).');
   return transporter().sendMail({
-    from: `BILON Smart Buildings <${GMAIL_USER}>`, to, subject, html, text, attachments,
+    from: `BILON Smart Buildings <${MAIL_USER}>`, to, subject, html, text, attachments,
   });
 }
 
@@ -46,7 +49,7 @@ async function enviarYRegistrarMail({
     `INSERT INTO comercial_mails
        (direccion, contacto_id, de_email, de_nombre, para_email, asunto, cuerpo_texto, cuerpo_html, message_id, in_reply_to, leido, responsable_nombre)
      VALUES ('saliente', $1, $2, 'BILON Smart Buildings', $3, $4, $5, $6, $7, $8, TRUE, $9)`,
-    [contactoId, GMAIL_USER, to, subject, text ?? null, html ?? null, info?.messageId ?? null, inReplyTo, responsableNombre],
+    [contactoId, MAIL_USER, to, subject, text ?? null, html ?? null, info?.messageId ?? null, inReplyTo, responsableNombre],
   );
   return info;
 }
@@ -82,10 +85,10 @@ async function resumirConIA(texto) {
 // contacto conocido. Los mails de remitentes no reconocidos se listan aparte
 // para que alguien los revise a mano (no se crean contactos solos).
 async function revisarBandeja() {
-  if (!mailConfigurado()) throw new Error('Mail no configurado (falta GMAIL_USER/GMAIL_APP_PASSWORD).');
+  if (!mailConfigurado()) throw new Error('Mail no configurado (falta MAIL_USER/MAIL_PASSWORD).');
 
   const client = new ImapFlow({
-    host: 'imap.gmail.com', port: 993, secure: true, auth: { user: GMAIL_USER, pass: GMAIL_APP_PASSWORD }, logger: false,
+    host: MAIL_HOST_IMAP, port: 993, secure: true, auth: { user: MAIL_USER, pass: MAIL_PASSWORD }, logger: false,
   });
 
   const procesados = [];
@@ -132,7 +135,7 @@ async function revisarBandeja() {
              (direccion, contacto_id, de_email, de_nombre, para_email, asunto, cuerpo_texto, cuerpo_html, resumen_ia, message_id, in_reply_to, leido, fecha)
            VALUES ('entrante', $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, FALSE, $11)`,
           [
-            contactoId, desde, deNombre, GMAIL_USER, asunto,
+            contactoId, desde, deNombre, MAIL_USER, asunto,
             parsed.text ?? null, parsed.html || null, resumenIA, parsed.messageId ?? null, parsed.inReplyTo ?? null,
             parsed.date ?? new Date(),
           ],

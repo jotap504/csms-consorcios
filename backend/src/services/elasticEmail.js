@@ -28,9 +28,9 @@ async function enviarViaElasticEmail({
     Content: {
       From: ELASTIC_EMAIL_FROM,
       // Las campanias salen desde el dominio de Elastic Email, pero las
-      // respuestas ("me interesa") tienen que caer en la misma casilla de
-      // Gmail que ya revisa revisarBandeja() - sin esto se pierden.
-      ...(process.env.GMAIL_USER ? { ReplyTo: process.env.GMAIL_USER } : {}),
+      // respuestas ("me interesa") tienen que caer en la misma casilla que
+      // ya revisa revisarBandeja() (services/mail.js) - sin esto se pierden.
+      ...(process.env.MAIL_USER ? { ReplyTo: process.env.MAIL_USER } : {}),
       Subject: subject,
       Body: [
         { ContentType: 'HTML', Content: html },
