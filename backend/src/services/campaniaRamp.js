@@ -38,10 +38,30 @@ const EVENTOS_API_URL = 'https://api.elasticemail.com/v4/events?limit=1000';
 
 // Motivo por tipo de evento - se guarda en comercial_contactos.motivo_baja y
 // en comercial_contactos_bajas_automaticas, visible en la UI de contactos.
-function motivoPorEvento(categoria) {
-  if (categoria.includes('bounce')) return { campo: 'rebotado', motivo: 'Rebote duro (campaña)' };
-  if (categoria.includes('complaint') || categoria.includes('abuse') || categoria.includes('spam')) return { campo: 'queja', motivo: 'Queja de spam (campaña)' };
-  if (categoria.includes('unsubscribe')) return { campo: null, motivo: 'Dado de baja (link en mail)' };
+//
+// Elastic Email NO manda EventType='Bounced' - los rebotes vienen como
+// EventType='Error' con un MessageCategory especifico (confirmado con un
+// rebote real de prueba: {EventType:'Error', MessageCategory:'NoMailbox'}).
+// Solo NoMailbox/BlackListed son culpa del destinatario (direccion invalida,
+// bloqueada) - el resto de las categorias de error (Throttled, Timeout,
+// SPFProblem, AccountProblem, DNSProblem, etc.) son problemas transitorios o
+// de configuracion de NUESTRO lado, no hay que dar de baja al contacto por
+// esas.
+const CATEGORIAS_REBOTE_DURO = ['nomailbox', 'blacklisted'];
+
+function motivoPorEvento(evento) {
+  const eventType = String(evento?.EventType || '').toLowerCase();
+  const categoria = String(evento?.MessageCategory || '').toLowerCase();
+
+  if (eventType === 'error' && CATEGORIAS_REBOTE_DURO.includes(categoria)) {
+    return { campo: 'rebotado', motivo: 'Rebote duro (campaña)' };
+  }
+  if (eventType.includes('complaint') || categoria === 'spam') {
+    return { campo: 'queja', motivo: 'Queja de spam (campaña)' };
+  }
+  if (eventType.includes('unsubscribe')) {
+    return { campo: null, motivo: 'Dado de baja (link en mail)' };
+  }
   return null;
 }
 
@@ -65,8 +85,7 @@ async function sincronizarEventosElasticEmail() {
 
   // eslint-disable-next-line no-restricted-syntax
   for (const evento of eventos) {
-    const categoria = String(evento?.EventType || '').toLowerCase();
-    const info = motivoPorEvento(categoria);
+    const info = motivoPorEvento(evento);
     if (!info || !evento?.TransactionID) continue; // eslint-disable-line no-continue
 
     // eslint-disable-next-line no-await-in-loop
