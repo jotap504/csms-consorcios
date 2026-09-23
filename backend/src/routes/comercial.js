@@ -135,13 +135,16 @@ const FILTROS_CONTACTOS = {
 
 router.get('/contactos', async (req, res) => {
   const {
-    estado, prioridad, responsable, search, filtro,
+    estado, prioridad, responsable, search, filtro, tipo_contacto: tipoContacto, zona, origen,
   } = req.query;
   const conditions = [];
   const params = [];
   if (estado) { params.push(estado); conditions.push(`c.estado_comercial = $${params.length}`); }
   if (prioridad) { params.push(prioridad); conditions.push(`c.prioridad = $${params.length}`); }
   if (responsable) { params.push(responsable); conditions.push(`c.responsable_nombre = $${params.length}`); }
+  if (tipoContacto) { params.push(tipoContacto); conditions.push(`c.tipo_contacto = $${params.length}`); }
+  if (zona) { params.push(`%${zona}%`); conditions.push(`c.zona ILIKE $${params.length}`); }
+  if (origen) { params.push(`%${origen}%`); conditions.push(`c.origen ILIKE $${params.length}`); }
   if (filtro && FILTROS_CONTACTOS[filtro]) { conditions.push(FILTROS_CONTACTOS[filtro]); }
   if (search) {
     params.push(`%${search}%`);
@@ -1987,7 +1990,7 @@ router.post('/campanias/:id/envios', async (req, res) => {
 
   // Plan de envio por dia, armado en la UI (Contactos.jsx). Opcional: si no
   // viene, procesarRun() en campaniaRamp.js usa el default global.
-  const { ramp_schedule: rampScheduleRaw } = req.body ?? {};
+  const { ramp_schedule: rampScheduleRaw, hora_inicio: horaInicioRaw, hora_fin: horaFinRaw } = req.body ?? {};
   let rampSchedule = null;
   if (rampScheduleRaw !== undefined && rampScheduleRaw !== null) {
     if (!Array.isArray(rampScheduleRaw) || rampScheduleRaw.some((n) => !Number.isInteger(n) || n <= 0)) {
@@ -1996,12 +1999,24 @@ router.post('/campanias/:id/envios', async (req, res) => {
     rampSchedule = rampScheduleRaw;
   }
 
+  // Ventana horaria (hora Argentina) en la que se manda el lote de cada dia,
+  // esparcido segun el tiempo transcurrido - ver procesarRun en campaniaRamp.js.
+  const HHMM_REGEX = /^([01]\d|2[0-3]):[0-5]\d$/;
+  const horaInicio = horaInicioRaw ?? '09:00';
+  const horaFin = horaFinRaw ?? '19:00';
+  if (!HHMM_REGEX.test(horaInicio) || !HHMM_REGEX.test(horaFin)) {
+    return res.status(400).json({ error: 'hora_inicio y hora_fin deben tener formato HH:MM.' });
+  }
+  if (horaInicio >= horaFin) {
+    return res.status(400).json({ error: 'hora_inicio debe ser anterior a hora_fin (no se soportan ventanas que crucen la medianoche).' });
+  }
+
   const responsableNombre = await responsableActual(req);
   const envio = await pool.query(
     `INSERT INTO comercial_campania_envios
-       (campania_id, asunto_snapshot, cuerpo_html_snapshot, total_destinatarios, ramp_schedule, creado_por_usuario_id, creado_por_nombre)
-     VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
-    [req.params.id, asunto, cuerpoHtml, contactos.rowCount, rampSchedule, req.user.sub, responsableNombre],
+       (campania_id, asunto_snapshot, cuerpo_html_snapshot, total_destinatarios, ramp_schedule, hora_inicio, hora_fin, creado_por_usuario_id, creado_por_nombre)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
+    [req.params.id, asunto, cuerpoHtml, contactos.rowCount, rampSchedule, horaInicio, horaFin, req.user.sub, responsableNombre],
   );
   const envioId = envio.rows[0].id;
 

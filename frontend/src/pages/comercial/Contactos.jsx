@@ -50,6 +50,8 @@ export default function Contactos() {
   const [contactos, setContactos] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  const [zona, setZona] = useState('');
+  const [origen, setOrigen] = useState('');
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
@@ -67,19 +69,23 @@ export default function Contactos() {
   const [campaniasError, setCampaniasError] = useState(false);
   const [campaniaElegidaId, setCampaniaElegidaId] = useState(null);
   const [rampSchedule, setRampSchedule] = useState(RAMP_SCHEDULE_DEFAULT);
+  const [horaInicio, setHoraInicio] = useState('09:00');
+  const [horaFin, setHoraFin] = useState('19:00');
   const [enviandoCampania, setEnviandoCampania] = useState(false);
   const [revisandoBandeja, setRevisandoBandeja] = useState(false);
 
+  const FILTER_KEYS = ['estado', 'filtro', 'tipo_contacto'];
   const estado = params.get('estado') || '';
   const filtro = params.get('filtro') || '';
+  const tipoContacto = params.get('tipo_contacto') || '';
   const campaniaIdParam = params.get('campania_id');
 
   function updateParams(patch) {
-    const nextEstado = patch.estado !== undefined ? patch.estado : estado;
-    const nextFiltro = patch.filtro !== undefined ? patch.filtro : filtro;
     const next = {};
-    if (nextEstado) next.estado = nextEstado;
-    if (nextFiltro) next.filtro = nextFiltro;
+    FILTER_KEYS.forEach((key) => {
+      const value = patch[key] !== undefined ? patch[key] : (params.get(key) || '');
+      if (value) next[key] = value;
+    });
     setParams(next);
   }
 
@@ -87,7 +93,12 @@ export default function Contactos() {
     setLoading(true);
     const { data } = await api.get('/comercial/contactos', {
       params: {
-        estado: estado || undefined, filtro: filtro || undefined, search: search || undefined,
+        estado: estado || undefined,
+        filtro: filtro || undefined,
+        search: search || undefined,
+        tipo_contacto: tipoContacto || undefined,
+        zona: zona || undefined,
+        origen: origen || undefined,
       },
     });
     setContactos(data);
@@ -98,7 +109,7 @@ export default function Contactos() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [estado, filtro]);
+  }, [estado, filtro, tipoContacto]);
 
   useEffect(() => {
     if (campaniaIdParam) {
@@ -211,11 +222,15 @@ export default function Contactos() {
       const { data } = await api.post(`/comercial/campanias/${campaniaElegidaId}/envios`, {
         contacto_ids: [...contactosSeleccionados],
         ramp_schedule: rampSchedule.filter((n) => n > 0),
+        hora_inicio: horaInicio,
+        hora_fin: horaFin,
       });
       toast.success(`Envío iniciado para ${data.total_destinatarios} contacto(s). Se va a completar en varios días (revisá el progreso en la campaña).`);
       setPickerOpen(false);
       setCampaniaElegidaId(null);
       setRampSchedule(RAMP_SCHEDULE_DEFAULT);
+      setHoraInicio('09:00');
+      setHoraFin('19:00');
       setContactosSeleccionados(new Set());
       load();
     } catch (err) {
@@ -244,8 +259,10 @@ export default function Contactos() {
         <CardHeader className="flex-col items-stretch gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
           <CardTitle>Contactos {estado && <span className="text-sm font-normal text-muted-foreground">- {estado}</span>}</CardTitle>
           <div className="flex flex-col flex-wrap items-stretch gap-2 sm:flex-row sm:items-center">
-            <form onSubmit={(e) => { e.preventDefault(); load(); }} className="flex gap-2">
-              <Input placeholder="Buscar nombre, email, empresa..." value={search} onChange={(e) => setSearch(e.target.value)} className="w-full sm:w-64" />
+            <form onSubmit={(e) => { e.preventDefault(); load(); }} className="flex flex-wrap gap-2">
+              <Input placeholder="Buscar nombre, email, empresa..." value={search} onChange={(e) => setSearch(e.target.value)} className="w-full sm:w-56" />
+              <Input placeholder="Zona..." value={zona} onChange={(e) => setZona(e.target.value)} className="w-full sm:w-32" />
+              <Input placeholder="Origen..." value={origen} onChange={(e) => setOrigen(e.target.value)} className="w-full sm:w-32" />
               <Button type="submit" size="sm" variant="outline" className="shrink-0">Buscar</Button>
             </form>
             <select
@@ -255,6 +272,14 @@ export default function Contactos() {
             >
               <option value="">Todos los estados</option>
               {ESTADOS.map((e) => <option key={e} value={e}>{e}</option>)}
+            </select>
+            <select
+              className={`${SELECT_CLASS} w-full sm:w-44`}
+              value={tipoContacto}
+              onChange={(e) => updateParams({ tipo_contacto: e.target.value })}
+            >
+              <option value="">Todos los tipos</option>
+              {TIPOS_CONTACTO.map((t) => <option key={t} value={t}>{t}</option>)}
             </select>
             <select
               className={`${SELECT_CLASS} w-full sm:w-52`}
@@ -294,7 +319,15 @@ export default function Contactos() {
             {contactosSeleccionados.size > 0 && (
               <Dialog
                 open={pickerOpen}
-                onOpenChange={(o) => { setPickerOpen(o); if (!o) { setCampaniaElegidaId(null); setRampSchedule(RAMP_SCHEDULE_DEFAULT); } }}
+                onOpenChange={(o) => {
+                  setPickerOpen(o);
+                  if (!o) {
+                    setCampaniaElegidaId(null);
+                    setRampSchedule(RAMP_SCHEDULE_DEFAULT);
+                    setHoraInicio('09:00');
+                    setHoraFin('19:00');
+                  }
+                }}
               >
                 <DialogTrigger asChild>
                   <Button size="sm" variant="outline" onClick={abrirPicker}>
@@ -364,6 +397,13 @@ export default function Contactos() {
                             Programados: {totalProgramado} de {contactosSeleccionados.size}.
                             {totalProgramado < contactosSeleccionados.size && ` El resto (${contactosSeleccionados.size - totalProgramado}) se manda el día ${rampSchedule.length + 1}.`}
                           </p>
+                          <div className="mt-1 flex items-center gap-2 border-t border-border pt-2">
+                            <span className="text-xs text-muted-foreground">Horario (Argentina):</span>
+                            <Input type="time" value={horaInicio} onChange={(e) => setHoraInicio(e.target.value)} className="h-8 w-28" />
+                            <span className="text-xs text-muted-foreground">a</span>
+                            <Input type="time" value={horaFin} onChange={(e) => setHoraFin(e.target.value)} className="h-8 w-28" />
+                          </div>
+                          <p className="text-xs text-muted-foreground">El lote de cada día se reparte dentro de esa ventana en vez de mandarse todo junto.</p>
                         </div>
                       )}
 

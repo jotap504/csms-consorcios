@@ -1,12 +1,17 @@
 // Rampa de "warm-up" para envios masivos de campanias: manda de a lotes
 // crecientes por dia (en vez de todo junto) para no quemar la reputacion de
 // un dominio/remitente nuevo en Elastic Email, y se auto-pausa si sube la
-// tasa de rebotes/quejas. Ver schema_comercial_envios.sql.
+// tasa de rebotes/quejas. Ver schema_comercial_envios.sql y
+// schema_comercial_envios_v3.sql (ventana horaria).
 //
 // tickRamp() se llama periodicamente (setInterval en index.js, mismo patron
-// que revisarBandeja en services/mail.js) y es idempotente: si ya se mando
-// el lote de hoy para una corrida, no hace nada; si el proceso se reinicio a
-// mitad de un lote, retoma desde donde quedo sin duplicar envios.
+// que revisarBandeja en services/mail.js). Dentro de la ventana horaria de
+// cada corrida (hora_inicio-hora_fin, hora Argentina) manda solo la porcion
+// del lote del dia proporcional al tiempo transcurrido - varios ticks por
+// dia van esparciendo el envio en vez de mandarlo todo en rafaga. Es
+// idempotente y resumible: el "cuanto ya se mando hoy" se deriva siempre de
+// lo persistido (enviados/dia_actual/ultimo_lote_en), no de estado en
+// memoria, asi que un reinicio a mitad de un lote retoma sin duplicar envios.
 
 const { pool } = require('../db');
 const { elasticEmailConfigurado, enviarViaElasticEmail, ElasticEmailPermanentError } = require('./elasticEmail');
@@ -22,16 +27,37 @@ const QUEJA_ABS_MINIMA = 3; // no pausar por 1-2 quejas aisladas con pocos envio
 const DELAY_ENTRE_ENVIOS_MS = 250;
 const FALLO_LOTE_ABORTAR_RATIO = 0.5; // si mas de la mitad del lote falla, asumimos caida transitoria
 
+// El contenedor corre en UTC, pero "9 a 18hs" tiene que ser hora Argentina -
+// todo el manejo de fecha/hora de la rampa pasa por estos helpers (nativo de
+// Node, sin dependencia nueva) en vez de new Date() a secas.
+const TIMEZONE = 'America/Argentina/Buenos_Aires';
+function fechaLocal(date = new Date()) {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: TIMEZONE, year: 'numeric', month: '2-digit', day: '2-digit' }).format(date);
+}
+function horaLocal(date = new Date()) {
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: TIMEZONE, hour: '2-digit', minute: '2-digit', hour12: false,
+  }).format(date);
+}
+function minutosDesdeMedianoche(hhmm) {
+  const [h, m] = String(hhmm).split(':').map(Number);
+  return (h || 0) * 60 + (m || 0);
+}
+
 function rampSchedule() {
   const override = process.env.CAMPANIA_RAMP_SCHEDULE_OVERRIDE;
   if (!override) return RAMP_SCHEDULE_DEFAULT;
   return override.split(',').map((n) => Number(n.trim())).filter((n) => Number.isFinite(n) && n > 0);
 }
 
+// Total acumulado hasta el dia N inclusive. Si N pasa el largo del schedule,
+// se clampea al total del schedule (el "dia resto" se calcula aparte, ver
+// cuotaDelDia en procesarRun) - nunca Infinity, todo numero finito para poder
+// hacer la cuenta de esparcido dentro del dia.
 function objetivoAcumulado(dia, schedule) {
   if (dia <= 0) return 0;
-  if (dia <= schedule.length) return schedule.slice(0, dia).reduce((a, b) => a + b, 0);
-  return Infinity; // pasado el largo del schedule: mandar todo lo que quede
+  const hastaCuantos = Math.min(dia, schedule.length);
+  return schedule.slice(0, hastaCuantos).reduce((a, b) => a + b, 0);
 }
 
 const EVENTOS_API_URL = 'https://api.elasticemail.com/v4/events?limit=1000';
@@ -157,19 +183,41 @@ async function evaluarUmbrales(run) {
 }
 
 async function procesarRun(run) {
-  const hoy = new Date().toISOString().slice(0, 10);
-  if (run.ultimo_lote_en && run.ultimo_lote_en.toISOString().slice(0, 10) >= hoy) return; // ya se mando hoy
-
   const schedule = run.ramp_schedule && run.ramp_schedule.length > 0 ? run.ramp_schedule : rampSchedule();
-  const diaSiguiente = run.dia_actual + 1;
-  const objetivo = objetivoAcumulado(diaSiguiente, schedule);
-  const batchSize = objetivo === Infinity ? run.total_destinatarios : Math.max(objetivo - run.enviados, 0);
-  if (batchSize === 0 && objetivo !== Infinity) {
-    // Nada que mandar todavia en el objetivo de hoy (no deberia pasar salvo
-    // schedule mal configurado), igual avanzamos el dia para no trabarnos.
-    await pool.query('UPDATE comercial_campania_envios SET dia_actual = $2, ultimo_lote_en = $3 WHERE id = $1', [run.id, diaSiguiente, hoy]);
-    return;
+  const hoyLocal = fechaLocal();
+  const ultimoLoteLocal = run.ultimo_lote_en ? run.ultimo_lote_en.toISOString().slice(0, 10) : null;
+  // "Dia nuevo" (respecto del ultimo tick que hizo algo) si todavia no se
+  // proceso nada, o si la fecha local (Argentina) cambio desde el ultimo
+  // lote - recien ahi pasamos al siguiente dia del schedule. Dentro del
+  // mismo dia, dia_actual no se vuelve a incrementar (puede haber varios
+  // ticks por dia con ventana horaria).
+  const diaActual = (!ultimoLoteLocal || ultimoLoteLocal !== hoyLocal) ? run.dia_actual + 1 : run.dia_actual;
+
+  const objetivoPrevio = objetivoAcumulado(diaActual - 1, schedule);
+  const cuotaHoy = diaActual <= schedule.length
+    ? schedule[diaActual - 1]
+    : Math.max(run.total_destinatarios - objetivoPrevio, 0); // "dia resto": todo lo que quede
+  const enviadosHoy = Math.max(run.enviados - objetivoPrevio, 0);
+
+  // Cuanto del lote de hoy ya "toca" mandar segun la hora actual dentro de
+  // la ventana [hora_inicio, hora_fin) - esto es lo que esparce el envio a
+  // lo largo del dia en vez de mandarlo todo en rafaga apenas arranca el
+  // tick. Antes de hora_inicio: 0. Despues de hora_fin: el dia entero
+  // (catch-up, para no dejar gente sin mandar si el proceso estuvo caido).
+  const inicioMin = minutosDesdeMedianoche(run.hora_inicio);
+  const finMin = minutosDesdeMedianoche(run.hora_fin);
+  const ahoraMin = minutosDesdeMedianoche(horaLocal());
+  const fraccionVentana = finMin <= inicioMin ? 1 : Math.min(Math.max((ahoraMin - inicioMin) / (finMin - inicioMin), 0), 1);
+
+  const batchSize = Math.max(Math.floor(fraccionVentana * cuotaHoy) - enviadosHoy, 0);
+
+  // El avance de dia se persiste apenas se detecta, tenga o no algo para
+  // mandar este tick (ej. todavia no llego hora_inicio) - asi el proximo
+  // tick no vuelve a contarlo como "dia nuevo".
+  if (diaActual !== run.dia_actual || ultimoLoteLocal !== hoyLocal) {
+    await pool.query('UPDATE comercial_campania_envios SET dia_actual = $2, ultimo_lote_en = $3 WHERE id = $1', [run.id, diaActual, hoyLocal]);
   }
+  if (batchSize === 0) return;
 
   const { rows: pendientes } = await pool.query(
     `SELECT id, contacto_id, email FROM comercial_campania_envios_destinatarios
@@ -236,17 +284,19 @@ async function procesarRun(run) {
   if (abortadoPorCaida && enviadosEsteLote === 0) return; // nada que persistir, reintentar todo el proximo tick
   if (!abortadoPorCaida && pendientes.length > 0 && fallidosEsteLote / pendientes.length > FALLO_LOTE_ABORTAR_RATIO) {
     // Demasiados fallos permanentes de una - probablemente algo esta mal
-    // (ej. remitente bloqueado), no avanzamos el dia para no quemar el resto
-    // del schedule contra un problema sistemico.
-    console.error(`[envios] Run ${run.id}: ${fallidosEsteLote}/${pendientes.length} fallos en el lote, no se avanza el dia.`);
+    // (ej. remitente bloqueado). No sumamos enviados/fallidos de este lote
+    // (los destinatarios ya quedaron marcados 'fallido' individualmente
+    // arriba, pero no afectan el conteo del run) para no disparar la
+    // auto-pausa por umbral con un problema que es nuestro, no del destinatario.
+    console.error(`[envios] Run ${run.id}: ${fallidosEsteLote}/${pendientes.length} fallos en el lote.`);
     return;
   }
 
   await pool.query(
     `UPDATE comercial_campania_envios
-       SET enviados = enviados + $2, fallidos = fallidos + $3, dia_actual = $4, ultimo_lote_en = $5, actualizado_en = NOW()
+       SET enviados = enviados + $2, fallidos = fallidos + $3, actualizado_en = NOW()
        WHERE id = $1`,
-    [run.id, enviadosEsteLote, fallidosEsteLote, diaSiguiente, hoy],
+    [run.id, enviadosEsteLote, fallidosEsteLote],
   );
 
   const actualizado = await pool.query('SELECT * FROM comercial_campania_envios WHERE id = $1', [run.id]);
