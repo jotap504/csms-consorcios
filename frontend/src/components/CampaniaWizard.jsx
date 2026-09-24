@@ -2,7 +2,7 @@ import {
   useEffect, useRef, useState,
 } from 'react';
 import {
-  Send, Sparkles, Loader2, ImagePlus, Upload, Save, Building2,
+  Send, Sparkles, Loader2, ImagePlus, Upload, Save, Building2, Eye, Pencil,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { toast } from '@/lib/toast';
@@ -27,6 +27,7 @@ export default function CampaniaWizard({ campaniaInicial, onGuardado }) {
   const [subiendoImagen, setSubiendoImagen] = useState(false);
   const [guardando, setGuardando] = useState(false);
   const [logo, setLogo] = useState(null);
+  const [vistaPreviaActiva, setVistaPreviaActiva] = useState(false);
   const editorRef = useRef(null);
   const scrollRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -115,6 +116,19 @@ export default function CampaniaWizard({ campaniaInicial, onGuardado }) {
 
   const hayBorrador = Boolean(cuerpoHtml);
 
+  // Mismo reemplazo de placeholders + footer de baja que hace el backend al
+  // mandar de verdad (services/campaniaEnvioHelpers.js: personalizarCuerpo),
+  // pero con un contacto de ejemplo y un link de baja de mentira - solo para
+  // mostrar como se ve, no se manda nada.
+  function construirPreviewHtml() {
+    const cuerpoPersonalizado = cuerpoHtml
+      .replace(/\[Nombre Completo\]/gi, 'Juan Pérez')
+      .replace(/\[Nombre\]/gi, 'Juan')
+      .replace(/\[Apellido\]/gi, 'Pérez');
+    const footerHtml = '<p style="margin-top:24px;font-size:11px;color:#999;">Si no queres recibir mas mails nuestros, <a href="#" style="color:#999;">hace click aca para darte de baja</a>.</p>';
+    return cuerpoPersonalizado + footerHtml;
+  }
+
   return (
     <div className="grid gap-4 lg:grid-cols-[320px_1fr]">
       <div className="flex h-[520px] flex-col rounded-lg border border-border">
@@ -167,37 +181,64 @@ export default function CampaniaWizard({ campaniaInicial, onGuardado }) {
               <Label htmlFor="wizAsunto">Asunto</Label>
               <Input id="wizAsunto" value={asunto} onChange={(e) => setAsunto(e.target.value)} />
             </div>
-            <div>
-              <Label>Mensaje</Label>
-              <RichTextEditor ref={editorRef} value={cuerpoHtml} onChange={setCuerpoHtml} />
-            </div>
-            <div className="flex flex-wrap items-center gap-2 rounded-lg bg-muted/40 p-2.5">
-              <Input
-                placeholder="Describi la imagen que queres generar..."
-                value={imagenPrompt}
-                onChange={(e) => setImagenPrompt(e.target.value)}
-                className="h-9 flex-1 min-w-[180px]"
-              />
-              <Button type="button" size="sm" variant="outline" loading={generandoImagen} disabled={!imagenPrompt.trim()} onClick={handleGenerarImagen}>
-                <ImagePlus className="h-4 w-4" />Generar con IA
-              </Button>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/*"
-                className="hidden"
-                onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) handleSubirImagen(f); }}
-              />
-              <Button type="button" size="sm" variant="outline" loading={subiendoImagen} onClick={() => fileInputRef.current?.click()}>
-                <Upload className="h-4 w-4" />Subir imagen
-              </Button>
-              {logo && (
-                <Button type="button" size="sm" variant="outline" onClick={() => insertarImagenUrl(logo.filename)}>
-                  <Building2 className="h-4 w-4" />Insertar logo
+            <div className="flex items-center justify-between">
+              <Label className="mb-0">{vistaPreviaActiva ? 'Vista previa' : 'Mensaje'}</Label>
+              <div className="flex items-center gap-1 rounded-lg border border-border p-1">
+                <Button type="button" size="sm" variant={!vistaPreviaActiva ? 'default' : 'ghost'} onClick={() => setVistaPreviaActiva(false)}>
+                  <Pencil className="h-3.5 w-3.5" />Editar
                 </Button>
-              )}
+                <Button type="button" size="sm" variant={vistaPreviaActiva ? 'default' : 'ghost'} onClick={() => setVistaPreviaActiva(true)}>
+                  <Eye className="h-3.5 w-3.5" />Vista previa
+                </Button>
+              </div>
             </div>
-            {logo && <p className="text-xs text-muted-foreground">La generacion con IA ya usa el logo y las imagenes de referencia cargadas en "Marca de la empresa" para copiar el estilo.</p>}
+            {!vistaPreviaActiva && <RichTextEditor ref={editorRef} value={cuerpoHtml} onChange={setCuerpoHtml} />}
+            {vistaPreviaActiva && (
+              <div className="overflow-hidden rounded-lg border border-border">
+                <div className="border-b border-border bg-muted/40 p-3 text-sm">
+                  <p><span className="text-muted-foreground">De:</span> BILON Smart Buildings &lt;comercial@bilon.com.ar&gt;</p>
+                  <p><span className="text-muted-foreground">Para:</span> Juan Pérez &lt;juan.perez@ejemplo.com&gt;</p>
+                  <p className="font-medium">{asunto || '(sin asunto)'}</p>
+                </div>
+                <iframe
+                  title="Vista previa del mail"
+                  sandbox=""
+                  srcDoc={`<html><body style="margin:0;padding:16px;font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#222;">${construirPreviewHtml()}</body></html>`}
+                  className="h-[420px] w-full bg-white"
+                />
+              </div>
+            )}
+            {!vistaPreviaActiva && (
+              <>
+                <div className="flex flex-wrap items-center gap-2 rounded-lg bg-muted/40 p-2.5">
+                  <Input
+                    placeholder="Describi la imagen que queres generar..."
+                    value={imagenPrompt}
+                    onChange={(e) => setImagenPrompt(e.target.value)}
+                    className="h-9 flex-1 min-w-[180px]"
+                  />
+                  <Button type="button" size="sm" variant="outline" loading={generandoImagen} disabled={!imagenPrompt.trim()} onClick={handleGenerarImagen}>
+                    <ImagePlus className="h-4 w-4" />Generar con IA
+                  </Button>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) handleSubirImagen(f); }}
+                  />
+                  <Button type="button" size="sm" variant="outline" loading={subiendoImagen} onClick={() => fileInputRef.current?.click()}>
+                    <Upload className="h-4 w-4" />Subir imagen
+                  </Button>
+                  {logo && (
+                    <Button type="button" size="sm" variant="outline" onClick={() => insertarImagenUrl(logo.filename)}>
+                      <Building2 className="h-4 w-4" />Insertar logo
+                    </Button>
+                  )}
+                </div>
+                {logo && <p className="text-xs text-muted-foreground">La generacion con IA ya usa el logo y las imagenes de referencia cargadas en "Marca de la empresa" para copiar el estilo.</p>}
+              </>
+            )}
             <Button
               type="button"
               className="self-end"
