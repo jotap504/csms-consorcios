@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  Plus, Send, Pencil, Trash2, Megaphone,
+  Plus, Send, Pencil, Trash2, Megaphone, ArrowLeft,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { toast } from '@/lib/toast';
@@ -12,7 +12,6 @@ import {
   Card, CardHeader, CardTitle, CardContent,
   Table, TableHeader, TableBody, TableRow, TableHead, TableCell,
   Badge, Button,
-  Dialog, DialogTrigger, DialogContent, DialogHeader, DialogTitle, DialogDescription,
 } from '@/components/ui';
 import { SUPERADMIN_NAV } from '../superadmin/navConfig';
 
@@ -70,24 +69,30 @@ export default function Campanias() {
 
   return (
     <AdminLayout title="Campañas" navItems={SUPERADMIN_NAV}>
-      <MarcaRecursos />
+      {open && (
+        <Card className="mb-4">
+          <CardHeader className="flex-row flex-wrap items-center justify-between gap-3">
+            <div>
+              <CardTitle>{editando ? 'Editar campaña' : 'Nueva campaña'}</CardTitle>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Armá el asunto y el mensaje con el asistente. A quién y cuándo se le manda se elige despues, en Contactos.
+              </p>
+            </div>
+            <Button size="sm" variant="outline" onClick={() => { setOpen(false); setEditando(null); }}>
+              <ArrowLeft className="h-4 w-4" />Volver
+            </Button>
+          </CardHeader>
+          <CardContent>
+            <CampaniaWizard campaniaInicial={editando} onGuardado={handleGuardado} />
+          </CardContent>
+        </Card>
+      )}
+      {!open && <MarcaRecursos />}
+      {!open && (
       <Card>
         <CardHeader className="flex-row flex-wrap items-center justify-between gap-3">
           <CardTitle>Campañas de mail</CardTitle>
-          <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) setEditando(null); }}>
-            <DialogTrigger asChild>
-              <Button size="sm" onClick={abrirNueva}><Plus className="h-4 w-4" />Nueva campaña</Button>
-            </DialogTrigger>
-            <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
-              <DialogHeader>
-                <DialogTitle>{editando ? 'Editar campaña' : 'Nueva campaña'}</DialogTitle>
-                <DialogDescription>
-                  Armá el asunto y el mensaje con el asistente. A quién y cuándo se le manda se elige despues, en Contactos.
-                </DialogDescription>
-              </DialogHeader>
-              <CampaniaWizard campaniaInicial={editando} onGuardado={handleGuardado} />
-            </DialogContent>
-          </Dialog>
+          <Button size="sm" onClick={abrirNueva}><Plus className="h-4 w-4" />Nueva campaña</Button>
         </CardHeader>
         <CardContent>
           {loading && <p className="p-4 text-sm text-muted-foreground">Cargando...</p>}
@@ -149,6 +154,7 @@ export default function Campanias() {
           )}
         </CardContent>
       </Card>
+      )}
     </AdminLayout>
   );
 }
