@@ -209,7 +209,13 @@ async function procesarRun(run) {
   const ahoraMin = minutosDesdeMedianoche(horaLocal());
   const fraccionVentana = finMin <= inicioMin ? 1 : Math.min(Math.max((ahoraMin - inicioMin) / (finMin - inicioMin), 0), 1);
 
-  const batchSize = Math.max(Math.floor(fraccionVentana * cuotaHoy) - enviadosHoy, 0);
+  // Math.ceil (no floor): con floor, una cuota chica (ej. 1 destinatario de
+  // prueba, o el primer tick del dia con cuotas grandes) da 0 hasta que la
+  // fraccion de ventana transcurrida alcance 1/cuotaHoy - con cuotaHoy=1 eso
+  // es recien al final de la ventana entera. Con ceil, apenas la ventana
+  // arranca (fraccion>0) ya se garantiza progreso real en cada tick.
+  const objetivoDeHoy = fraccionVentana > 0 ? Math.min(Math.ceil(fraccionVentana * cuotaHoy), cuotaHoy) : 0;
+  const batchSize = Math.max(objetivoDeHoy - enviadosHoy, 0);
 
   // El avance de dia se persiste apenas se detecta, tenga o no algo para
   // mandar este tick (ej. todavia no llego hora_inicio) - asi el proximo
