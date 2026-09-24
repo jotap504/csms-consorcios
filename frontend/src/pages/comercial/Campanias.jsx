@@ -116,8 +116,8 @@ export default function Campanias() {
               <TableBody>
                 {campanias.map((c) => (
                   <TableRow key={c.id}>
-                    <TableCell>
-                      <p className="font-medium">{c.asunto}</p>
+                    <TableCell className="max-w-[160px] sm:max-w-[240px] md:max-w-[380px]">
+                      <p className="truncate font-medium">{c.asunto}</p>
                       <p className="truncate text-xs text-muted-foreground">{c.resumen}</p>
                     </TableCell>
                     <TableCell className="hidden whitespace-nowrap text-sm text-muted-foreground sm:table-cell">{formatFecha(c.creado_en)}</TableCell>
@@ -125,7 +125,7 @@ export default function Campanias() {
                       <Badge variant={c.veces_enviada > 0 ? 'accent' : 'muted'}>{c.veces_enviada} vez(es)</Badge>
                     </TableCell>
                     <TableCell className="hidden whitespace-nowrap text-sm text-muted-foreground md:table-cell">{formatFecha(c.ultimo_envio_en)}</TableCell>
-                    <TableCell>
+                    <TableCell className="max-w-[140px] sm:max-w-none">
                       <div className="flex flex-wrap items-center justify-end gap-1">
                         {(c.envio_estado === 'en_curso' || c.envio_estado === 'pausado') && (
                           <Button

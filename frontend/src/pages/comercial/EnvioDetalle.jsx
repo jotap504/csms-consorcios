@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import {
-  ArrowLeft, Send, PauseCircle, PlayCircle, XCircle, Users, MailWarning, AlertTriangle,
+  ArrowLeft, Send, PauseCircle, PlayCircle, XCircle, Users, MailWarning, AlertTriangle, List,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { toast } from '@/lib/toast';
 import AdminLayout from '@/components/AdminLayout';
 import {
   Card, CardHeader, CardTitle, CardContent, Badge, Button, StatCard,
+  Table, TableHeader, TableBody, TableRow, TableHead, TableCell,
 } from '@/components/ui';
 import { SUPERADMIN_NAV } from '../superadmin/navConfig';
 
@@ -17,6 +18,23 @@ const ESTADO_BADGE = {
   completado: { variant: 'default', label: 'Completado' },
   cancelado: { variant: 'muted', label: 'Cancelado' },
 };
+
+const DEST_ESTADO_BADGE = {
+  pendiente: { variant: 'muted', label: 'Pendiente' },
+  enviado: { variant: 'accent', label: 'Enviado' },
+  fallido: { variant: 'destructive', label: 'Fallido' },
+  rebotado: { variant: 'destructive', label: 'Rebotado' },
+  queja: { variant: 'destructive', label: 'Queja' },
+};
+
+const DEST_FILTROS = [
+  { value: '', label: 'Todos' },
+  { value: 'enviado', label: 'Enviados' },
+  { value: 'pendiente', label: 'Pendientes' },
+  { value: 'fallido', label: 'Fallidos' },
+  { value: 'rebotado', label: 'Rebotados' },
+  { value: 'queja', label: 'Quejas' },
+];
 
 function formatFechaHora(iso) {
   if (!iso) return '-';
@@ -30,6 +48,10 @@ export default function EnvioDetalle() {
   const navigate = useNavigate();
   const [envio, setEnvio] = useState(null);
   const [accionando, setAccionando] = useState(false);
+  const [destinatarios, setDestinatarios] = useState(null);
+  const [filtroEstado, setFiltroEstado] = useState('');
+  const [paginaDest, setPaginaDest] = useState(1);
+  const [totalDest, setTotalDest] = useState(0);
   const intervalRef = useRef(null);
 
   async function load() {
@@ -41,11 +63,29 @@ export default function EnvioDetalle() {
     }
   }
 
+  async function loadDestinatarios() {
+    try {
+      const { data } = await api.get(`/comercial/envios/${envioId}/destinatarios`, {
+        params: { estado: filtroEstado || undefined, page: paginaDest },
+      });
+      setDestinatarios(data.destinatarios);
+      setTotalDest(data.total);
+    } catch {
+      toast.error('No se pudo cargar el detalle de destinatarios.');
+    }
+  }
+
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [envioId]);
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    loadDestinatarios();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [envioId, filtroEstado, paginaDest]);
 
   useEffect(() => {
     if (!envio || !['en_curso', 'pausado'].includes(envio.estado)) {
@@ -151,6 +191,68 @@ export default function EnvioDetalle() {
               <Button size="sm" variant="outline" onClick={() => navigate('/comercial/campanias')}>Volver</Button>
             )}
           </div>
+        </CardContent>
+      </Card>
+
+      <Card className="mt-4">
+        <CardHeader className="flex-row flex-wrap items-center justify-between gap-3">
+          <CardTitle className="flex items-center gap-2"><List className="h-4 w-4" />Destinatarios</CardTitle>
+          <div className="flex flex-wrap items-center gap-1 rounded-lg border border-border p-1">
+            {DEST_FILTROS.map((f) => (
+              <button
+                key={f.value}
+                type="button"
+                onClick={() => { setFiltroEstado(f.value); setPaginaDest(1); }}
+                className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${filtroEstado === f.value ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'}`}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
+        </CardHeader>
+        <CardContent>
+          {destinatarios === null && <p className="p-4 text-sm text-muted-foreground">Cargando...</p>}
+          {destinatarios?.length === 0 && (
+            <p className="p-8 text-center text-sm text-muted-foreground">No hay destinatarios para este filtro.</p>
+          )}
+          {destinatarios?.length > 0 && (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Contacto</TableHead>
+                  <TableHead className="hidden sm:table-cell">Email</TableHead>
+                  <TableHead>Estado</TableHead>
+                  <TableHead className="hidden md:table-cell">Enviado</TableHead>
+                  <TableHead className="hidden lg:table-cell">Detalle</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {destinatarios.map((d) => {
+                  const destBadge = DEST_ESTADO_BADGE[d.estado] ?? { variant: 'muted', label: d.estado };
+                  const nombreCompleto = d.contacto_id ? `${d.contacto_apellido || ''}, ${d.contacto_nombre || ''}`.replace(/^, |, $/, '') : '-';
+                  return (
+                    <TableRow key={d.id}>
+                      <TableCell>
+                        <p className="truncate font-medium">{nombreCompleto}</p>
+                        <p className="truncate text-xs text-muted-foreground sm:hidden">{d.email}</p>
+                      </TableCell>
+                      <TableCell className="hidden truncate text-sm text-muted-foreground sm:table-cell">{d.email}</TableCell>
+                      <TableCell><Badge variant={destBadge.variant}>{destBadge.label}</Badge></TableCell>
+                      <TableCell className="hidden whitespace-nowrap text-sm text-muted-foreground md:table-cell">{formatFechaHora(d.enviado_en)}</TableCell>
+                      <TableCell className="hidden max-w-[220px] truncate text-xs text-muted-foreground lg:table-cell">{d.error || '-'}</TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          )}
+          {totalDest > 50 && (
+            <div className="flex items-center justify-between border-t border-border p-3 text-sm">
+              <Button size="sm" variant="ghost" disabled={paginaDest <= 1} onClick={() => setPaginaDest((p) => p - 1)}>Anterior</Button>
+              <span className="text-muted-foreground">{paginaDest} / {Math.max(1, Math.ceil(totalDest / 50))} ({totalDest} en total)</span>
+              <Button size="sm" variant="ghost" disabled={paginaDest >= Math.ceil(totalDest / 50)} onClick={() => setPaginaDest((p) => p + 1)}>Siguiente</Button>
+            </div>
+          )}
         </CardContent>
       </Card>
     </AdminLayout>

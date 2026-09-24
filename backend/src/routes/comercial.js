@@ -2055,6 +2055,30 @@ router.get('/envios/:envioId', async (req, res) => {
   });
 });
 
+router.get('/envios/:envioId/destinatarios', async (req, res) => {
+  const { estado } = req.query;
+  const page = Math.max(Number(req.query.page) || 1, 1);
+  const limit = 50;
+  const conditions = ['d.envio_id = $1'];
+  const params = [req.params.envioId];
+  if (estado) { params.push(estado); conditions.push(`d.estado = $${params.length}`); }
+  const whereSql = `WHERE ${conditions.join(' AND ')}`;
+
+  const total = await pool.query(`SELECT COUNT(*) AS n FROM comercial_campania_envios_destinatarios d ${whereSql}`, params);
+  params.push(limit, (page - 1) * limit);
+  const rows = await pool.query(
+    `SELECT d.id, d.email, d.estado, d.enviado_en, d.error, d.contacto_id,
+            c.apellido AS contacto_apellido, c.nombre AS contacto_nombre
+       FROM comercial_campania_envios_destinatarios d
+       LEFT JOIN comercial_contactos c ON c.id = d.contacto_id
+       ${whereSql}
+       ORDER BY d.id
+       LIMIT $${params.length - 1} OFFSET $${params.length}`,
+    params,
+  );
+  res.json({ destinatarios: rows.rows, total: Number(total.rows[0].n), page, limit });
+});
+
 router.post('/envios/:envioId/pausar', async (req, res) => {
   const responsableNombre = await responsableActual(req);
   const result = await pool.query(
@@ -2105,6 +2129,7 @@ No hace falta preguntar las 4 cosas si el usuario ya fue claro de entrada. Cuand
 Reglas:
 - Preguntas una por vez, breves, en español, tono directo.
 - Marcadores de personalizacion reales (SI se reemplazan por los datos de cada contacto al enviar, usalos con confianza donde quede natural en el saludo/texto): [Nombre], [Apellido], [Nombre Completo]. No inventes otros marcadores tipo [Empresa] o [Direccion] - esos NO se reemplazan y quedarian literales en el mail.
+- El asunto NO puede sonar a spam/marketing masivo - los filtros de Gmail/Outlook lo leen como señal fuerte. Evitá: preguntas retoricas tipo "¿esta preparado su...?", frases de venta directa ("ya llegaron", "no se lo pierda", "oferta"), mayusculas de enfasis, signos de exclamacion, y urgencia artificial. Preferí un asunto concreto y especifico (que cuente de que trata el mail en pocas palabras, como lo escribiria una persona real, no un anuncio) antes que uno "llamativo".
 - Nunca inventes datos concretos de la empresa que no tengas (precios, telefonos, direcciones) - si hace falta un dato asi, dejalo como placeholder simple tipo "[completar]" y avisale al usuario en tu respuesta.
 - Nunca uses markdown en el campo "respuesta" (texto plano nomas, nada de **negrita** ni backticks).
 ${textoMarca ? `\nInformacion real de la empresa (usala para datos concretos en vez de placeholders, y para que el tono/estilo del texto sea coherente):\n${textoMarca}\n` : ''}
