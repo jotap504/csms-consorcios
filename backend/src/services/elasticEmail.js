@@ -3,10 +3,19 @@
 // Ver schema_comercial_envios.sql y services/campaniaRamp.js.
 
 const fs = require('fs');
+const path = require('path');
 
 const ELASTIC_EMAIL_API_KEY = process.env.ELASTIC_EMAIL_API_KEY;
 const ELASTIC_EMAIL_FROM = process.env.ELASTIC_EMAIL_FROM;
 const ELASTIC_EMAIL_API_URL = 'https://api.elasticemail.com/v4/emails';
+
+const MIME_POR_EXTENSION = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+};
 
 function elasticEmailConfigurado() {
   return Boolean(ELASTIC_EMAIL_API_KEY && ELASTIC_EMAIL_FROM);
@@ -36,11 +45,17 @@ async function enviarViaElasticEmail({
         { ContentType: 'HTML', Content: html },
         { ContentType: 'PlainText', Content: text },
       ],
+      // Sin campo ContentID en la API de Elastic Email (schema oficial:
+      // BinaryContent/Name/ContentType/Size) - el Content-ID lo derivan
+      // ellos del propio Name, por eso Name tiene que ser exactamente el cid
+      // usado en el <img src="cid:..."> del HTML (ver campaniaEnvioHelpers.js).
+      // ContentType con el mime real de la imagen (no octet-stream): sin esto
+      // los clientes de mail lo tratan como adjunto binario generico en vez
+      // de renderizarlo inline en el cuerpo.
       Attachments: attachments.map((a) => ({
         BinaryContent: fs.readFileSync(a.path).toString('base64'),
-        Name: a.filename,
-        ContentType: 'application/octet-stream',
-        ContentID: a.cid,
+        Name: a.cid,
+        ContentType: MIME_POR_EXTENSION[path.extname(a.filename).toLowerCase()] || 'application/octet-stream',
       })),
     },
   };

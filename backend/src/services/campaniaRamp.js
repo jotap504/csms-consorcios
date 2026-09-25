@@ -243,7 +243,7 @@ async function procesarRun(run) {
     return;
   }
 
-  const { cuerpoConImagenesInline, attachmentsBase } = prepararImagenesInline(run.cuerpo_html_snapshot, run.campania_id);
+  const { cuerpoConImagenesInline, attachmentsBase } = prepararImagenesInline(run.cuerpo_html_snapshot);
 
   let enviadosEsteLote = 0;
   let fallidosEsteLote = 0;

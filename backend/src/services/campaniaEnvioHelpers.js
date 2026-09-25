@@ -9,21 +9,26 @@ const UPLOADS_DIR = path.join(__dirname, '..', '..', 'uploads', 'comercial');
 // (Gmail incluido) bloquean imagenes externas por defecto en la primera
 // vista ("mostrar imagenes"), pero un adjunto inline viaja con el mail y se
 // ve siempre. Se calcula una sola vez, es igual para todos los destinatarios.
-function prepararImagenesInline(cuerpoHtml, campaniaId) {
+//
+// Elastic Email NO tiene un campo ContentID en su API (confirmado contra el
+// schema oficial: BinaryContent/Name/ContentType/Size, nada de ContentID) -
+// derivan el Content-ID del propio "Name" del adjunto. Por eso el cid tiene
+// que ser el nombre de archivo real (ya es un UUID generado por multer, unico
+// de por si), no un string inventado - un cid que no matchea con ningun Name
+// hace que la imagen llegue como adjunto suelto en vez de mostrarse inline.
+function prepararImagenesInline(cuerpoHtml) {
   const attachmentsBase = [];
   let cuerpoConImagenesInline = cuerpoHtml;
   const imgRegex = /<img([^>]*)\ssrc=["']([^"']*\/api\/comercial\/archivos\/([a-zA-Z0-9._-]+))["']([^>]*)>/gi;
   let imgMatch;
-  let cidIndex = 0;
   // eslint-disable-next-line no-cond-assign
   while ((imgMatch = imgRegex.exec(cuerpoHtml)) !== null) {
     const [full, before, , filename, after] = imgMatch;
-    const filePath = path.join(UPLOADS_DIR, path.basename(filename));
+    const nombreArchivo = path.basename(filename);
+    const filePath = path.join(UPLOADS_DIR, nombreArchivo);
     if (fs.existsSync(filePath)) {
-      cidIndex += 1;
-      const cid = `campania${campaniaId}img${cidIndex}@bilon`;
-      attachmentsBase.push({ filename: path.basename(filename), path: filePath, cid });
-      cuerpoConImagenesInline = cuerpoConImagenesInline.replace(full, `<img${before} src="cid:${cid}"${after}>`);
+      attachmentsBase.push({ filename: nombreArchivo, path: filePath, cid: nombreArchivo });
+      cuerpoConImagenesInline = cuerpoConImagenesInline.replace(full, `<img${before} src="cid:${nombreArchivo}"${after}>`);
     }
   }
   return { cuerpoConImagenesInline, attachmentsBase };
