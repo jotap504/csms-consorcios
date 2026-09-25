@@ -10,7 +10,6 @@ import CampaniaWizard from '@/components/CampaniaWizard';
 import MarcaRecursos from '@/components/MarcaRecursos';
 import {
   Card, CardHeader, CardTitle, CardContent,
-  Table, TableHeader, TableBody, TableRow, TableHead, TableCell,
   Badge, Button,
 } from '@/components/ui';
 import { SUPERADMIN_NAV } from '../superadmin/navConfig';
@@ -19,6 +18,13 @@ function formatFecha(iso) {
   if (!iso) return '-';
   return new Date(iso).toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit', year: 'numeric' });
 }
+
+const ENVIO_BOTON = {
+  en_curso: { variant: 'accent', label: (c) => `En curso ${c.envio_enviados}/${c.envio_total}` },
+  pausado: { variant: 'destructive', label: () => 'Pausado' },
+  completado: { variant: 'outline', label: () => 'Ver envío' },
+  cancelado: { variant: 'outline', label: () => 'Ver envío (cancelado)' },
+};
 
 export default function Campanias() {
   const navigate = useNavigate();
@@ -103,54 +109,43 @@ export default function Campanias() {
             </div>
           )}
           {!loading && campanias.length > 0 && (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Asunto</TableHead>
-                  <TableHead className="hidden sm:table-cell">Creada</TableHead>
-                  <TableHead>Enviada</TableHead>
-                  <TableHead className="hidden md:table-cell">Ultimo envio</TableHead>
-                  <TableHead />
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {campanias.map((c) => (
-                  <TableRow key={c.id}>
-                    <TableCell className="max-w-[160px] sm:max-w-[240px] md:max-w-[380px]">
-                      <p className="truncate font-medium">{c.asunto}</p>
-                      <p className="truncate text-xs text-muted-foreground">{c.resumen}</p>
-                    </TableCell>
-                    <TableCell className="hidden whitespace-nowrap text-sm text-muted-foreground sm:table-cell">{formatFecha(c.creado_en)}</TableCell>
-                    <TableCell>
-                      <Badge variant={c.veces_enviada > 0 ? 'accent' : 'muted'}>{c.veces_enviada} vez(es)</Badge>
-                    </TableCell>
-                    <TableCell className="hidden whitespace-nowrap text-sm text-muted-foreground md:table-cell">{formatFecha(c.ultimo_envio_en)}</TableCell>
-                    <TableCell className="max-w-[140px] sm:max-w-none">
-                      <div className="flex flex-wrap items-center justify-end gap-1">
-                        {(c.envio_estado === 'en_curso' || c.envio_estado === 'pausado') && (
-                          <Button
-                            size="sm"
-                            variant={c.envio_estado === 'pausado' ? 'destructive' : 'accent'}
-                            onClick={() => navigate(`/comercial/envios/${c.envio_id}`)}
-                          >
-                            {c.envio_estado === 'pausado' ? 'Pausado' : `En curso ${c.envio_enviados}/${c.envio_total}`}
-                          </Button>
-                        )}
-                        <Button size="sm" variant="outline" onClick={() => navigate(`/comercial/contactos?campania_id=${c.id}`)} disabled={c.envio_estado === 'en_curso' || c.envio_estado === 'pausado'}>
-                          <Send className="h-4 w-4" /><span className="hidden sm:inline">Enviar</span>
-                        </Button>
-                        <Button size="sm" variant="ghost" onClick={() => abrirEditar(c.id)}>
-                          <Pencil className="h-4 w-4" />
-                        </Button>
-                        <Button size="sm" variant="ghost" onClick={() => handleEliminar(c.id)}>
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
+            <div className="flex flex-col gap-3">
+              {campanias.map((c) => {
+                const envioActivo = c.envio_estado === 'en_curso' || c.envio_estado === 'pausado';
+                const botonEnvio = ENVIO_BOTON[c.envio_estado];
+                return (
+                  <div key={c.id} className="rounded-xl border border-border p-3.5">
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div className="min-w-0 flex-1">
+                        <p className="break-words font-medium">{c.asunto}</p>
+                        <p className="break-words text-xs text-muted-foreground">{c.resumen}</p>
                       </div>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+                      <Badge variant={c.veces_enviada > 0 ? 'accent' : 'muted'}>{c.veces_enviada} vez(es)</Badge>
+                    </div>
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      Creada: {formatFecha(c.creado_en)}
+                      {c.ultimo_envio_en && ` · Último envío: ${formatFecha(c.ultimo_envio_en)}`}
+                    </p>
+                    <div className="mt-3 flex flex-wrap items-center gap-1.5">
+                      {c.envio_id && botonEnvio && (
+                        <Button size="sm" variant={botonEnvio.variant} onClick={() => navigate(`/comercial/envios/${c.envio_id}`)}>
+                          {botonEnvio.label(c)}
+                        </Button>
+                      )}
+                      <Button size="sm" variant="outline" onClick={() => navigate(`/comercial/contactos?campania_id=${c.id}`)} disabled={envioActivo}>
+                        <Send className="h-4 w-4" />Enviar
+                      </Button>
+                      <Button size="sm" variant="ghost" onClick={() => abrirEditar(c.id)}>
+                        <Pencil className="h-4 w-4" />
+                      </Button>
+                      <Button size="sm" variant="ghost" onClick={() => handleEliminar(c.id)}>
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           )}
         </CardContent>
       </Card>
