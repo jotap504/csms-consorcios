@@ -2,7 +2,7 @@ import {
   useEffect, useRef, useState,
 } from 'react';
 import {
-  Send, Sparkles, Loader2, ImagePlus, Upload, Save, Building2, Eye, Pencil,
+  Send, Sparkles, Loader2, ImagePlus, Upload, Save, Building2, Eye, Pencil, ArrowUp, ArrowDown, X,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { toast } from '@/lib/toast';
@@ -10,6 +10,43 @@ import {
   Button, Input, Label,
 } from '@/components/ui';
 import RichTextEditor from '@/components/RichTextEditor';
+
+// Detecta las imagenes propias (subidas/generadas, servidas desde
+// /api/comercial/archivos/:filename) dentro del HTML del cuerpo, en el orden
+// en que aparecen - misma logica que prepararImagenesInline en el backend
+// (services/campaniaEnvioHelpers.js), pero para armar la tira de miniaturas
+// reordenables. El filename ya es un UUID unico, sirve de identificador.
+function extraerImagenesDelCuerpo(html) {
+  const regex = /<img[^>]*\ssrc=["']([^"']*\/api\/comercial\/archivos\/([a-zA-Z0-9._-]+))["'][^>]*>/gi;
+  const imagenes = [];
+  let match;
+  // eslint-disable-next-line no-cond-assign
+  while ((match = regex.exec(html)) !== null) {
+    imagenes.push({
+      full: match[0], start: match.index, end: match.index + match[0].length, url: match[1], filename: match[2],
+    });
+  }
+  return imagenes;
+}
+
+// Intercambia la posicion de dos imagenes dentro del HTML (mueve la de
+// "index" un lugar hacia arriba o abajo en el orden), preservando intacto
+// todo el texto/otras imagenes que hay entre medio.
+function moverImagenEnCuerpo(html, index, direccion) {
+  const imagenes = extraerImagenesDelCuerpo(html);
+  const destino = index + direccion;
+  if (destino < 0 || destino >= imagenes.length) return html;
+  const a = imagenes[index];
+  const b = imagenes[destino];
+  const [primero, segundo] = a.start < b.start ? [a, b] : [b, a];
+  return html.slice(0, primero.start) + segundo.full + html.slice(primero.end, segundo.start) + primero.full + html.slice(segundo.end);
+}
+
+function quitarImagenDelCuerpo(html, filename) {
+  const img = extraerImagenesDelCuerpo(html).find((i) => i.filename === filename);
+  if (!img) return html;
+  return html.slice(0, img.start) + html.slice(img.end);
+}
 
 // Wizard conversacional para armar campañas de mail: chatea con el usuario
 // (asistente IA) hasta tener asunto + cuerpo, despues permite editarlo con
@@ -115,6 +152,17 @@ export default function CampaniaWizard({ campaniaInicial, onGuardado }) {
   };
 
   const hayBorrador = Boolean(cuerpoHtml);
+  const imagenesEnCuerpo = extraerImagenesDelCuerpo(cuerpoHtml);
+
+  function handleMoverImagen(index, direccion) {
+    setCuerpoHtml((prev) => moverImagenEnCuerpo(prev, index, direccion));
+  }
+
+  function handleQuitarImagen(filename) {
+    // eslint-disable-next-line no-alert
+    if (!window.confirm('Quitar esta imagen del mail?')) return;
+    setCuerpoHtml((prev) => quitarImagenDelCuerpo(prev, filename));
+  }
 
   // Mismo reemplazo de placeholders + footer de baja que hace el backend al
   // mandar de verdad (services/campaniaEnvioHelpers.js: personalizarCuerpo),
@@ -237,6 +285,30 @@ export default function CampaniaWizard({ campaniaInicial, onGuardado }) {
                   )}
                 </div>
                 {logo && <p className="text-xs text-muted-foreground">La generacion con IA ya usa el logo y las imagenes de referencia cargadas en "Marca de la empresa" para copiar el estilo.</p>}
+                {imagenesEnCuerpo.length > 0 && (
+                  <div className="flex flex-col gap-1.5 rounded-lg border border-border p-2.5">
+                    <p className="text-xs font-medium text-muted-foreground">Imágenes en el mail, en orden (moverlas acá reordena el mail entero)</p>
+                    <div className="flex flex-wrap gap-2">
+                      {imagenesEnCuerpo.map((img, i) => (
+                        <div key={img.filename} className="flex flex-col items-center gap-1 rounded-lg border border-border p-1.5">
+                          <img src={img.url} alt={`Imagen ${i + 1}`} className="h-16 w-16 rounded object-cover" />
+                          <span className="text-[10px] text-muted-foreground">Imagen {i + 1}</span>
+                          <div className="flex items-center gap-0.5">
+                            <Button type="button" size="sm" variant="ghost" disabled={i === 0} onClick={() => handleMoverImagen(i, -1)} title="Mover antes">
+                              <ArrowUp className="h-3.5 w-3.5" />
+                            </Button>
+                            <Button type="button" size="sm" variant="ghost" disabled={i === imagenesEnCuerpo.length - 1} onClick={() => handleMoverImagen(i, 1)} title="Mover despues">
+                              <ArrowDown className="h-3.5 w-3.5" />
+                            </Button>
+                            <Button type="button" size="sm" variant="ghost" onClick={() => handleQuitarImagen(img.filename)} title="Quitar">
+                              <X className="h-3.5 w-3.5" />
+                            </Button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </>
             )}
             <Button
