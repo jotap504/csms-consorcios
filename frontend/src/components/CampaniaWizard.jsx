@@ -179,7 +179,7 @@ export default function CampaniaWizard({ campaniaInicial, onGuardado }) {
 
   return (
     <div className="grid gap-4 lg:grid-cols-[320px_1fr]">
-      <div className="flex h-[520px] flex-col rounded-lg border border-border">
+      <div className="flex h-[340px] flex-col rounded-lg border border-border lg:h-[420px]">
         <div ref={scrollRef} className="flex-1 overflow-y-auto p-3">
           {messages.length === 0 && (
             <p className="mt-4 text-center text-sm text-muted-foreground">
@@ -218,7 +218,7 @@ export default function CampaniaWizard({ campaniaInicial, onGuardado }) {
 
       <div className="flex flex-col gap-3">
         {!hayBorrador && (
-          <div className="flex h-[520px] flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-border text-center text-sm text-muted-foreground">
+          <div className="flex h-[340px] flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-border text-center text-sm text-muted-foreground lg:h-[420px]">
             <Sparkles className="h-8 w-8 opacity-40" />
             El borrador (asunto + mensaje) va a aparecer aca cuando charles con el asistente.
           </div>
