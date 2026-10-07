@@ -45,11 +45,15 @@ async function enviarYRegistrarMail({
   const info = await enviarMail({
     to, subject, html, text, attachments,
   });
+  // Solo se registra nombre y tamaño de los adjuntos, no el contenido.
+  const adjuntos = attachments.length
+    ? JSON.stringify(attachments.map((a) => ({ nombre: a.filename, bytes: a.content?.length ?? null })))
+    : null;
   await pool.query(
     `INSERT INTO comercial_mails
-       (direccion, contacto_id, de_email, de_nombre, para_email, asunto, cuerpo_texto, cuerpo_html, message_id, in_reply_to, leido, responsable_nombre)
-     VALUES ('saliente', $1, $2, 'BILON Smart Buildings', $3, $4, $5, $6, $7, $8, TRUE, $9)`,
-    [contactoId, MAIL_USER, to, subject, text ?? null, html ?? null, info?.messageId ?? null, inReplyTo, responsableNombre],
+       (direccion, contacto_id, de_email, de_nombre, para_email, asunto, cuerpo_texto, cuerpo_html, message_id, in_reply_to, leido, responsable_nombre, adjuntos)
+     VALUES ('saliente', $1, $2, 'BILON Smart Buildings', $3, $4, $5, $6, $7, $8, TRUE, $9, $10)`,
+    [contactoId, MAIL_USER, to, subject, text ?? null, html ?? null, info?.messageId ?? null, inReplyTo, responsableNombre, adjuntos],
   );
   return info;
 }

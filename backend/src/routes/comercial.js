@@ -39,6 +39,32 @@ const upload = multer({
 const uploadMemory = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
 const IMAGE_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
 
+// Adjuntos de la Bandeja: en memoria, se mandan por SMTP y no se guardan en
+// disco. defParamCharset utf8 para que nombres con tildes/ñ no se rompan.
+const ADJUNTOS_MAX_TOTAL = 15 * 1024 * 1024;
+const uploadAdjuntos = multer({
+  storage: multer.memoryStorage(),
+  defParamCharset: 'utf8',
+  limits: { fileSize: ADJUNTOS_MAX_TOTAL, files: 10 },
+});
+
+function recibirAdjuntos(req, res, next) {
+  uploadAdjuntos.array('adjuntos', 10)(req, res, (err) => {
+    if (err) {
+      const msg = err.code === 'LIMIT_FILE_SIZE' ? 'Un adjunto supera los 15 MB.'
+        : err.code === 'LIMIT_FILE_COUNT' || err.code === 'LIMIT_UNEXPECTED_FILE' ? 'Maximo 10 adjuntos por mail.'
+          : 'No se pudieron leer los adjuntos.';
+      return res.status(400).json({ error: msg });
+    }
+    const files = req.files ?? [];
+    if (files.reduce((s, f) => s + f.size, 0) > ADJUNTOS_MAX_TOTAL) {
+      return res.status(400).json({ error: 'Los adjuntos suman mas de 15 MB.' });
+    }
+    req.adjuntos = files.map((f) => ({ filename: f.originalname, content: f.buffer, contentType: f.mimetype }));
+    return next();
+  });
+}
+
 const router = express.Router();
 
 // Sin autenticacion a proposito: los <img>/<a> del navegador no mandan el
@@ -2395,7 +2421,7 @@ router.get('/mails/:id', async (req, res) => {
 // solo mostraba entrantes/respuestas hasta ahora, sin forma de arrancar una
 // conversacion. Si el destinatario matchea un contacto existente por email,
 // queda linkeado (seguimiento + ultimo_contacto) igual que responder/reenviar.
-router.post('/mails', async (req, res) => {
+router.post('/mails', recibirAdjuntos, async (req, res) => {
   if (!mailConfigurado()) return res.status(500).json({ error: 'Mail no configurado en el servidor.' });
   const { to, subject, cuerpo } = req.body ?? {};
   if (!to?.trim() || !subject?.trim() || !cuerpo?.trim()) {
@@ -2414,6 +2440,7 @@ router.post('/mails', async (req, res) => {
       text: cuerpo,
       contactoId,
       responsableNombre,
+      attachments: req.adjuntos,
     });
     if (contactoId) {
       await pool.query(
@@ -2430,7 +2457,7 @@ router.post('/mails', async (req, res) => {
   }
 });
 
-router.post('/mails/:id/responder', async (req, res) => {
+router.post('/mails/:id/responder', recibirAdjuntos, async (req, res) => {
   if (!mailConfigurado()) return res.status(500).json({ error: 'Mail no configurado en el servidor.' });
   const { cuerpo } = req.body ?? {};
   if (!cuerpo?.trim()) return res.status(400).json({ error: 'cuerpo es requerido.' });
@@ -2453,6 +2480,7 @@ router.post('/mails/:id/responder', async (req, res) => {
       contactoId: orig.contacto_id,
       responsableNombre,
       inReplyTo: orig.message_id,
+      attachments: req.adjuntos,
     });
     if (orig.contacto_id) {
       await pool.query(
@@ -2469,7 +2497,7 @@ router.post('/mails/:id/responder', async (req, res) => {
   }
 });
 
-router.post('/mails/:id/reenviar', async (req, res) => {
+router.post('/mails/:id/reenviar', recibirAdjuntos, async (req, res) => {
   if (!mailConfigurado()) return res.status(500).json({ error: 'Mail no configurado en el servidor.' });
   const { to, mensaje } = req.body ?? {};
   if (!to?.trim()) return res.status(400).json({ error: 'to es requerido.' });
@@ -2495,6 +2523,7 @@ router.post('/mails/:id/reenviar', async (req, res) => {
       text: cuerpoTexto,
       contactoId,
       responsableNombre,
+      attachments: req.adjuntos,
     });
     res.json({ enviado: true });
   } catch (err) {

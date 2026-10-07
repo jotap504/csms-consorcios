@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Inbox, RefreshCw, Send, ArrowUpRight, ArrowDownLeft, ArrowLeft, Mail as MailIcon, Trash2, Forward, Sparkles, Plus,
+  Paperclip, X,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { toast } from '@/lib/toast';
@@ -25,6 +26,70 @@ function nombreParaMostrar(mail) {
   return mail.para_email || '(sin destinatario)';
 }
 
+// Mismo limite que el backend (recibirAdjuntos en routes/comercial.js).
+const ADJUNTOS_MAX_TOTAL = 15 * 1024 * 1024;
+const ADJUNTOS_MAX_CANT = 10;
+
+function formatBytes(n) {
+  if (n == null) return '';
+  if (n < 1024 * 1024) return `${Math.max(1, Math.round(n / 1024))} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+// Sin adjuntos manda JSON como siempre; con adjuntos arma multipart.
+function armarPayload(campos, archivos) {
+  if (!archivos.length) return [campos, undefined];
+  const form = new FormData();
+  Object.entries(campos).forEach(([k, v]) => form.append(k, v));
+  archivos.forEach((f) => form.append('adjuntos', f));
+  return [form, { headers: { 'Content-Type': 'multipart/form-data' } }];
+}
+
+function AdjuntosPicker({ id, archivos, onChange }) {
+  const inputRef = useRef(null);
+  const total = archivos.reduce((s, f) => s + f.size, 0);
+
+  const agregar = (e) => {
+    const nuevos = Array.from(e.target.files ?? []);
+    e.target.value = '';
+    const todos = [...archivos, ...nuevos];
+    if (todos.length > ADJUNTOS_MAX_CANT) { toast.error(`Maximo ${ADJUNTOS_MAX_CANT} adjuntos por mail.`); return; }
+    if (todos.reduce((s, f) => s + f.size, 0) > ADJUNTOS_MAX_TOTAL) { toast.error('Los adjuntos no pueden sumar mas de 15 MB.'); return; }
+    onChange(todos);
+  };
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <input id={id} ref={inputRef} type="file" multiple className="hidden" onChange={agregar} />
+      {archivos.length > 0 && (
+        <ul className="flex flex-wrap gap-1.5">
+          {archivos.map((f, i) => (
+            <li key={`${f.name}-${i}`} className="flex max-w-full items-center gap-1 rounded-md border border-border bg-muted/50 py-0.5 pl-2 pr-1 text-xs">
+              <Paperclip className="h-3 w-3 shrink-0 text-muted-foreground" />
+              <span className="truncate">{f.name}</span>
+              <span className="shrink-0 text-muted-foreground">{formatBytes(f.size)}</span>
+              <button
+                type="button"
+                aria-label={`Quitar ${f.name}`}
+                onClick={() => onChange(archivos.filter((_, j) => j !== i))}
+                className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="flex items-center gap-2">
+        <Button type="button" size="sm" variant="ghost" onClick={() => inputRef.current?.click()}>
+          <Paperclip className="h-4 w-4" />Adjuntar
+        </Button>
+        {archivos.length > 0 && <span className="text-xs text-muted-foreground">{formatBytes(total)} de 15 MB</span>}
+      </div>
+    </div>
+  );
+}
+
 export default function Bandeja() {
   const [mails, setMails] = useState([]);
   const [total, setTotal] = useState(0);
@@ -44,6 +109,9 @@ export default function Bandeja() {
   const [nuevoOpen, setNuevoOpen] = useState(false);
   const [nuevoForm, setNuevoForm] = useState({ to: '', subject: '', cuerpo: '' });
   const [nuevoEnviando, setNuevoEnviando] = useState(false);
+  const [nuevoAdjuntos, setNuevoAdjuntos] = useState([]);
+  const [respuestaAdjuntos, setRespuestaAdjuntos] = useState([]);
+  const [reenviarAdjuntos, setReenviarAdjuntos] = useState([]);
 
   const cargarLista = useCallback(() => {
     setLoading(true);
@@ -61,8 +129,10 @@ export default function Bandeja() {
   const abrirMail = (id) => {
     setSelectedId(id);
     setRespuesta('');
+    setRespuestaAdjuntos([]);
     setReenviarOpen(false);
     setReenviarForm({ to: '', mensaje: '' });
+    setReenviarAdjuntos([]);
     api.get(`/comercial/mails/${id}`).then(({ data }) => {
       setDetalle(data);
       setMails((prev) => prev.map((m) => (m.id === id ? { ...m, leido: true } : m)));
@@ -84,10 +154,11 @@ export default function Bandeja() {
     e.preventDefault();
     if (!respuesta.trim()) return;
     setEnviando(true);
-    api.post(`/comercial/mails/${selectedId}/responder`, { cuerpo: respuesta })
+    api.post(`/comercial/mails/${selectedId}/responder`, ...armarPayload({ cuerpo: respuesta }, respuestaAdjuntos))
       .then(() => {
         toast.success('Respuesta enviada.');
         setRespuesta('');
+        setRespuestaAdjuntos([]);
         cargarLista();
       })
       .catch((err) => toast.error(err.response?.data?.error || 'No se pudo enviar la respuesta.'))
@@ -114,11 +185,12 @@ export default function Bandeja() {
     e.preventDefault();
     if (!reenviarForm.to.trim()) return;
     setReenviando(true);
-    api.post(`/comercial/mails/${selectedId}/reenviar`, reenviarForm)
+    api.post(`/comercial/mails/${selectedId}/reenviar`, ...armarPayload(reenviarForm, reenviarAdjuntos))
       .then(() => {
         toast.success('Mail reenviado.');
         setReenviarOpen(false);
         setReenviarForm({ to: '', mensaje: '' });
+        setReenviarAdjuntos([]);
         cargarLista();
       })
       .catch((err) => toast.error(err.response?.data?.error || 'No se pudo reenviar el mail.'))
@@ -129,11 +201,12 @@ export default function Bandeja() {
     e.preventDefault();
     if (!nuevoForm.to.trim() || !nuevoForm.subject.trim() || !nuevoForm.cuerpo.trim()) return;
     setNuevoEnviando(true);
-    api.post('/comercial/mails', nuevoForm)
+    api.post('/comercial/mails', ...armarPayload(nuevoForm, nuevoAdjuntos))
       .then(() => {
         toast.success('Mail enviado.');
         setNuevoOpen(false);
         setNuevoForm({ to: '', subject: '', cuerpo: '' });
+        setNuevoAdjuntos([]);
         cargarLista();
       })
       .catch((err) => toast.error(err.response?.data?.error || 'No se pudo enviar el mail.'))
@@ -170,7 +243,7 @@ export default function Bandeja() {
           <Button size="sm" variant="outline" loading={revisando} onClick={handleRevisarBandeja} className="self-start">
             <RefreshCw className="h-4 w-4" />Revisar ahora
           </Button>
-          <Dialog open={nuevoOpen} onOpenChange={(o) => { setNuevoOpen(o); if (!o) setNuevoForm({ to: '', subject: '', cuerpo: '' }); }}>
+          <Dialog open={nuevoOpen} onOpenChange={(o) => { setNuevoOpen(o); if (!o) { setNuevoForm({ to: '', subject: '', cuerpo: '' }); setNuevoAdjuntos([]); } }}>
             <DialogTrigger asChild>
               <Button size="sm" className="self-start">
                 <Plus className="h-4 w-4" />Nuevo mail
@@ -207,6 +280,7 @@ export default function Bandeja() {
                   value={nuevoForm.cuerpo}
                   onChange={(e) => setNuevoForm({ ...nuevoForm, cuerpo: e.target.value })}
                 />
+                <AdjuntosPicker id="nuevoAdjuntos" archivos={nuevoAdjuntos} onChange={setNuevoAdjuntos} />
                 <Button
                   type="submit"
                   className="self-end"
@@ -320,6 +394,18 @@ export default function Bandeja() {
                 {detalle.cuerpo_texto || detalle.cuerpo_html?.replace(/<[^>]+>/g, ' ') || '(sin contenido)'}
               </div>
 
+              {detalle.adjuntos?.length > 0 && (
+                <ul className="flex flex-wrap gap-1.5">
+                  {detalle.adjuntos.map((a, i) => (
+                    <li key={`${a.nombre}-${i}`} className="flex max-w-full items-center gap-1 rounded-md border border-border bg-muted/50 px-2 py-0.5 text-xs">
+                      <Paperclip className="h-3 w-3 shrink-0 text-muted-foreground" />
+                      <span className="truncate">{a.nombre}</span>
+                      <span className="shrink-0 text-muted-foreground">{formatBytes(a.bytes)}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+
               {reenviarOpen && (
                 <form onSubmit={handleReenviar} className="flex flex-col gap-2 rounded-lg border border-border p-3">
                   <Label htmlFor="reenviarTo">Reenviar a</Label>
@@ -338,6 +424,7 @@ export default function Bandeja() {
                     value={reenviarForm.mensaje}
                     onChange={(e) => setReenviarForm({ ...reenviarForm, mensaje: e.target.value })}
                   />
+                  <AdjuntosPicker id="reenviarAdjuntos" archivos={reenviarAdjuntos} onChange={setReenviarAdjuntos} />
                   <Button type="submit" size="sm" className="self-end" loading={reenviando} disabled={!reenviarForm.to.trim()}>
                     <Forward className="h-4 w-4" />Reenviar
                   </Button>
@@ -354,6 +441,7 @@ export default function Bandeja() {
                   value={respuesta}
                   onChange={(e) => setRespuesta(e.target.value)}
                 />
+                <AdjuntosPicker id="respuestaAdjuntos" archivos={respuestaAdjuntos} onChange={setRespuestaAdjuntos} />
                 <Button type="submit" className="self-end" loading={enviando} disabled={!respuesta.trim()}>
                   <Send className="h-4 w-4" />Enviar respuesta
                 </Button>
