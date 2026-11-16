@@ -5,6 +5,7 @@ const multer = require('multer');
 const { pool } = require('../db');
 const { sendMail } = require('../lib/mailer');
 const { ensureAuthorized } = require('../lib/citrineAuth');
+const { runSmartChargingTest, crearEstado } = require('../services/smartChargingTest');
 
 const router = express.Router();
 const LEADS_EMAIL = process.env.LEADS_EMAIL || 'eqz839ar@gmail.com';
@@ -450,6 +451,49 @@ router.get('/ocpp-test/:ocppId/capacidades', async (req, res) => {
     await logPublicTest(ocppId, 'capacidades', 'ERROR', err.message);
     res.status(502).json({ error: 'No se pudo comunicar con el cargador.' });
   }
+});
+
+// Prueba AUTOMATICA de smart charging: corre sola toda la secuencia
+// (SetChargingProfile en varios formatos -> GetCompositeSchedule -> cambio de
+// limite -> medicion real si hay carga activa -> limpieza) y devuelve un
+// veredicto. Tarda hasta ~2 min (espera MeterValues), por eso corre en
+// background: POST la arranca, GET devuelve el avance paso a paso. Estado en
+// memoria (instancia unica, igual que el rate limit de arriba).
+const smartChargingJobs = new Map();
+const SMART_CHARGING_JOB_TTL_MS = 60 * 60 * 1000;
+
+router.post('/ocpp-test/:ocppId/smart-charging-test', async (req, res) => {
+  if (rateLimited(`ocppsmart:${req.ip}`, 12, 60 * 60 * 1000)) {
+    return res.status(429).json({ error: 'Demasiadas pruebas. Proba de nuevo en un rato.' });
+  }
+  const ocppId = req.params.ocppId;
+  if (await refuseIfRealCargador(ocppId, res)) return;
+
+  const enCurso = smartChargingJobs.get(ocppId);
+  if (enCurso?.estado === 'corriendo') return res.status(202).json(enCurso);
+
+  for (const [id, job] of smartChargingJobs) {
+    if (job.estado !== 'corriendo' && Date.now() - new Date(job.iniciado_en).getTime() > SMART_CHARGING_JOB_TTL_MS) smartChargingJobs.delete(id);
+  }
+
+  const estado = crearEstado(ocppId);
+  smartChargingJobs.set(ocppId, estado);
+  runSmartChargingTest(ocppId, { pool, citrineUrl: CITRINEOS_REST_URL }, estado)
+    .then(() => {
+      // accion 'set_amps': unico valor del CHECK de proveedor_tests que aplica
+      // (evita una migracion); el prefijo AUTO lo distingue del set manual.
+      const resultado = estado.veredicto.startsWith('SOPORTADO') ? 'OK' : (estado.veredicto === 'INCONCLUSO' ? 'ERROR' : 'RECHAZADO');
+      return logPublicTest(ocppId, 'set_amps', resultado, `AUTO ${estado.veredicto}: ${estado.resumen}`.slice(0, 2000));
+    })
+    .catch((err) => console.error('Error en prueba automatica de smart charging:', err));
+  res.status(202).json(estado);
+});
+
+router.get('/ocpp-test/:ocppId/smart-charging-test', (req, res) => {
+  if (rateLimited(`ocppsmartpoll:${req.ip}`, 2000, 60 * 60 * 1000)) {
+    return res.status(429).json({ error: 'Demasiadas consultas. Proba de nuevo en un rato.' });
+  }
+  res.json(smartChargingJobs.get(req.params.ocppId) ?? null);
 });
 
 // Ultima lectura de energia acumulada (Wh) que mando el equipo en la sesion

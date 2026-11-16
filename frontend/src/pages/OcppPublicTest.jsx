@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Zap, Play, Square, Stethoscope } from 'lucide-react';
+import { Zap, Play, Square, Stethoscope, ListChecks } from 'lucide-react';
 import { api } from '@/lib/api';
 
 function Badge({ children, tone }) {
@@ -26,6 +26,53 @@ export default function OcppPublicTest() {
   const [diagBusy, setDiagBusy] = useState(false);
   const [error, setError] = useState('');
   const pollRef = useRef(null);
+  const [auto, setAuto] = useState(null);
+  const autoPollRef = useRef(null);
+
+  // Prueba automatica de smart charging: corre en el backend (hasta ~2 min),
+  // aca solo se arranca y se va leyendo el avance paso a paso.
+  async function pollAuto(id) {
+    try {
+      const { data } = await api.get(`/public/ocpp-test/${encodeURIComponent(id)}/smart-charging-test`);
+      if (data) setAuto(data);
+      if (!data || data.estado !== 'corriendo') {
+        clearInterval(autoPollRef.current);
+        autoPollRef.current = null;
+      }
+    } catch {
+      // keep polling on a transient failure
+    }
+  }
+
+  async function handleAutoTest() {
+    setError('');
+    try {
+      const id = ocppId.trim();
+      const { data } = await api.post(`/public/ocpp-test/${encodeURIComponent(id)}/smart-charging-test`);
+      setAuto(data);
+      if (autoPollRef.current) clearInterval(autoPollRef.current);
+      autoPollRef.current = setInterval(() => pollAuto(id), 2000);
+    } catch (err) {
+      setError(err.response?.data?.error ?? 'Error al iniciar la prueba automatica.');
+    }
+  }
+
+  useEffect(() => () => { if (autoPollRef.current) clearInterval(autoPollRef.current); }, []);
+
+  const VEREDICTOS = {
+    SOPORTADO: { tone: 'ok', label: 'Soportado y verificado / Supported & verified' },
+    SOPORTADO_SIN_MEDICION: { tone: 'ok', label: 'Soportado (falta medir con auto) / Supported (real-current check pending)' },
+    ACEPTA_SIN_VERIFICAR: { tone: 'warn', label: 'Acepta, sin verificar / Accepted, unverified' },
+    DUDOSO: { tone: 'warn', label: 'Dudoso / Doubtful' },
+    NO_APLICA: { tone: 'bad', label: 'Acepta pero no aplica / Accepted but not applied' },
+    NO_SOPORTADO: { tone: 'bad', label: 'No soportado / Not supported' },
+    INCONCLUSO: { tone: 'neutral', label: 'Inconcluso / Inconclusive' },
+  };
+  const PASO_ICONO = { ok: '✓', fallo: '✗', advertencia: '!', omitido: '–', corriendo: '…', pendiente: '·' };
+  const PASO_COLOR = {
+    ok: 'text-emerald-600', fallo: 'text-red-600', advertencia: 'text-amber-600',
+    omitido: 'text-slate-400', corriendo: 'text-blue-600', pendiente: 'text-slate-300',
+  };
 
   async function loadEstado(id) {
     try {
@@ -193,7 +240,7 @@ export default function OcppPublicTest() {
                 <p className="font-mono text-sm font-medium text-slate-900">{ocppId}</p>
                 <p className="text-xs text-slate-500">OCPP {version}</p>
               </div>
-              <button type="button" onClick={() => { setLinked(false); clearInterval(pollRef.current); setEstado(null); }} className="cursor-pointer text-xs text-slate-400 hover:text-slate-600">
+              <button type="button" onClick={() => { setLinked(false); clearInterval(pollRef.current); clearInterval(autoPollRef.current); setEstado(null); setAuto(null); }} className="cursor-pointer text-xs text-slate-400 hover:text-slate-600">
                 Cambiar / Change
               </button>
             </div>
@@ -266,6 +313,43 @@ export default function OcppPublicTest() {
               )}
               {schedule && (
                 <pre className="overflow-x-auto rounded-lg bg-slate-900 p-2 text-xs text-slate-100">{JSON.stringify(schedule, null, 2)}</pre>
+              )}
+            </div>
+
+            <div className="rounded-xl border border-slate-200 p-3">
+              <button
+                type="button"
+                disabled={auto?.estado === 'corriendo'}
+                onClick={handleAutoTest}
+                className="flex h-10 w-full cursor-pointer items-center justify-center gap-2 rounded-lg bg-blue-600 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
+              >
+                <ListChecks className="h-4 w-4" />
+                {auto?.estado === 'corriendo' ? 'Probando... / Testing...' : 'Prueba automática de Smart Charging / Automatic Smart Charging test'}
+              </button>
+              <p className="mt-2 text-xs text-slate-500">
+                Envía SetChargingProfile (10 A y 6 A), verifica que el equipo lo aplique y borra el perfil al terminar. Con un auto cargando también mide la corriente real (hasta 2 min).
+                {' / '}Sends SetChargingProfile (10 A, 6 A), checks the device applies it and clears the profile afterwards. With a vehicle charging it also measures real current (up to 2 min).
+              </p>
+              {auto && (
+                <div className="mt-3 flex flex-col gap-2">
+                  <ul className="flex flex-col gap-1.5">
+                    {auto.pasos.map((p) => (
+                      <li key={p.id} className="flex gap-2 text-xs">
+                        <span className={`w-3 shrink-0 text-center font-bold ${PASO_COLOR[p.estado]}`}>{PASO_ICONO[p.estado]}</span>
+                        <div className="min-w-0">
+                          <p className={p.estado === 'pendiente' || p.estado === 'omitido' ? 'text-slate-400' : 'font-medium text-slate-700'}>{p.titulo}</p>
+                          {p.detalle && <p className="break-words text-slate-500">{p.detalle}</p>}
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                  {auto.veredicto && (
+                    <div className="rounded-lg bg-slate-50 p-3">
+                      <Badge tone={VEREDICTOS[auto.veredicto]?.tone}>{VEREDICTOS[auto.veredicto]?.label ?? auto.veredicto}</Badge>
+                      <p className="mt-2 text-xs text-slate-600">{auto.resumen}</p>
+                    </div>
+                  )}
+                </div>
               )}
             </div>
 
