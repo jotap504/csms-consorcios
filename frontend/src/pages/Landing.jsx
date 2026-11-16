@@ -12,8 +12,8 @@ import EnergyFlowDiagram from '@/components/landing/EnergyFlowDiagram';
 import ShaderHero from '@/components/landing/ShaderHero';
 import MarketGrowthChart from '@/components/landing/MarketGrowthChart';
 import BrandsCarousel from '@/components/landing/BrandsCarousel';
-import ThemeToggle from '@/components/ThemeToggle';
 import Logo from '@/components/Logo';
+import { useLanguage } from '@/lib/language';
 
 const fadeUp = {
   hidden: { opacity: 0, y: 24 },
@@ -37,11 +37,13 @@ function Reveal({ children, className = '', delay = 0 }) {
 
 function Nav() {
   const [open, setOpen] = useState(false);
+  const { language, setLanguage } = useLanguage();
+  const en = language === 'en';
   const links = [
-    { href: '#inicio', label: 'Inicio' },
-    { href: '#solucion', label: 'Solucion' },
-    { href: '#plataforma', label: 'Plataforma' },
-    { href: '#contacto', label: 'Contacto' },
+    { href: '#inicio', label: en ? 'Home' : 'Inicio' },
+    { href: '#solucion', label: en ? 'Solution' : 'Solución' },
+    { href: '#plataforma', label: en ? 'Platform' : 'Plataforma' },
+    { href: '#contacto', label: en ? 'Contact' : 'Contacto' },
   ];
   return (
     <header className="sticky top-0 z-40 border-b border-[var(--lp-border)] bg-[var(--lp-bg)]/95">
@@ -57,20 +59,36 @@ function Nav() {
           ))}
         </nav>
         <div className="hidden items-center gap-2 md:flex">
-          <ThemeToggle />
+          <button
+            type="button"
+            onClick={() => setLanguage(en ? 'es' : 'en')}
+            className="group inline-flex h-10 items-center gap-2 rounded-lg border border-[var(--lp-border)] px-2.5 text-sm font-medium text-[var(--lp-fg)] transition-colors hover:border-[var(--lp-blue)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--lp-blue)]"
+            aria-label={en ? 'Cambiar a español' : 'Switch to English'}
+            title={en ? 'Cambiar a español' : 'Switch to English'}
+          >
+            <span className={`language-flag ${en ? 'language-flag-gb' : 'language-flag-ar'}`} aria-hidden="true" />
+            <span className="sr-only">{en ? 'English' : 'Español'}</span>
+          </button>
           <Link
             to="/login"
             className="inline-flex h-10 cursor-pointer items-center rounded-lg bg-[var(--lp-fg)] px-4 text-sm font-medium text-[var(--lp-bg)] transition-colors hover:opacity-90"
           >
-            Acceso Clientes
+            {en ? 'Client access' : 'Acceso clientes'}
           </Link>
         </div>
         <div className="flex items-center gap-1 md:hidden">
-          <ThemeToggle />
+          <button
+            type="button"
+            onClick={() => setLanguage(en ? 'es' : 'en')}
+            className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-[var(--lp-border)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--lp-blue)]"
+            aria-label={en ? 'Cambiar a español' : 'Switch to English'}
+          >
+            <span className={`language-flag ${en ? 'language-flag-gb' : 'language-flag-ar'}`} aria-hidden="true" />
+          </button>
           <button
             type="button"
             className="cursor-pointer p-2"
-            aria-label="Abrir menu"
+            aria-label={en ? 'Open menu' : 'Abrir menú'}
             onClick={() => setOpen((v) => !v)}
           >
             <Menu className="h-6 w-6" />
@@ -85,7 +103,7 @@ function Nav() {
             </a>
           ))}
           <Link to="/login" className="mt-2 inline-flex h-10 items-center justify-center rounded-lg bg-[var(--lp-fg)] text-sm font-medium text-[var(--lp-bg)]">
-            Acceso Clientes
+            {en ? 'Client access' : 'Acceso clientes'}
           </Link>
         </div>
       )}
@@ -98,21 +116,24 @@ function scrollToId(id) {
 }
 
 function Hero() {
+  const { language } = useLanguage();
+  const en = language === 'en';
   return (
     <section id="inicio">
+      <h1 className="sr-only">{en ? 'Electric vehicle charging management system' : 'Sistema de gestión de carga de vehículos eléctricos'}</h1>
       <ShaderHero
         stages={[
-          { text: '¿Compraste o estás por comprar un auto eléctrico?' },
-          { text: '¿Sabés si lo podés cargar en tu edificio?' },
-          { text: '¿Y qué pasará cuando haya 3, 7 o 10 autos?' },
+          { text: en ? 'Have you bought, or are you considering buying, an electric car?' : '¿Compraste o estás por comprar un auto eléctrico?' },
+          { text: en ? 'Do you know whether you can charge it in your building?' : '¿Sabés si lo podés cargar en tu edificio?' },
+          { text: en ? 'And what will happen when there are 3, 7, or 10 EVs?' : '¿Y qué pasará cuando haya 3, 7 o 10 autos?' },
           {
-            text: 'Bilon analiza la potencia y prepara tu edificio con un sistema de balanceo inteligente y seguro.',
+            text: en ? 'Bilon analyses available power and prepares your building with a smart, safe load-balancing system.' : 'Bilon analiza la potencia y prepara tu edificio con un sistema de balanceo inteligente y seguro.',
             emphasis: true,
           },
         ]}
         buttons={{
-          primary: { text: 'Solicitar asesoramiento', onClick: () => scrollToId('contacto') },
-          secondary: { text: 'Ver como funciona', onClick: () => scrollToId('solucion') },
+          primary: { text: en ? 'Request a consultation' : 'Solicitar asesoramiento', onClick: () => scrollToId('contacto') },
+          secondary: { text: en ? 'How it works' : 'Ver cómo funciona', onClick: () => scrollToId('solucion') },
         }}
       />
     </section>
@@ -120,26 +141,28 @@ function Hero() {
 }
 
 function MarketGrowth() {
+  const { language } = useLanguage(); const en = language === 'en';
   return (
     <section className="px-6 py-24">
       <div className="mx-auto max-w-5xl">
         <Reveal>
           <h2 className="lp-heading text-3xl font-bold tracking-tight text-[var(--lp-fg)] md:text-4xl">
-            El mercado ya explotó. La infraestructura, todavía no.
+            {en ? 'The market has already taken off. Infrastructure has not.' : 'El mercado ya explotó. La infraestructura, todavía no.'}
           </h2>
           <p className="mt-4 max-w-2xl text-[var(--lp-muted)]">
-            Patentamientos de vehiculos electricos e hibridos enchufables en Argentina, año a año. La curva es exponencial - los edificios que se preparen ahora van a estar un paso adelante.
+            {en ? 'Year-over-year registrations of electric and plug-in hybrid vehicles in Argentina. The curve is exponential — buildings that prepare now will be ahead.' : 'Patentamientos de vehículos eléctricos e híbridos enchufables en Argentina, año a año. La curva es exponencial — los edificios que se preparen ahora van a estar un paso adelante.'}
           </p>
         </Reveal>
         <Reveal delay={0.1} className="mt-12">
-          <MarketGrowthChart />
+          <MarketGrowthChart language={language} />
         </Reveal>
       </div>
     </section>
   );
 }
 
-const PROBLEMS = [
+const PROBLEMS = {
+  es: [
   { icon: Cable, text: 'Cada propietario instala su propio cable, sin planificacion.' },
   { icon: AlertTriangle, text: 'Las cañerias y ductos del edificio se llenan sin control.' },
   { icon: PlugZap, text: 'Aparecen instalaciones improvisadas y riesgosas.' },
@@ -147,20 +170,31 @@ const PROBLEMS = [
   { icon: Zap, text: 'Se supera la capacidad electrica disponible del edificio.' },
   { icon: FileText, text: 'La administracion no puede facturar correctamente el consumo.' },
   { icon: TrendingUp, text: 'El crecimiento futuro de la demanda se vuelve imposible de sostener.' },
-];
+  ],
+  en: [
+    { icon: Cable, text: 'Each owner installs their own cable, without a plan.' },
+    { icon: AlertTriangle, text: 'The building’s conduits and ducts fill up without control.' },
+    { icon: PlugZap, text: 'Improvised and unsafe installations start to appear.' },
+    { icon: Gauge, text: 'There is no real control of electricity consumption.' },
+    { icon: Zap, text: 'The building’s available electrical capacity is exceeded.' },
+    { icon: FileText, text: 'Management cannot accurately bill each user’s consumption.' },
+    { icon: TrendingUp, text: 'Future demand growth becomes impossible to sustain.' },
+  ],
+};
 
 function Problem() {
+  const { language } = useLanguage(); const en = language === 'en';
   return (
     <section className="bg-[var(--lp-surface)] px-6 py-24">
       <div className="mx-auto max-w-6xl">
         <Reveal>
-          <h2 className="lp-heading text-3xl font-bold tracking-tight text-[var(--lp-fg)] md:text-4xl">El problema</h2>
+          <h2 className="lp-heading text-3xl font-bold tracking-tight text-[var(--lp-fg)] md:text-4xl">{en ? 'The problem' : 'El problema'}</h2>
           <p className="mt-4 max-w-2xl text-[var(--lp-muted)]">
-            Hoy, la mayoria de los edificios resuelve la carga de autos electricos de la peor manera posible.
+            {en ? 'Today, most buildings handle EV charging in the worst possible way.' : 'Hoy, la mayoría de los edificios resuelve la carga de autos eléctricos de la peor manera posible.'}
           </p>
         </Reveal>
         <div className="mt-12 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {PROBLEMS.map((p, i) => (
+          {PROBLEMS[language].map((p, i) => (
             <Reveal key={p.text} delay={i * 0.05}>
               <div className="flex h-full items-start gap-3 rounded-xl border border-[var(--lp-border)] bg-[var(--lp-bg)] p-5">
                 <p.icon className="mt-0.5 h-5 w-5 shrink-0 text-[var(--lp-blue)]" />
@@ -174,7 +208,8 @@ function Problem() {
   );
 }
 
-const STEPS = [
+const STEPS = {
+  es: [
   {
     n: '01',
     title: 'Infraestructura electrica completa',
@@ -199,19 +234,27 @@ const STEPS = [
     text: 'Instalamos una conexion permanente a Internet: la conexion principal del edificio, mas una conexion 4G de respaldo instalada por BILON. El sistema permanece operativo incluso ante fallas de conectividad.',
     icon: Wifi,
   },
-];
+  ],
+  en: [
+    { n: '01', title: 'Complete electrical infrastructure', text: 'We build the building’s complete electrical infrastructure. From day one, it is ready to connect the last EV that arrives in the future—without breaking walls or carrying out major new works.', icon: Cable },
+    { n: '02', title: 'Real-time metering', text: 'We install a real-time electricity metering system. We continuously monitor both the building’s consumption and that of every charger.', icon: Gauge },
+    { n: '03', title: 'Dynamic load balancing', text: 'We implement an intelligent Dynamic Load Balancing system. Available electrical capacity is never exceeded, and power is automatically distributed among connected vehicles.', icon: BarChart3 },
+    { n: '04', title: 'Backup connectivity', text: 'We install a permanent internet connection: the building’s main connection plus a BILON-installed 4G backup. The system keeps operating even if connectivity fails.', icon: Wifi },
+  ],
+};
 
 function Solution() {
+  const { language } = useLanguage(); const en = language === 'en';
   return (
     <section id="solucion" className="px-6 py-24">
       <div className="mx-auto max-w-6xl">
         <Reveal>
           <h2 className="lp-heading text-3xl font-bold tracking-tight text-[var(--lp-fg)] md:text-4xl">
-            Una unica infraestructura preparada para todos los vehiculos del edificio.
+            {en ? 'One infrastructure, ready for every vehicle in the building.' : 'Una única infraestructura preparada para todos los vehículos del edificio.'}
           </h2>
         </Reveal>
         <div className="mt-14 grid gap-8 md:grid-cols-2">
-          {STEPS.map((s, i) => (
+          {STEPS[language].map((s, i) => (
             <Reveal key={s.n} delay={i * 0.08}>
               <div className="h-full rounded-2xl border border-[var(--lp-border)] p-8">
                 <div className="flex items-center gap-4">
@@ -230,19 +273,20 @@ function Solution() {
 }
 
 function LiveDemo() {
+  const { language } = useLanguage(); const en = language === 'en';
   return (
     <section className="bg-[var(--lp-surface)] px-6 py-24">
       <div className="mx-auto max-w-4xl">
         <Reveal>
           <h2 className="lp-heading text-center text-3xl font-bold tracking-tight text-[var(--lp-fg)] md:text-4xl">
-            El balanceo de carga, en accion
+            {en ? 'Load balancing, in action' : 'El balanceo de carga, en acción'}
           </h2>
           <p className="mx-auto mt-4 max-w-xl text-center text-[var(--lp-muted)]">
-            Mira como el sistema reparte la energia disponible en tiempo real, sin superar nunca la capacidad del edificio.
+            {en ? 'See how the system distributes available energy in real time without ever exceeding building capacity.' : 'Mirá cómo el sistema reparte la energía disponible en tiempo real, sin superar nunca la capacidad del edificio.'}
           </p>
         </Reveal>
         <Reveal delay={0.1} className="mt-12">
-          <EnergyFlowDiagram />
+          <EnergyFlowDiagram language={language} />
         </Reveal>
       </div>
     </section>
@@ -250,7 +294,13 @@ function LiveDemo() {
 }
 
 function HowItWorks() {
-  const items = [
+  const { language } = useLanguage(); const en = language === 'en';
+  const items = en ? [
+    'They request to join the system.',
+    'We carry out the installation up to their parking space.',
+    'We install a compatible charger, or integrate an existing one if it meets the technical requirements.',
+    'They are ready to charge from day one, without affecting the rest of the building.',
+  ] : [
     'Solicita su incorporacion al sistema.',
     'Realizamos la instalacion hasta su cochera.',
     'Instalamos un cargador compatible, o integramos uno existente si cumple con los requisitos tecnicos.',
@@ -261,9 +311,9 @@ function HowItWorks() {
       <div className="mx-auto max-w-4xl text-center">
         <Reveal>
           <h2 className="lp-heading text-3xl font-bold tracking-tight text-[var(--lp-fg)] md:text-4xl">
-            ¿Como funciona para los propietarios?
+            {en ? 'How does it work for owners?' : '¿Cómo funciona para los propietarios?'}
           </h2>
-          <p className="mt-4 text-[var(--lp-muted)]">Muy simple. Cuando un propietario compra un vehiculo electrico:</p>
+          <p className="mt-4 text-[var(--lp-muted)]">{en ? 'It is very simple. When an owner buys an electric vehicle:' : 'Muy simple. Cuando un propietario compra un vehículo eléctrico:'}</p>
         </Reveal>
         <div className="mt-12 grid gap-6 text-left sm:grid-cols-2">
           {items.map((t, i) => (
@@ -282,23 +332,33 @@ function HowItWorks() {
   );
 }
 
-const BENEFITS = [
+const BENEFITS = {
+  es: [
   { icon: TrendingUp, title: 'Preparado para el futuro', text: 'El edificio queda listo para incorporar nuevos vehiculos electricos durante muchos años.' },
   { icon: Settings2, title: 'Instalacion ordenada', text: 'Sin cables improvisados. Sin modificaciones permanentes. Todo planificado desde el inicio.' },
   { icon: ShieldCheck, title: 'Seguridad electrica', text: 'El sistema controla permanentemente la potencia disponible.' },
   { icon: FileText, title: 'Administracion sencilla', text: 'Cada usuario paga unicamente la energia que consume.' },
   { icon: Users, title: 'Escalable', text: 'Agregar nuevos usuarios lleva muy poco tiempo.' },
-];
+  ],
+  en: [
+    { icon: TrendingUp, title: 'Ready for the future', text: 'The building is ready to add new electric vehicles for many years to come.' },
+    { icon: Settings2, title: 'Orderly installation', text: 'No improvised wiring. No permanent alterations. Everything is planned from the start.' },
+    { icon: ShieldCheck, title: 'Electrical safety', text: 'The system continuously controls the available power.' },
+    { icon: FileText, title: 'Simple management', text: 'Each user pays only for the energy they consume.' },
+    { icon: Users, title: 'Scalable', text: 'Adding new users takes very little time.' },
+  ],
+};
 
 function Benefits() {
+  const { language } = useLanguage(); const en = language === 'en';
   return (
     <section className="px-6 py-24">
       <div className="mx-auto max-w-6xl">
         <Reveal>
-          <h2 className="lp-heading text-3xl font-bold tracking-tight text-[var(--lp-fg)] md:text-4xl">Beneficios para el edificio</h2>
+          <h2 className="lp-heading text-3xl font-bold tracking-tight text-[var(--lp-fg)] md:text-4xl">{en ? 'Benefits for your building' : 'Beneficios para el edificio'}</h2>
         </Reveal>
         <div className="mt-12 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
-          {BENEFITS.map((b, i) => (
+          {BENEFITS[language].map((b, i) => (
             <Reveal key={b.title} delay={i * 0.06}>
               <div className="h-full rounded-2xl border border-[var(--lp-border)] p-7 transition-shadow duration-200 hover:shadow-[0_8px_30px_rgb(0,0,0,0.06)]">
                 <div className="inline-flex h-11 w-11 items-center justify-center rounded-xl bg-[var(--lp-surface)]">
@@ -339,26 +399,27 @@ function MockScreen({ title, items }) {
 }
 
 function Platform() {
+  const { language } = useLanguage(); const en = language === 'en';
   return (
     <section id="plataforma" className="bg-[var(--lp-surface)] px-6 py-24">
       <div className="mx-auto max-w-6xl">
         <Reveal>
-          <h2 className="lp-heading text-3xl font-bold tracking-tight text-[var(--lp-fg)] md:text-4xl">Plataforma inteligente</h2>
+          <h2 className="lp-heading text-3xl font-bold tracking-tight text-[var(--lp-fg)] md:text-4xl">{en ? 'Smart platform' : 'Plataforma inteligente'}</h2>
           <p className="mt-4 max-w-2xl text-[var(--lp-muted)]">
-            Un panel para cada rol: el propietario controla su carga, el administrador controla el edificio entero.
+            {en ? 'One dashboard for every role: owners control their charging, while managers oversee the entire building.' : 'Un panel para cada rol: el propietario controla su carga, el administrador controla el edificio entero.'}
           </p>
         </Reveal>
         <div className="mt-14 grid gap-10 lg:grid-cols-2">
           <Reveal>
             <MockScreen
-              title="Portal Propietario"
-              items={['Iniciar / detener carga', 'Consumos diarios y mensuales', 'Historial de cargas', 'Costo de su energia', 'Administrar su cargador']}
+              title={en ? 'Owner portal' : 'Portal propietario'}
+              items={en ? ['Start / stop charging', 'Daily and monthly consumption', 'Charging history', 'Energy cost', 'Manage your charger'] : ['Iniciar / detener carga', 'Consumos diarios y mensuales', 'Historial de cargas', 'Costo de su energía', 'Administrar su cargador']}
             />
           </Reveal>
           <Reveal delay={0.1}>
             <MockScreen
-              title="Portal Administrador"
-              items={['Todos los cargadores en vivo', 'Habilitar nuevos usuarios', 'Consumos generales y reportes', 'Exportar informacion', 'Liquidacion de expensas por unidad']}
+              title={en ? 'Manager portal' : 'Portal administrador'}
+              items={en ? ['All chargers, live', 'Enable new users', 'Total consumption and reports', 'Export information', 'Fees settlement by unit'] : ['Todos los cargadores en vivo', 'Habilitar nuevos usuarios', 'Consumos generales y reportes', 'Exportar información', 'Liquidación de expensas por unidad']}
             />
           </Reveal>
         </div>
@@ -368,7 +429,11 @@ function Platform() {
 }
 
 function WhoPays() {
-  const schemes = [
+  const { language } = useLanguage(); const en = language === 'en';
+  const schemes = en ? [
+    { icon: Building2, title: 'Building-funded investment', desc: 'The condominium funds the complete backbone installation and retains ownership of the asset from day one.' },
+    { icon: Handshake, title: 'Shared funding', desc: 'Together with the condominium, we assess the most convenient investment mix and split the cost of the backbone installation.' },
+  ] : [
     {
       icon: Building2,
       title: 'Inversion a cargo del edificio',
@@ -384,9 +449,9 @@ function WhoPays() {
     <section className="px-6 py-24">
       <div className="mx-auto max-w-4xl">
         <Reveal>
-          <h2 className="lp-heading text-3xl font-bold tracking-tight text-[var(--lp-fg)] md:text-4xl">¿Quien financia la instalacion?</h2>
+          <h2 className="lp-heading text-3xl font-bold tracking-tight text-[var(--lp-fg)] md:text-4xl">{en ? 'Who funds the installation?' : '¿Quién financia la instalación?'}</h2>
           <p className="mt-4 leading-relaxed text-[var(--lp-muted)]">
-            Analizamos cada edificio puntualmente y proponemos el esquema que mejor se ajusta a su caso. No hay una formula unica.
+            {en ? 'We evaluate each building individually and propose the model that best fits its needs. There is no one-size-fits-all formula.' : 'Analizamos cada edificio puntualmente y proponemos el esquema que mejor se ajusta a su caso. No hay una fórmula única.'}
           </p>
         </Reveal>
         <div className="mt-8 grid gap-4 sm:grid-cols-2">
@@ -404,7 +469,7 @@ function WhoPays() {
           <div className="mt-6 flex items-center gap-3 rounded-xl border border-[var(--lp-border)] p-4">
             <Wallet className="h-5 w-5 shrink-0 text-[var(--lp-green)]" />
             <p className="text-[var(--lp-fg)]">
-              En todos los casos, cada propietario que incorpora un vehiculo electrico paga su cargador individual y el abono mensual de uso y mantenimiento.
+              {en ? 'In every case, each owner who adds an electric vehicle pays for their individual charger and the monthly use and maintenance fee.' : 'En todos los casos, cada propietario que incorpora un vehículo eléctrico paga su cargador individual y el abono mensual de uso y mantenimiento.'}
             </p>
           </div>
         </Reveal>
@@ -414,12 +479,13 @@ function WhoPays() {
 }
 
 function BrandsWall() {
+  const { language } = useLanguage();
   return (
     <section className="px-6 py-16">
       <div className="mx-auto max-w-6xl">
         <Reveal>
           <p className="text-center text-sm font-semibold uppercase tracking-wide text-[var(--lp-muted)]">
-            Compatible con las principales marcas de vehiculos electricos e hibridos enchufables
+            {language === 'en' ? 'Compatible with leading electric and plug-in hybrid vehicle brands' : 'Compatible con las principales marcas de vehículos eléctricos e híbridos enchufables'}
           </p>
         </Reveal>
         <Reveal delay={0.1} className="mt-8">
@@ -431,17 +497,17 @@ function BrandsWall() {
 }
 
 function Compatibility() {
+  const { language } = useLanguage(); const en = language === 'en';
   return (
     <section className="bg-[var(--lp-surface)] px-6 py-24">
       <div className="mx-auto max-w-4xl text-center">
         <Reveal>
           <Car className="mx-auto h-8 w-8 text-[var(--lp-blue)]" />
           <h2 className="lp-heading mt-4 text-3xl font-bold tracking-tight text-[var(--lp-fg)] md:text-4xl">
-            Compatible con multiples cargadores
+            {en ? 'Compatible with multiple chargers' : 'Compatible con múltiples cargadores'}
           </h2>
           <p className="mt-4 leading-relaxed text-[var(--lp-muted)]">
-            Si el propietario ya posee un Wallbox compatible con los protocolos soportados por la plataforma, podra
-            integrarse al sistema. En caso contrario, BILON provee un cargador totalmente compatible.
+            {en ? 'If the owner already has a wallbox compatible with the platform’s supported protocols, it can be integrated into the system. Otherwise, BILON provides a fully compatible charger.' : 'Si el propietario ya posee un Wallbox compatible con los protocolos soportados por la plataforma, podrá integrarse al sistema. En caso contrario, BILON provee un cargador totalmente compatible.'}
           </p>
         </Reveal>
       </div>
@@ -487,6 +553,7 @@ function Videos() {
 }
 
 function LeadForm() {
+  const { language } = useLanguage(); const en = language === 'en';
   const [form, setForm] = useState({ nombre: '', email: '', edificio: '', cocheras: '', ubicacion: '', mensaje: '' });
   const [status, setStatus] = useState('idle');
 
@@ -506,8 +573,8 @@ function LeadForm() {
     return (
       <div className="rounded-2xl border border-[var(--lp-border)] bg-[var(--lp-bg)] p-8 text-center">
         <CheckCircle2 className="mx-auto h-8 w-8 text-[var(--lp-green)]" />
-        <p className="lp-heading mt-3 font-semibold text-[var(--lp-fg)]">Listo, recibimos tu consulta.</p>
-        <p className="mt-1 text-sm text-[var(--lp-muted)]">Te contactamos a la brevedad.</p>
+        <p className="lp-heading mt-3 font-semibold text-[var(--lp-fg)]">{en ? 'Thanks, we received your enquiry.' : 'Listo, recibimos tu consulta.'}</p>
+        <p className="mt-1 text-sm text-[var(--lp-muted)]">{en ? 'We will get in touch shortly.' : 'Te contactamos a la brevedad.'}</p>
       </div>
     );
   }
@@ -515,39 +582,39 @@ function LeadForm() {
   return (
     <form onSubmit={handleSubmit} className="rounded-2xl border border-[var(--lp-border)] bg-[var(--lp-bg)] p-8">
       <div className="grid gap-4 sm:grid-cols-2">
-        <input required placeholder="Tu nombre" value={form.nombre} onChange={(e) => setForm({ ...form, nombre: e.target.value })}
+        <input required placeholder={en ? 'Your name' : 'Tu nombre'} value={form.nombre} onChange={(e) => setForm({ ...form, nombre: e.target.value })}
           className="h-11 rounded-lg border border-[var(--lp-border)] px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-[var(--lp-blue)]" />
-        <input required type="email" placeholder="Tu email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })}
+        <input required type="email" placeholder={en ? 'Your email' : 'Tu email'} value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })}
           className="h-11 rounded-lg border border-[var(--lp-border)] px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-[var(--lp-blue)]" />
-        <input placeholder="Nombre del edificio" value={form.edificio} onChange={(e) => setForm({ ...form, edificio: e.target.value })}
+        <input placeholder={en ? 'Building name' : 'Nombre del edificio'} value={form.edificio} onChange={(e) => setForm({ ...form, edificio: e.target.value })}
           className="h-11 rounded-lg border border-[var(--lp-border)] px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-[var(--lp-blue)]" />
-        <input placeholder="Cantidad de cocheras" value={form.cocheras} onChange={(e) => setForm({ ...form, cocheras: e.target.value })}
+        <input placeholder={en ? 'Number of parking spaces' : 'Cantidad de cocheras'} value={form.cocheras} onChange={(e) => setForm({ ...form, cocheras: e.target.value })}
           className="h-11 rounded-lg border border-[var(--lp-border)] px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-[var(--lp-blue)]" />
-        <input placeholder="Ubicacion" value={form.ubicacion} onChange={(e) => setForm({ ...form, ubicacion: e.target.value })}
+        <input placeholder={en ? 'Location' : 'Ubicación'} value={form.ubicacion} onChange={(e) => setForm({ ...form, ubicacion: e.target.value })}
           className="h-11 rounded-lg border border-[var(--lp-border)] px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-[var(--lp-blue)] sm:col-span-2" />
-        <textarea placeholder="Contanos un poco mas (opcional)" value={form.mensaje} onChange={(e) => setForm({ ...form, mensaje: e.target.value })}
+        <textarea placeholder={en ? 'Tell us a little more (optional)' : 'Contanos un poco más (opcional)'} value={form.mensaje} onChange={(e) => setForm({ ...form, mensaje: e.target.value })}
           rows={3} className="rounded-lg border border-[var(--lp-border)] px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-[var(--lp-blue)] sm:col-span-2" />
       </div>
-      {status === 'error' && <p className="mt-3 text-sm text-red-600">No pudimos enviar tu consulta. Proba de nuevo.</p>}
+      {status === 'error' && <p className="mt-3 text-sm text-red-600">{en ? 'We could not send your enquiry. Please try again.' : 'No pudimos enviar tu consulta. Probá de nuevo.'}</p>}
       <button type="submit" disabled={status === 'sending'}
         className="mt-5 inline-flex h-12 w-full cursor-pointer items-center justify-center gap-2 rounded-lg bg-[var(--lp-blue)] text-sm font-semibold text-white transition-colors hover:bg-[#0052cc] disabled:opacity-50 sm:w-auto sm:px-8">
-        {status === 'sending' ? 'Enviando...' : 'Solicitar una visita tecnica'}
+        {status === 'sending' ? (en ? 'Sending…' : 'Enviando…') : (en ? 'Request a technical visit' : 'Solicitar una visita técnica')}
       </button>
     </form>
   );
 }
 
 function FinalCta() {
+  const { language } = useLanguage(); const en = language === 'en';
   return (
     <section id="contacto" className="px-6 py-24">
       <div className="mx-auto max-w-3xl text-center">
         <Reveal>
           <h2 className="lp-heading text-3xl font-bold tracking-tight text-[var(--lp-fg)] md:text-4xl">
-            Prepara hoy tu edificio para la movilidad del futuro.
+            {en ? 'Prepare your building today for the mobility of tomorrow.' : 'Prepará hoy tu edificio para la movilidad del futuro.'}
           </h2>
           <p className="mt-4 leading-relaxed text-[var(--lp-muted)]">
-            La cantidad de vehiculos electricos crecera año tras año. Los edificios que comiencen a prepararse hoy
-            evitaran problemas tecnicos y costos mucho mayores en el futuro.
+            {en ? 'The number of electric vehicles will grow year after year. Buildings that prepare today will avoid technical issues and much higher future costs.' : 'La cantidad de vehículos eléctricos crecerá año tras año. Los edificios que comiencen a prepararse hoy evitarán problemas técnicos y costos mucho mayores en el futuro.'}
           </p>
         </Reveal>
         <Reveal delay={0.1} className="mt-10">
@@ -560,7 +627,7 @@ function FinalCta() {
             rel="noreferrer"
             className="mt-4 inline-flex h-11 cursor-pointer items-center gap-2 text-sm font-medium text-[var(--lp-green)] hover:underline"
           >
-            <MessageCircle className="h-4 w-4" /> Hablar por WhatsApp
+            <MessageCircle className="h-4 w-4" /> {en ? 'Chat on WhatsApp' : 'Hablar por WhatsApp'}
           </a>
         </Reveal>
       </div>
@@ -609,6 +676,7 @@ const SOCIALS = [
 ];
 
 function Footer() {
+  const { language } = useLanguage();
   return (
     <footer className="border-t border-[var(--lp-border)] px-6 py-12">
       <div className="mx-auto flex max-w-6xl flex-col items-center gap-6 sm:flex-row sm:items-start sm:justify-between">
@@ -618,7 +686,7 @@ function Footer() {
           <p className="text-xs text-[var(--lp-muted)]">
             <a href="mailto:bilonpresupuestos@gmail.com" className="hover:underline">bilonpresupuestos@gmail.com</a>
           </p>
-          <p className="text-xs text-[var(--lp-muted)]">© {new Date().getFullYear()} BILON. Infraestructura inteligente para movilidad electrica.</p>
+          <p className="text-xs text-[var(--lp-muted)]">© {new Date().getFullYear()} BILON. {language === 'en' ? 'Smart infrastructure for electric mobility.' : 'Infraestructura inteligente para movilidad eléctrica.'}</p>
         </div>
         <div className="flex items-center gap-3">
           {SOCIALS.map((s) => (
@@ -640,9 +708,11 @@ function Footer() {
 }
 
 function ChatWidget() {
+  const { language } = useLanguage();
+  const en = language === 'en';
   const [open, setOpen] = useState(false);
   const [messages, setMessages] = useState([
-    { role: 'assistant', content: 'Hola! Soy Jimena de Bilon, en que te puedo ayudar?' },
+    { role: 'assistant', content: 'Hola! Soy Jimena de Bilon, ¿en qué te puedo ayudar?' },
   ]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -661,9 +731,9 @@ function ChatWidget() {
     setLoading(true);
     try {
       const { data } = await api.post('/public/chat', { messages: next });
-      setMessages([...next, { role: 'assistant', content: data.reply || 'No pude responder eso, proba de nuevo.' }]);
+      setMessages([...next, { role: 'assistant', content: data.reply || (en ? 'I could not answer that. Please try again.' : 'No pude responder eso, probá de nuevo.') }]);
     } catch {
-      setMessages([...next, { role: 'assistant', content: 'Hubo un problema. Proba de nuevo en un rato, o escribinos por WhatsApp.' }]);
+      setMessages([...next, { role: 'assistant', content: en ? 'There was a problem. Please try again shortly, or contact us on WhatsApp.' : 'Hubo un problema. Probá de nuevo en un rato, o escribinos por WhatsApp.' }]);
     } finally {
       setLoading(false);
     }
@@ -674,8 +744,8 @@ function ChatWidget() {
       {open && (
         <div className="mb-3 flex h-[min(28rem,70dvh)] w-[min(20rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-2xl border border-[var(--lp-border)] bg-[var(--lp-bg)] shadow-2xl">
           <div className="flex items-center justify-between border-b border-[var(--lp-border)] bg-[var(--lp-fg)] px-4 py-3">
-            <span className="text-sm font-semibold text-white">Asistente BILON</span>
-            <button type="button" onClick={() => setOpen(false)} className="cursor-pointer text-white/80 hover:text-white" aria-label="Cerrar chat">
+            <span className="text-sm font-semibold text-white">{en ? 'BILON assistant' : 'Asistente BILON'}</span>
+            <button type="button" onClick={() => setOpen(false)} className="cursor-pointer text-white/80 hover:text-white" aria-label={en ? 'Close chat' : 'Cerrar chat'}>
               <X className="h-4 w-4" />
             </button>
           </div>
@@ -687,17 +757,17 @@ function ChatWidget() {
                 {m.content}
               </div>
             ))}
-            {loading && <div className="w-fit rounded-xl bg-[var(--lp-surface)] px-3 py-2 text-sm text-[var(--lp-muted)]">Escribiendo...</div>}
+            {loading && <div className="w-fit rounded-xl bg-[var(--lp-surface)] px-3 py-2 text-sm text-[var(--lp-muted)]">{en ? 'Typing…' : 'Escribiendo…'}</div>}
           </div>
           <div className="flex items-center gap-2 border-t border-[var(--lp-border)] p-3">
             <input
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && send()}
-              placeholder="Escribi tu consulta..."
+              placeholder={en ? 'Write your question…' : 'Escribí tu consulta…'}
               className="h-10 flex-1 rounded-lg border border-[var(--lp-border)] px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-[var(--lp-blue)]"
             />
-            <button type="button" onClick={send} disabled={loading} className="flex h-10 w-10 shrink-0 cursor-pointer items-center justify-center rounded-lg bg-[var(--lp-blue)] text-white disabled:opacity-50" aria-label="Enviar">
+            <button type="button" onClick={send} disabled={loading} className="flex h-10 w-10 shrink-0 cursor-pointer items-center justify-center rounded-lg bg-[var(--lp-blue)] text-white disabled:opacity-50" aria-label={en ? 'Send' : 'Enviar'}>
               <Send className="h-4 w-4" />
             </button>
           </div>
@@ -707,7 +777,7 @@ function ChatWidget() {
         type="button"
         onClick={() => setOpen((v) => !v)}
         className="flex h-14 w-14 cursor-pointer items-center justify-center rounded-full bg-[var(--lp-blue)] text-white shadow-lg transition-transform duration-200 hover:scale-105"
-        aria-label="Abrir chat"
+        aria-label={en ? 'Open chat' : 'Abrir chat'}
       >
         {open ? <X className="h-6 w-6" /> : <MessageCircle className="h-6 w-6" />}
       </button>
@@ -716,6 +786,24 @@ function ChatWidget() {
 }
 
 export default function Landing() {
+  useEffect(() => {
+    const canonical = document.createElement('link');
+    canonical.rel = 'canonical';
+    canonical.href = 'https://bilon.com.ar/';
+    const schema = document.createElement('script');
+    schema.type = 'application/ld+json';
+    schema.textContent = JSON.stringify({
+      '@context': 'https://schema.org',
+      '@type': 'Organization',
+      name: 'BILON Smart Buildings',
+      url: 'https://bilon.com.ar/',
+      logo: 'https://bilon.com.ar/logo.png',
+      email: 'bilonpresupuestos@gmail.com',
+      sameAs: SOCIALS.map(({ href }) => href),
+    });
+    document.head.append(canonical, schema);
+    return () => { canonical.remove(); schema.remove(); };
+  }, []);
   return (
     <div className="landing min-h-dvh">
       <Nav />

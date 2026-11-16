@@ -280,6 +280,29 @@
 .lp-hero-delay-4 { animation-delay: 4.2s; }
 .lp-hero-delay-5 { animation-delay: 5.3s; }
 
+.language-flag {
+  display: block;
+  width: 22px;
+  height: 15px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--lp-fg) 18%, transparent);
+  border-radius: 2px;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 12%);
+}
+
+.language-flag-ar {
+  background: linear-gradient(to bottom, #75aadb 0 33.333%, #fff 33.333% 66.666%, #75aadb 66.666%);
+}
+
+.language-flag-gb {
+  background:
+    linear-gradient(33deg, transparent 44%, #fff 44% 48%, #c8102e 48% 52%, #fff 52% 56%, transparent 56%),
+    linear-gradient(-33deg, transparent 44%, #fff 44% 48%, #c8102e 48% 52%, #fff 52% 56%, transparent 56%),
+    linear-gradient(to right, transparent 38%, #fff 38% 43%, #c8102e 43% 57%, #fff 57% 62%, transparent 62%),
+    linear-gradient(to bottom, transparent 33%, #fff 33% 40%, #c8102e 40% 60%, #fff 60% 67%, transparent 67%),
+    #012169;
+}
+
 @keyframes lp-hero-bg-pan {
   0%, 100% { transform: scale(1.08) translate(0, 0); }
   50% { transform: scale(1.16) translate(-1%, -1%); }

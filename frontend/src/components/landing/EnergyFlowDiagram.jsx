@@ -69,7 +69,8 @@ function CarLane({ demand, index }) {
   );
 }
 
-export default function EnergyFlowDiagram() {
+export default function EnergyFlowDiagram({ language = 'es' }) {
+  const en = language === 'en';
   const [demand, setDemand] = useState(LOW);
 
   useEffect(() => {
@@ -90,17 +91,17 @@ export default function EnergyFlowDiagram() {
     <div className="rounded-3xl border border-[var(--lp-border)] bg-[var(--lp-bg)] p-6 shadow-[0_20px_60px_rgb(0,0,0,0.06)] sm:p-10">
       {/* Source chain */}
       <div className="flex items-center justify-center gap-2 sm:gap-4">
-        <Node icon={Zap} label="Suministro" />
+        <Node icon={Zap} label={en ? 'Supply' : 'Suministro'} />
         <FlowLine />
-        <Node icon={GaugeIcon} label="Medidor" />
+        <Node icon={GaugeIcon} label={en ? 'Meter' : 'Medidor'} />
         <FlowLine />
-        <Node icon={Cpu} label="EVMS" sub="cerebro" />
+        <Node icon={Cpu} label="EVMS" sub={en ? 'brain' : 'cerebro'} />
       </div>
 
       {/* Demand gauge */}
       <div className="mx-auto mt-8 max-w-md">
         <div className="mb-2 flex items-center justify-between text-xs font-medium text-[var(--lp-muted)]">
-          <span>Demanda del edificio</span>
+          <span>{en ? 'Building demand' : 'Demanda del edificio'}</span>
           <AnimatePresence mode="wait">
             <motion.span
               key={isHigh ? 'alta' : 'baja'}
@@ -111,7 +112,7 @@ export default function EnergyFlowDiagram() {
               style={{ color: gaugeColor }}
               className="font-bold"
             >
-              {isHigh ? 'ALTA' : 'BAJA'}
+              {isHigh ? (en ? 'HIGH' : 'ALTA') : (en ? 'LOW' : 'BAJA')}
             </motion.span>
           </AnimatePresence>
         </div>
@@ -143,17 +144,17 @@ export default function EnergyFlowDiagram() {
             className="text-sm leading-relaxed text-[var(--lp-muted)]"
           >
             {isHigh
-              ? 'El EVMS detecta alta demanda y reduce automaticamente el ritmo de carga de cada auto para proteger la instalacion.'
-              : 'Con baja demanda, el EVMS entrega mas potencia disponible y los autos cargan a mayor velocidad.'}
+              ? (en ? 'The EVMS detects high demand and automatically reduces each car’s charging rate to protect the installation.' : 'El EVMS detecta alta demanda y reduce automáticamente el ritmo de carga de cada auto para proteger la instalación.')
+              : (en ? 'With low demand, the EVMS provides more available power and vehicles charge faster.' : 'Con baja demanda, el EVMS entrega más potencia disponible y los autos cargan a mayor velocidad.')}
           </motion.p>
         </AnimatePresence>
       </div>
 
       {/* Legend */}
       <div className="mt-6 flex flex-wrap items-center justify-center gap-x-6 gap-y-2 border-t border-[var(--lp-border)] pt-6 text-[11px] text-[var(--lp-muted)]">
-        <span className="flex items-center gap-1.5"><span className="h-0.5 w-4 bg-[var(--lp-blue)]" /> Energia (potencia)</span>
-        <span className="flex items-center gap-1.5"><span className="h-3 w-3 rounded-full" style={{ background: gaugeColor }} /> Demanda del edificio</span>
-        <span className="flex items-center gap-1.5"><ChevronDown className="h-3.5 w-3.5" /> Ritmo de carga entregado</span>
+        <span className="flex items-center gap-1.5"><span className="h-0.5 w-4 bg-[var(--lp-blue)]" /> {en ? 'Energy (power)' : 'Energía (potencia)'}</span>
+        <span className="flex items-center gap-1.5"><span className="h-3 w-3 rounded-full" style={{ background: gaugeColor }} /> {en ? 'Building demand' : 'Demanda del edificio'}</span>
+        <span className="flex items-center gap-1.5"><ChevronDown className="h-3.5 w-3.5" /> {en ? 'Charging rate delivered' : 'Ritmo de carga entregado'}</span>
       </div>
     </div>
   );

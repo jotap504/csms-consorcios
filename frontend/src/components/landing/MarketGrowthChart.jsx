@@ -24,8 +24,8 @@ const DATA = [
 
 const COUNT_DURATION_MS = 3200;
 
-function CountUp({ to, active, duration = COUNT_DURATION_MS }) {
-  const [value, setValue] = useState(0);
+function CountUp({ to, active, duration = COUNT_DURATION_MS, locale = 'es-AR' }) {
+  const [value, setValue] = useState(to);
   useEffect(() => {
     if (!active) return undefined;
     const start = performance.now();
@@ -40,17 +40,17 @@ function CountUp({ to, active, duration = COUNT_DURATION_MS }) {
     return () => cancelAnimationFrame(raf);
   }, [active, to, duration]);
 
-  return <span>{value.toLocaleString('es-AR')}</span>;
+  return <span>{value.toLocaleString(locale)}</span>;
 }
 
-function TooltipContent({ active, payload }) {
+function TooltipContent({ active, payload, language }) {
   if (!active || !payload?.length) return null;
   const d = payload[0].payload;
   return (
     <div className="rounded-lg border border-[var(--lp-border)] bg-[var(--lp-bg)] px-3 py-2 text-xs shadow-md">
       <p className="font-semibold text-[var(--lp-fg)]">{d.year}</p>
       <p className="text-[var(--lp-muted)]">{d.tramo}</p>
-      <p className="mt-1 font-semibold text-[var(--lp-blue)]">{d.value.toLocaleString('es-AR')} unidades</p>
+      <p className="mt-1 font-semibold text-[var(--lp-blue)]">{d.value.toLocaleString(language === 'en' ? 'en-US' : 'es-AR')} {language === 'en' ? 'units' : 'unidades'}</p>
     </div>
   );
 }
@@ -64,14 +64,18 @@ function CurvaDot({ cx, cy, payload }) {
   return <circle cx={cx} cy={cy} r={5} fill="var(--lp-blue)" stroke="white" strokeWidth={2} />;
 }
 
-export default function MarketGrowthChart() {
+export default function MarketGrowthChart({ language = 'es' }) {
+  const en = language === 'en';
+  const data = en
+    ? DATA.map((item) => ({ ...item, tramo: item.parcial ? 'First half (Jan–Jun)' : 'Full year' }))
+    : DATA;
   const ref = useRef(null);
   const inView = useInView(ref, { once: true, margin: '-100px' });
 
   return (
     <div ref={ref}>
       <div className="grid gap-4 sm:grid-cols-3">
-        {DATA.map((d, i) => (
+        {data.map((d, i) => (
           <motion.div
             key={d.year}
             initial={{ opacity: 0, y: 16 }}
@@ -82,10 +86,10 @@ export default function MarketGrowthChart() {
           >
             <p className="lp-heading text-sm font-semibold text-[var(--lp-muted)]">
               {d.year}
-              {d.parcial && <span className="ml-1.5 rounded-full bg-[var(--lp-blue)]/10 px-2 py-0.5 text-[10px] font-semibold text-[var(--lp-blue)]">EN CURSO</span>}
+              {d.parcial && <span className="ml-1.5 rounded-full bg-[var(--lp-blue)]/10 px-2 py-0.5 text-[10px] font-semibold text-[var(--lp-blue)]">{en ? 'IN PROGRESS' : 'EN CURSO'}</span>}
             </p>
             <p className="lp-heading mt-1 text-4xl font-bold tabular-nums tracking-tight text-[var(--lp-fg)]">
-              <CountUp to={d.value} active={inView} />
+              <CountUp to={d.value} active={inView} locale={language === 'en' ? 'en-US' : 'es-AR'} />
             </p>
             <p className="mt-1 text-xs text-[var(--lp-muted)]">{d.tramo}</p>
           </motion.div>
@@ -102,7 +106,7 @@ export default function MarketGrowthChart() {
         <div className="h-64 w-full sm:h-80">
           <ResponsiveContainer width="100%" height="100%">
             {inView ? (
-              <AreaChart data={DATA} margin={{
+              <AreaChart data={data} margin={{
                 top: 12, right: 16, left: -12, bottom: 0,
               }}
               >
@@ -115,7 +119,7 @@ export default function MarketGrowthChart() {
                 <CartesianGrid vertical={false} stroke="var(--lp-border)" />
                 <XAxis dataKey="year" tickLine={false} axisLine={false} tick={{ fill: 'var(--lp-muted)', fontSize: 13 }} />
                 <YAxis tickLine={false} axisLine={false} tick={{ fill: 'var(--lp-muted)', fontSize: 12 }} width={56} />
-                <Tooltip content={<TooltipContent />} cursor={{ stroke: 'var(--lp-border)', strokeWidth: 1 }} />
+                <Tooltip content={<TooltipContent language={language} />} cursor={{ stroke: 'var(--lp-border)', strokeWidth: 1 }} />
                 <Area
                   type="monotone"
                   dataKey="value"
@@ -135,9 +139,9 @@ export default function MarketGrowthChart() {
         <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-[var(--lp-border)] pt-4 text-xs text-[var(--lp-muted)]">
           <span className="flex items-center gap-1.5">
             <TrendingUp className="h-3.5 w-3.5 text-[var(--lp-green)]" />
-            2026 ya supera 6,9x el total patentado en todo 2025, con seis meses de datos.
+            {en ? '2026 already exceeds the total registered in 2025 by 6.9×, with six months of data.' : '2026 ya supera 6,9× el total patentado en todo 2025, con seis meses de datos.'}
           </span>
-          <span>Fuente: ACARA - patentamientos PHEV + 100% electricos. 2026: enero-junio, año en curso.</span>
+          <span>{en ? 'Source: ACARA — PHEV + 100% EV registrations. 2026: January–June, year in progress.' : 'Fuente: ACARA — patentamientos PHEV + 100% eléctricos. 2026: enero-junio, año en curso.'}</span>
         </div>
       </motion.div>
     </div>

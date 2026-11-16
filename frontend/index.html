@@ -4,7 +4,24 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/png" href="/logo.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>CSMS Consorcios</title>
+    <title>Sistema de gestión de carga de vehículos eléctricos | BILON</title>
+    <meta name="description" content="BILON ofrece un sistema de gestión de carga de vehículos eléctricos para edificios y consorcios, con balanceo inteligente y control de consumo." />
+    <style>
+      body { margin: 0; }
+      .initial-landing { min-height: 100vh; background: #050b16 url('/hero-bg.png') center / cover; color: white; font-family: system-ui, sans-serif; }
+      .initial-landing header { height: 64px; background: #070b14; display: flex; align-items: center; padding: 0 24px; }
+      .initial-landing header img { width: auto; height: 32px; }
+      .initial-landing main { min-height: calc(100vh - 64px); display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 24px; box-sizing: border-box; background: rgba(5, 11, 22, .68); }
+      .initial-loader { width: 104px; height: 104px; border: 3px solid rgba(186, 230, 253, .18); border-top-color: #7dd3fc; border-radius: 50%; display: grid; place-items: center; position: relative; }
+      .initial-loader::before { content: ''; position: absolute; inset: -3px; border: 3px solid transparent; border-top-color: #7dd3fc; border-radius: 50%; animation: initial-spin 1.2s linear infinite; }
+      .initial-loader span { color: #bae6fd; font-size: .8rem; letter-spacing: .08em; }
+      .initial-copy { animation: initial-appear 2.8s ease-out both; }
+      .initial-landing h1 { max-width: 900px; margin: 32px auto 12px; font-size: clamp(1.3rem, 4vw, 2.2rem); line-height: 1.2; color: rgba(186, 230, 253, .7); }
+      .initial-landing p { max-width: 700px; line-height: 1.5; color: rgba(255, 255, 255, .6); }
+      @keyframes initial-spin { to { transform: rotate(360deg); } }
+      @keyframes initial-appear { from { opacity: 0; } to { opacity: 1; } }
+      @media (prefers-reduced-motion: reduce) { .initial-loader::before, .initial-copy { animation: none; } }
+    </style>
     <script>
       // Corre antes de pintar (bloqueante, no type=module) para que no haya
       // flash del tema equivocado. Misma logica que lib/theme.js: usa la
@@ -21,7 +38,7 @@
     </script>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root"><div class="initial-landing"><header><img src="/logo.png" alt="BILON Smart Buildings"></header><main><div class="initial-loader" role="status" aria-label="Cargando"><span>Loading...</span></div><div class="initial-copy"><h1>Sistema de gestión de carga de vehículos eléctricos</h1><p>BILON prepara edificios y consorcios para la carga de vehículos eléctricos con infraestructura eléctrica, medición y balanceo inteligente de potencia.</p></div></main></div></div>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>
