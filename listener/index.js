@@ -668,7 +668,60 @@ function pendingKey16(stationId, correlationId) {
   return `${stationId}::${correlationId}`;
 }
 
+// Plataforma de prueba publica (/ocpp-test): CitrineOS responde "Invalid" a
+// cualquier idTag que no este en su tabla "Authorizations", y el equipo corta
+// la carga a los pocos segundos (StopTransaction DeAuthorized). Para que un
+// proveedor pueda iniciar la carga desde el wallbox (RFID/app) con sus propios
+// idTag, los "aprendemos" apenas aparecen, solo para equipos que NO son
+// cargadores reales de un consorcio. CitrineOS ya contesto el primer intento,
+// asi que funciona desde el reintento (el equipo suele reintentar solo).
+// - Nunca pisa un token existente (no reactiva tarjetas bloqueadas).
+// - Se marcan con customData.origen y se borran a las 24 h (ver main()).
+const AUTO_TEST_TOKEN_ORIGEN = 'ocpp-test-auto';
+const AUTO_TEST_TOKEN_TTL = '24 hours';
+
+async function autoAuthorizeTestToken(context, idToken, idTokenType) {
+  if (!idToken) return;
+  try {
+    await insertAutoTestToken(context, idToken, idTokenType);
+  } catch (err) {
+    // Nunca debe frenar el procesamiento del mensaje (ej. la sesion 1.6).
+    console.error(`[OcppTest] no se pudo autorizar idTag ${idToken}:`, err.message);
+  }
+}
+
+async function insertAutoTestToken(context, idToken, idTokenType) {
+  const stationId = context.ocppConnectionName ?? context.stationId;
+  const real = await pool.query('SELECT 1 FROM cargadores WHERE ocpp_id = $1', [stationId]);
+  if (real.rowCount > 0) return;
+  const result = await pool.query(
+    // CitrineOS busca por idToken (sin tipo) y exige exactamente una fila, por
+    // eso el NOT EXISTS es por idToken. cacheExpiryDateTime hace que CitrineOS
+    // mismo responda "Expired" pasado el plazo aunque la purga no haya corrido.
+    `INSERT INTO "Authorizations" ("idToken", "idTokenType", status, "tenantId", "customData",
+                                   "cacheExpiryDateTime", "concurrentTransaction", "createdAt", "updatedAt")
+     SELECT $1, $2, 'Accepted', 1, $3::jsonb, NOW() + $4::interval, true, NOW(), NOW()
+     WHERE NOT EXISTS (SELECT 1 FROM "Authorizations" WHERE "idToken" = $1)
+     ON CONFLICT ("idToken", "idTokenType") DO NOTHING`,
+    [idToken, idTokenType ?? 'ISO14443', JSON.stringify({ origen: AUTO_TEST_TOKEN_ORIGEN, stationId }), AUTO_TEST_TOKEN_TTL],
+  );
+  if (result.rowCount > 0) {
+    console.log(`[OcppTest] idTag ${idToken} de ${stationId} (equipo de prueba) autorizado por ${AUTO_TEST_TOKEN_TTL}`);
+  }
+}
+
+async function purgeAutoTestTokens() {
+  const result = await pool.query(
+    `DELETE FROM "Authorizations" a
+     WHERE a."customData"->>'origen' = $1
+       AND a."createdAt" < NOW() - $2::interval`,
+    [AUTO_TEST_TOKEN_ORIGEN, AUTO_TEST_TOKEN_TTL],
+  );
+  if (result.rowCount > 0) console.log(`[OcppTest] ${result.rowCount} idTag de prueba vencidos borrados`);
+}
+
 async function handleOcpp16StartRequest(context, payload) {
+  await autoAuthorizeTestToken(context, payload.idTag);
   pendingStarts16.set(pendingKey16(context.stationId, context.correlationId), {
     idTag: payload.idTag,
     startWh: Number(payload.meterStart) || 0,
@@ -834,6 +887,13 @@ async function main() {
     state: '1',
     action: 'MeterValues',
   });
+  // Authorize (1.6 y 2.0.1): solo para aprender idTag de equipos de prueba.
+  await channel.bindQueue(QUEUE, EXCHANGE, '', {
+    'x-match': 'all',
+    origin: 'cs',
+    state: '1',
+    action: 'Authorize',
+  });
 
   console.log(`Escuchando eventos OCPP 2.0.1 (TransactionEvent) y 1.6 (Start/Stop/MeterValues) en cola "${QUEUE}"...`);
 
@@ -843,6 +903,11 @@ async function main() {
   // missed (e.g. listener was briefly down) and the last pushed profile is
   // stale. Groups by (consorcio, sector) so cada sector se rebalancea aparte.
   setInterval(async () => {
+    try {
+      await purgeAutoTestTokens();
+    } catch (err) {
+      console.error('Error borrando idTag de prueba vencidos:', err.message);
+    }
     try {
       await reconcileOrphanSessions();
       const result = await pool.query(
@@ -881,7 +946,10 @@ async function main() {
         await handleOcpp16StopTransaction(context, payload);
       } else if (action === 'MeterValues') {
         await handleOcpp16MeterValues(context, payload);
+      } else if (action === 'Authorize') {
+        await autoAuthorizeTestToken(context, payload.idTag ?? payload.idToken?.idToken, payload.idToken?.type);
       } else if (action === 'TransactionEvent') {
+        if (payload.idToken?.idToken) await autoAuthorizeTestToken(context, payload.idToken.idToken, payload.idToken.type);
         await handleTransactionEvent(context, payload);
       } else if (action === 'FirmwareStatusNotification') {
         await handleFirmwareStatusNotification(context, payload);
