@@ -223,22 +223,44 @@ async function runSmartChargingTest(ocppId, deps, estado = crearEstado(ocppId)) 
   }
 
   let is16 = false;
+  let maxCurrentInicial = null; // MaxChargingCurrent antes de la prueba; null = el equipo no tiene esa clave
   let variante = null; // formato aceptado por el equipo
   let perfilInstalado = false;
   const prefijo = () => (is16 ? '/ocpp/1.6' : '/ocpp/2.0.1');
   const setProfile = (v, amps) => enviar('SetChargingProfile', `${prefijo()}/smartcharging/setChargingProfile`, buildSetProfile(is16, v, amps));
+
+  // Algunos firmwares (familia XQ/YC, WiFi_FC4X) rechazan GetCompositeSchedule
+  // pero copian el limite del ultimo perfil a su clave propietaria
+  // MaxChargingCurrent: se usa como verificacion alternativa.
+  async function leerMaxChargingCurrent() {
+    const r = await enviar('GetConfiguration', '/ocpp/1.6/configuration/getConfiguration', { key: ['MaxChargingCurrent'] });
+    if (r.tipo !== 'resultado') return null;
+    const v = Number((r.payload?.configurationKey ?? []).find((k) => k.key === 'MaxChargingCurrent')?.value);
+    return Number.isFinite(v) ? v : null;
+  }
+
+  async function verificarPorMaxCurrent(pasoId, amps, motivo) {
+    if (!is16 || maxCurrentInicial == null || variante.unit !== 'A') return false;
+    const v = await leerMaxChargingCurrent();
+    if (v == null) return false;
+    const coincide = Math.abs(v - amps) <= 0.5;
+    marcar(pasoId, coincide ? 'ok' : 'fallo',
+      `${motivo} Verificado con la clave del fabricante MaxChargingCurrent=${v} A${coincide ? '' : ` - se esperaba ${amps} A`}. / Checked via vendor key MaxChargingCurrent.`);
+    return coincide;
+  }
 
   async function verificarComposite(pasoId, amps) {
     const body = is16
       ? { connectorId: variante.connectorId, duration: 3600, chargingRateUnit: 'A' }
       : { evseId: variante.connectorId, duration: 3600, chargingRateUnit: 'A' };
     const r = await enviar('GetCompositeSchedule', `${prefijo()}/smartcharging/getCompositeSchedule`, body);
-    if (r.tipo !== 'resultado') {
-      marcar(pasoId, 'omitido', `No se pudo verificar: ${describir(r)}`);
-      return null;
-    }
-    if (r.payload?.status !== 'Accepted') {
-      marcar(pasoId, 'omitido', `GetCompositeSchedule no disponible en el equipo (status=${r.payload?.status}).`);
+    if (r.tipo !== 'resultado' || r.payload?.status !== 'Accepted') {
+      const motivo = r.tipo !== 'resultado'
+        ? `GetCompositeSchedule: ${describir(r)}.`
+        : `GetCompositeSchedule no disponible en el equipo (status=${r.payload?.status}).`;
+      const alt = await verificarPorMaxCurrent(pasoId, amps, motivo);
+      if (paso(pasoId).estado !== 'corriendo') return alt;
+      marcar(pasoId, 'omitido', r.tipo !== 'resultado' ? `No se pudo verificar: ${describir(r)}` : motivo);
       return null;
     }
     const limites = limitesDeComposite(is16, r.payload);
@@ -282,6 +304,8 @@ async function runSmartChargingTest(ocppId, deps, estado = crearEstado(ocppId)) 
         marcar('declarado', 'omitido', describir(r));
       } else {
         const keys = Object.fromEntries((r.payload?.configurationKey ?? []).map((k) => [k.key, k.value]));
+        const maxCur = Number(keys.MaxChargingCurrent);
+        if (keys.MaxChargingCurrent != null && Number.isFinite(maxCur)) maxCurrentInicial = maxCur;
         const perfiles = keys.SupportedFeatureProfiles ?? null;
         const declara = (perfiles ?? '').toLowerCase().replace(/\s/g, '').split(',').includes('smartcharging');
         const extras = ['ChargeProfileMaxStackLevel', 'ChargingScheduleAllowedChargingRateUnit', 'ChargingScheduleMaxPeriods', 'MaxChargingProfilesInstalled']
@@ -461,6 +485,18 @@ async function runSmartChargingTest(ocppId, deps, estado = crearEstado(ocppId)) 
         const r = await enviar('ClearChargingProfile', `${prefijo()}/smartcharging/clearChargingProfile`, is16 ? { id: PROFILE_ID } : { chargingProfileId: PROFILE_ID });
         if (r.tipo === 'resultado' && r.payload?.status === 'Accepted') {
           marcar('limpieza', 'ok', 'Perfil de prueba borrado (ClearChargingProfile Accepted).');
+          // Esta familia responde Accepted al borrar pero se queda con el ultimo
+          // limite: se restaura el valor que tenia antes de la prueba.
+          if (is16 && maxCurrentInicial != null && variante?.unit === 'A') {
+            const actual = await leerMaxChargingCurrent();
+            if (actual != null && Math.abs(actual - maxCurrentInicial) > 0.5) {
+              const r2 = await setProfile(variante, maxCurrentInicial);
+              const ok2 = r2.tipo === 'resultado' && r2.payload?.status === 'Accepted';
+              const final = ok2 ? await leerMaxChargingCurrent() : null;
+              marcar('limpieza', ok2 && final != null && Math.abs(final - maxCurrentInicial) <= 0.5 ? 'ok' : 'advertencia',
+                `ClearChargingProfile Accepted pero el equipo siguio en MaxChargingCurrent=${actual} A (no borra el limite). Se restauro el valor previo a la prueba: ${final ?? '?'} A (antes ${maxCurrentInicial} A). Para el balanceador: este equipo no "libera" el limite al borrar perfiles, hay que mandar el valor nuevo.`);
+            }
+          }
         } else {
           const r2 = await setProfile(variante, LIMITE_RESTAURAR);
           const ok2 = r2.tipo === 'resultado' && r2.payload?.status === 'Accepted';
@@ -490,7 +526,8 @@ async function runSmartChargingTest(ocppId, deps, estado = crearEstado(ocppId)) 
         estado.resumen = `El equipo ACEPTA SetChargingProfile pero su GetCompositeSchedule no refleja el limite enviado: posible "acepta pero no aplica". Repetir con un auto cargando para confirmarlo con medicion real.${formato}`;
       } else if (compA === true && compB === true) {
         estado.veredicto = 'SOPORTADO_SIN_MEDICION';
-        estado.resumen = `El equipo acepta SetChargingProfile, cambia el limite y lo refleja en GetCompositeSchedule. Falta la confirmacion final con un auto cargando (corriente real medida).${formato} / Accepted and reflected in composite schedule; real-current check still pending.`;
+        const como = paso('verifica_b').detalle?.includes('MaxChargingCurrent') ? 'en su clave MaxChargingCurrent' : 'en GetCompositeSchedule';
+        estado.resumen = `El equipo acepta SetChargingProfile, cambia el limite y lo refleja ${como}. Falta la confirmacion final con un auto cargando (corriente real medida).${formato} / Accepted and reflected on the device; real-current check still pending.`;
       } else {
         estado.veredicto = 'ACEPTA_SIN_VERIFICAR';
         estado.resumen = `El equipo responde Accepted a SetChargingProfile, pero no se pudo verificar que lo aplique (sin GetCompositeSchedule ni carga activa). Repetir con un auto cargando.${formato} / Accepted, but could not verify it is applied.`;
