@@ -129,6 +129,33 @@ function corrienteDeMeterValues(meterValue) {
   };
 }
 
+// Plan B para equipos que no reportan corriente (ej. XQ EV-07KW solo manda
+// Energy + Power.Active.Import): se estima la corriente por fase a partir de
+// la potencia. Si el equipo no dice cuantas fases usa, se devuelven las dos
+// lecturas posibles (monofasico y trifasico) y el que decide es el llamador.
+function potenciaDeMeterValues(meterValue) {
+  const samples = (meterValue ?? []).flatMap((mv) => mv.sampledValue ?? []);
+  const potencias = samples.filter((s) => s.measurand === 'Power.Active.Import' && Number.isFinite(Number(s.value)));
+  if (potencias.length === 0) return null;
+  // Si viene por fase (L1/L2/L3) se suma; si viene total, se usa el total.
+  const total = potencias.filter((s) => !s.phase || !/^L[123]/.test(s.phase));
+  const usar = total.length ? total : potencias;
+  const watts = usar.reduce((acc, s) => acc + Number(s.value) * (String(s.unit).toLowerCase() === 'kw' ? 1000 : 1), 0);
+  const voltajes = samples
+    .filter((s) => s.measurand === 'Voltage' && Number.isFinite(Number(s.value)) && Number(s.value) > 150)
+    .map((s) => Number(s.value));
+  const volts = voltajes.length ? voltajes.reduce((a, b) => a + b, 0) / voltajes.length : VOLTS;
+  const fasesVistas = new Set(samples.map((s) => s.phase).filter((p) => /^L[123]/.test(p ?? '')).map((p) => p.slice(0, 2)));
+  const fases = fasesVistas.size > 1 ? 3 : null; // null = no se sabe
+  return {
+    watts: Math.round(watts),
+    volts: Math.round(volts),
+    fases,
+    amps1f: watts / volts,
+    amps3f: watts / (volts * 3),
+  };
+}
+
 function crearEstado(ocppId) {
   return {
     ocpp_id: ocppId,
@@ -147,6 +174,7 @@ function crearEstado(ocppId) {
 async function runSmartChargingTest(ocppId, deps, estado = crearEstado(ocppId)) {
   const cfg = { ...DEFAULTS, ...deps };
   const { pool } = cfg;
+  const sentA = new Date(); // antes de mandar cualquier perfil: referencia para la linea base
   const doFetch = cfg.fetch ?? fetch;
   const paso = (id) => estado.pasos.find((p) => p.id === id);
   const marcar = (id, est, detalle) => { const p = paso(id); p.estado = est; p.detalle = detalle ?? null; };
@@ -339,7 +367,10 @@ async function runSmartChargingTest(ocppId, deps, estado = crearEstado(ocppId)) 
       const action = is16 ? 'MeterValues' : 'TransactionEvent';
       const deadline = Date.now() + cfg.medicionTimeoutMs;
       let ultima = null;
+      let ultimaPot = null;
+      let ambigua = false; // potencia compatible con el limite solo si fuera trifasico
       let huboMuestras = false;
+      const tope = LIMITE_B + 1; // tolerancia de 1 A por resolucion/ruido del medidor del equipo
       while (Date.now() < deadline && medicion !== true) {
         await sleep(cfg.medicionPollMs);
         const rows = await pool.query(
@@ -350,19 +381,72 @@ async function runSmartChargingTest(ocppId, deps, estado = crearEstado(ocppId)) 
         );
         if (rows.rowCount === 0) continue;
         huboMuestras = true;
-        const corriente = corrienteDeMeterValues(rows.rows[0].message?.[3]?.meterValue);
-        if (!corriente) continue;
-        ultima = corriente;
-        const ref = corriente.imported ?? corriente.offered;
-        // tolerancia de 1 A por resolucion/ruido del medidor del equipo
-        medicion = ref <= LIMITE_B + 1;
+        const meterValue = rows.rows[0].message?.[3]?.meterValue;
+        const corriente = corrienteDeMeterValues(meterValue);
+        if (corriente) {
+          ultima = corriente;
+          ultimaPot = null;
+          medicion = (corriente.imported ?? corriente.offered) <= tope;
+          continue;
+        }
+        const pot = potenciaDeMeterValues(meterValue);
+        if (!pot) continue;
+        ultimaPot = pot;
+        if (pot.fases === 3) {
+          medicion = pot.amps3f <= tope;
+          ambigua = false;
+        } else if (pot.amps1f <= tope) {
+          medicion = true; // aun suponiendo monofasico esta dentro del limite
+          ambigua = false;
+        } else if (pot.amps3f > tope) {
+          medicion = false; // ni suponiendo trifasico entra en el limite
+          ambigua = false;
+        } else {
+          medicion = null; // solo entra si fuera trifasico: no se puede afirmar
+          ambigua = true;
+        }
       }
-      const txt = ultima ? `Current.Offered=${ultima.offered ?? '-'} A, Current.Import=${ultima.imported ?? '-'} A` : null;
-      if (medicion === true) marcar('medicion', 'ok', `${txt} con limite ${LIMITE_B} A.`);
-      else if (medicion === false) marcar('medicion', 'fallo', `${txt}: la corriente NO bajo a ${LIMITE_B} A en ${Math.round(cfg.medicionTimeoutMs / 1000)} s.`);
-      else marcar('medicion', 'omitido', huboMuestras
-        ? 'El equipo manda MeterValues pero sin Current.Import/Current.Offered: no se puede medir la corriente real.'
-        : 'El equipo no mando MeterValues durante la espera.');
+      const seg = Math.round(cfg.medicionTimeoutMs / 1000);
+      // Linea base: si antes de mandar cualquier limite el auto ya tomaba menos
+      // que LIMITE_B, que "baje" no demuestra nada (auto casi lleno, en espera...).
+      if (medicion === true) {
+        const antes = await pool.query(
+          `SELECT message FROM "OCPPMessages"
+           WHERE "stationId" = $1 AND action = $2 AND state = '1'
+             AND "timestamp" < $3 AND "timestamp" > $3::timestamptz - interval '10 minutes'
+           ORDER BY "timestamp" DESC LIMIT 1`,
+          [ocppId, action, sentA],
+        );
+        const mvAntes = antes.rows[0]?.message?.[3]?.meterValue;
+        const cAntes = corrienteDeMeterValues(mvAntes);
+        const pAntes = cAntes ? null : potenciaDeMeterValues(mvAntes);
+        const ampsAntes = cAntes
+          ? (cAntes.imported ?? cAntes.offered)
+          : pAntes ? (pAntes.fases === 3 ? pAntes.amps3f : pAntes.amps1f) : null;
+        if (ampsAntes != null && ampsAntes <= tope) {
+          medicion = null;
+          marcar('medicion', 'advertencia', `Antes de la prueba el auto ya consumia ~${ampsAntes.toFixed(1)} A (menos que el limite de ${LIMITE_B} A), asi que la medicion no demuestra nada. Repetir con el auto cargando a mas potencia (bateria no tan llena). / The vehicle was already drawing less than the test limit.`);
+        }
+      }
+      if (paso('medicion').estado !== 'corriendo') {
+        // ya resuelto por la linea base
+      } else if (ultimaPot) {
+        let estimada;
+        if (ultimaPot.fases === 3) estimada = `~${ultimaPot.amps3f.toFixed(1)} A por fase (trifasico, ${ultimaPot.volts} V)`;
+        else if (medicion === true) estimada = `~${ultimaPot.amps1f.toFixed(1)} A suponiendo monofasico, ${ultimaPot.volts} V`;
+        else estimada = `~${ultimaPot.amps3f.toFixed(1)} A por fase si es trifasico, ~${ultimaPot.amps1f.toFixed(1)} A si es monofasico`;
+        const txt = `Potencia ${ultimaPot.watts} W (${estimada}); el equipo no reporta corriente, se estima por potencia`;
+        if (medicion === true) marcar('medicion', 'ok', `${txt}. Dentro del limite de ${LIMITE_B} A.`);
+        else if (medicion === false) marcar('medicion', 'fallo', `${txt}. NO bajo a ${LIMITE_B} A en ${seg} s.`);
+        else marcar('medicion', 'advertencia', `${txt}. Solo es compatible con ${LIMITE_B} A si el equipo carga en trifasico: confirmar con el proveedor.`);
+      } else {
+        const txt = ultima ? `Current.Offered=${ultima.offered ?? '-'} A, Current.Import=${ultima.imported ?? '-'} A` : null;
+        if (medicion === true) marcar('medicion', 'ok', `${txt} con limite ${LIMITE_B} A.`);
+        else if (medicion === false) marcar('medicion', 'fallo', `${txt}: la corriente NO bajo a ${LIMITE_B} A en ${seg} s.`);
+        else marcar('medicion', 'omitido', huboMuestras
+          ? 'El equipo manda MeterValues pero sin corriente ni potencia: no se puede medir la carga real.'
+          : 'El equipo no mando MeterValues durante la espera.');
+      }
     }
   } catch (err) {
     estado.error = err.message;
@@ -410,6 +494,9 @@ async function runSmartChargingTest(ocppId, deps, estado = crearEstado(ocppId)) 
       } else {
         estado.veredicto = 'ACEPTA_SIN_VERIFICAR';
         estado.resumen = `El equipo responde Accepted a SetChargingProfile, pero no se pudo verificar que lo aplique (sin GetCompositeSchedule ni carga activa). Repetir con un auto cargando.${formato} / Accepted, but could not verify it is applied.`;
+      }
+      if (medicion == null && paso('medicion').estado === 'advertencia') {
+        estado.resumen += ` Medicion no concluyente: ${paso('medicion').detalle}`;
       }
     }
     estado.estado = 'terminado';
