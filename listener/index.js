@@ -2,6 +2,7 @@ require('dotenv').config();
 const amqp = require('amqplib');
 const { Pool } = require('pg');
 const { startModbusPolling } = require('./modbus-poller');
+const { pesoCargador, planificarCupos } = require('./balanceo');
 
 const AMQP_URL = process.env.AMQP_URL;
 const DATABASE_URL = process.env.DATABASE_URL;
@@ -110,9 +111,16 @@ async function getActiveGroupForStation(stationId) {
 // filtrar arrastraria para siempre el ultimo valor asignado de autos que ya
 // dejaron de cargar. Tambien evita contar el piso de MIN_AMPS que se le
 // asigna a un cargador recien reconectado sin sesion (handleBootNotification).
+// amps_asignados es lo que se le mando al equipo; en modo 'por_conector' cada
+// auto activo toma ese valor, asi que el consumo real es amps x autos.
+const AMPS_REALES_SQL = `ce.amps_asignados * CASE WHEN ca.modo_limite = 'por_conector'
+  THEN GREATEST(1, (SELECT COUNT(*) FROM liquidacion_sesiones lsc
+                    WHERE lsc.cargador_ocpp_id = ce.cargador_ocpp_id AND lsc.fecha_fin IS NULL))
+  ELSE 1 END`;
+
 async function getAmpsAsignadosTotales(consorcioId) {
   const r = await pool.query(
-    `SELECT COALESCE(SUM(ce.amps_asignados), 0) AS total
+    `SELECT COALESCE(SUM(${AMPS_REALES_SQL}), 0) AS total
      FROM cargador_estado_actual ce
      JOIN cargadores ca ON ca.ocpp_id = ce.cargador_ocpp_id
      WHERE ca.consorcio_id = $1
@@ -264,7 +272,7 @@ async function getFasesMedidasAmps({ consorcioId, sectorId }) {
 // las 3 fases simultaneamente (no dividido entre ellas).
 async function getAmpsAsignadosPorFase(consorcioId) {
   const r = await pool.query(
-    `SELECT ce.amps_asignados, ca.fase, p.fases AS producto_fases
+    `SELECT ${AMPS_REALES_SQL} AS amps_asignados, ca.fase, p.fases AS producto_fases
      FROM cargador_estado_actual ce
      JOIN cargadores ca ON ca.ocpp_id = ce.cargador_ocpp_id
      LEFT JOIN stock_items si ON si.id = ca.stock_item_id
@@ -296,16 +304,16 @@ async function getAmpsAsignadosPorFase(consorcioId) {
 // MIN_AMPS por cargador - lo que no entra queda "en cola" con 0A hasta que
 // se libera un cupo. Extraida de rebalanceGroup para poder llamarla una vez
 // por fase + una vez para el pool conservador en vez de una sola vez global.
+// "ordenados" son items { ocppId, peso } (ver pesoCargador en balanceo.js):
+// un cargador 'por_conector' con 2 autos ocupa 2 cupos y recibe perAmps, que
+// el equipo aplica a cada conector.
 async function distribuirGrupo(ordenados, limite, etiqueta) {
   if (ordenados.length === 0) return;
-  const maxCupos = Math.max(0, Math.floor(limite / MIN_AMPS));
-  const conCupo = ordenados.slice(0, maxCupos);
-  const enCola = ordenados.slice(maxCupos);
-  const perAmps = conCupo.length > 0 ? Math.floor(limite / conCupo.length) : 0;
+  const { perAmps, conCupo, enCola, cuposUsados } = planificarCupos(ordenados, limite);
 
   console.log(
-    `[Balanceador] ${etiqueta} activos=${ordenados.length} cupos=${maxCupos} -> `
-    + `${conCupo.length}x${perAmps}A, ${enCola.length} en cola`,
+    `[Balanceador] ${etiqueta} activos=${ordenados.length} cupos=${cuposUsados}/${Math.floor(limite / MIN_AMPS)} -> `
+    + `${conCupo.length} equipos x ${perAmps}A${cuposUsados > conCupo.length ? ' (por conector)' : ''}, ${enCola.length} en cola`,
   );
 
   await Promise.all([
@@ -385,22 +393,18 @@ async function rebalanceGroup({ consorcioId, sectorId }) {
     }
   }
 
+  // Una fila por cargador con sesion abierta; "sesiones" = autos cargando a la
+  // vez en ese equipo (solo importa en modo_limite 'por_conector').
   const activos = await pool.query(
-    sectorId != null
-      ? `SELECT DISTINCT ON (ls.cargador_ocpp_id) ls.cargador_ocpp_id, ls.fecha_inicio, ca.fase, p.fases AS producto_fases
-         FROM liquidacion_sesiones ls
-         JOIN cargadores ca ON ca.ocpp_id = ls.cargador_ocpp_id
-         LEFT JOIN stock_items si ON si.id = ca.stock_item_id
-         LEFT JOIN productos_catalogo p ON p.id = si.producto_id
-         WHERE ca.sector_id = $1 AND ls.fecha_fin IS NULL
-         ORDER BY ls.cargador_ocpp_id, ls.fecha_inicio ASC`
-      : `SELECT DISTINCT ON (ls.cargador_ocpp_id) ls.cargador_ocpp_id, ls.fecha_inicio, ca.fase, p.fases AS producto_fases
-         FROM liquidacion_sesiones ls
-         JOIN cargadores ca ON ca.ocpp_id = ls.cargador_ocpp_id
-         LEFT JOIN stock_items si ON si.id = ca.stock_item_id
-         LEFT JOIN productos_catalogo p ON p.id = si.producto_id
-         WHERE ca.consorcio_id = $1 AND ca.sector_id IS NULL AND ls.fecha_fin IS NULL
-         ORDER BY ls.cargador_ocpp_id, ls.fecha_inicio ASC`,
+    `SELECT ls.cargador_ocpp_id, MIN(ls.fecha_inicio) AS fecha_inicio, COUNT(*) AS sesiones,
+            ca.fase, ca.modo_limite, p.fases AS producto_fases
+     FROM liquidacion_sesiones ls
+     JOIN cargadores ca ON ca.ocpp_id = ls.cargador_ocpp_id
+     LEFT JOIN stock_items si ON si.id = ca.stock_item_id
+     LEFT JOIN productos_catalogo p ON p.id = si.producto_id
+     WHERE ${sectorId != null ? 'ca.sector_id = $1' : 'ca.consorcio_id = $1 AND ca.sector_id IS NULL'}
+       AND ls.fecha_fin IS NULL
+     GROUP BY ls.cargador_ocpp_id, ca.fase, ca.modo_limite, p.fases`,
     [sectorId != null ? sectorId : consorcioId],
   );
   if (activos.rowCount === 0) return;
@@ -412,7 +416,10 @@ async function rebalanceGroup({ consorcioId, sectorId }) {
   };
   for (const row of ordenadosPorFecha) {
     const esMonofasicoConFase = row.producto_fases === 'monofasico' && ['L1', 'L2', 'L3'].includes(row.fase);
-    (esMonofasicoConFase ? buckets[row.fase] : buckets.conservador).push(row.cargador_ocpp_id);
+    (esMonofasicoConFase ? buckets[row.fase] : buckets.conservador).push({
+      ocppId: row.cargador_ocpp_id,
+      peso: pesoCargador(row.modo_limite, row.sesiones),
+    });
   }
 
   const limiteConservador = Math.min(disponible.L1, disponible.L2, disponible.L3);

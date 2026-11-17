@@ -272,6 +272,16 @@ export default function AdminConsorcio() {
     }
   }
 
+  async function handleSetModoLimite(cargadorId, modoLimite) {
+    try {
+      await api.put(`/admin/cargadores/${cargadorId}`, { modo_limite: modoLimite });
+      setQrOpen((prev) => (prev && prev.id === cargadorId ? { ...prev, modo_limite: modoLimite } : prev));
+      await loadAll();
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'No se pudo cambiar el modo de limite.');
+    }
+  }
+
   async function handleCreateSector(e) {
     e.preventDefault();
     await api.post(`/admin/consorcios/${id}/sectores`, {
@@ -864,6 +874,14 @@ export default function AdminConsorcio() {
                           </Select>
                         </>
                       )}
+                      <span className="text-muted-foreground" title="Como aplica el equipo el limite de amperaje que le manda el balanceador">Limite de amperaje</span>
+                      <Select value={qrOpen.modo_limite ?? 'equipo'} onValueChange={(v) => handleSetModoLimite(qrOpen.id, v)}>
+                        <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="equipo">Por equipo (estandar)</SelectItem>
+                          <SelectItem value="por_conector">Por conector (se divide entre autos)</SelectItem>
+                        </SelectContent>
+                      </Select>
                       <span className="text-muted-foreground">Conector</span><span>{CONECTOR_LABELS[qrOpen.conector] ?? '-'}</span>
                       <span className="text-muted-foreground">Montaje</span><span>{MONTAJE_LABELS[qrOpen.montaje] ?? '-'}</span>
                       <span className="text-muted-foreground">Protocolo soportado</span><span>{OCPP_PROTOCOLO_LABELS[qrOpen.ocpp_protocolo] ?? '-'}</span>

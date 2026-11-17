@@ -132,8 +132,11 @@ router.get('/consorcios/:id/cargadores', async (req, res) => {
 
 router.put('/cargadores/:id', async (req, res) => {
   const {
-    etiqueta, charge_point_vendor, charge_point_model, cochera_id: cocheraId, sector_id, ocpp_version, fase,
+    etiqueta, charge_point_vendor, charge_point_model, cochera_id: cocheraId, sector_id, ocpp_version, fase, modo_limite: modoLimite,
   } = req.body ?? {};
+  if (modoLimite != null && !['equipo', 'por_conector'].includes(modoLimite)) {
+    return res.status(400).json({ error: "modo_limite debe ser 'equipo' o 'por_conector'." });
+  }
   const sendsCochera = 'cochera_id' in (req.body ?? {});
   let consorcioId = null;
   if (sendsCochera || sector_id) {
@@ -174,13 +177,14 @@ router.put('/cargadores/:id', async (req, res) => {
        uf_id = CASE WHEN $4 THEN $10::int ELSE uf_id END,
        sector_id = CASE WHEN $6 THEN $7::int ELSE sector_id END,
        ocpp_version = COALESCE($9, ocpp_version),
-       fase = COALESCE($11, fase)
+       fase = COALESCE($11, fase),
+       modo_limite = COALESCE($12, modo_limite)
      WHERE id = $8 RETURNING *`,
     [etiqueta ?? null, charge_point_vendor ?? null, charge_point_model ?? null,
       sendsCochera, cocheraId ?? null,
       'sector_id' in (req.body ?? {}), sector_id ?? null, req.params.id,
       ocpp_version === '1.6' || ocpp_version === '2.0.1' ? ocpp_version : null, ufId,
-      ['L1', 'L2', 'L3'].includes(fase) ? fase : null],
+      ['L1', 'L2', 'L3'].includes(fase) ? fase : null, modoLimite ?? null],
   );
   if (result.rowCount === 0) return res.status(404).json({ error: 'Cargador no encontrado.' });
   res.json(result.rows[0]);
