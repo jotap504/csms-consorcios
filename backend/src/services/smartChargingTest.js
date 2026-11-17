@@ -304,6 +304,13 @@ async function runSmartChargingTest(ocppId, deps, estado = crearEstado(ocppId)) 
         marcar('declarado', 'omitido', describir(r));
       } else {
         const keys = Object.fromEntries((r.payload?.configurationKey ?? []).map((k) => [k.key, k.value]));
+        // Algunos firmwares (XQ/YC) omiten claves estandar al pedir "todas" pero
+        // las devuelven si se piden por nombre.
+        const estandar = ['SupportedFeatureProfiles', 'ChargeProfileMaxStackLevel', 'ChargingScheduleAllowedChargingRateUnit', 'ChargingScheduleMaxPeriods', 'MaxChargingProfilesInstalled'];
+        if (keys.SupportedFeatureProfiles == null) {
+          const r2 = await enviar('GetConfiguration', '/ocpp/1.6/configuration/getConfiguration', { key: estandar });
+          if (r2.tipo === 'resultado') for (const k of r2.payload?.configurationKey ?? []) keys[k.key] = k.value;
+        }
         const maxCur = Number(keys.MaxChargingCurrent);
         if (keys.MaxChargingCurrent != null && Number.isFinite(maxCur)) maxCurrentInicial = maxCur;
         const perfiles = keys.SupportedFeatureProfiles ?? null;
