@@ -92,7 +92,7 @@ router.post('/cargadores/:ocppId/set-amps', async (req, res) => {
     : `${CITRINEOS_REST_URL}/ocpp/2.0.1/smartcharging/setChargingProfile?identifier=${encodeURIComponent(req.params.ocppId)}&tenantId=1`;
   const body = is16
     ? {
-      connectorId: 1,
+      connectorId: 0, // ChargePointMaxProfile solo es valido en connectorId 0 (OCPP 1.6)
       csChargingProfiles: {
         chargingProfileId: profileId,
         stackLevel: 0,

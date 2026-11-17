@@ -143,7 +143,10 @@ async function pushChargingProfile(ocppId, maxAmps) {
     : `${CITRINEOS_REST_URL}/ocpp/2.0.1/smartcharging/setChargingProfile?identifier=${encodeURIComponent(ocppId)}&tenantId=1`;
   const body = is16
     ? {
-      connectorId: 1,
+      // OCPP 1.6: ChargePointMaxProfile solo es valido en connectorId 0
+      // (el equipo entero). Varios cargadores (ej. WGD) rechazan connectorId 1
+      // con PropertyConstraintViolation.
+      connectorId: 0,
       csChargingProfiles: {
         chargingProfileId: profileId,
         stackLevel: 0,

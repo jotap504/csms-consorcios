@@ -40,8 +40,8 @@ const DEFAULTS = {
 // equipo lo rechaza pero acepta otro, el smart charging funciona pero hay que
 // adaptar el balanceador para ese modelo.
 const VARIANTES_16 = [
-  { id: 'cpmax_c1', nombre: 'ChargePointMaxProfile, connectorId 1, en A', purpose: 'ChargePointMaxProfile', connectorId: 1, unit: 'A', produccion: true },
-  { id: 'cpmax_c0', nombre: 'ChargePointMaxProfile, connectorId 0, en A', purpose: 'ChargePointMaxProfile', connectorId: 0, unit: 'A' },
+  { id: 'cpmax_c0', nombre: 'ChargePointMaxProfile, connectorId 0, en A', purpose: 'ChargePointMaxProfile', connectorId: 0, unit: 'A', produccion: true },
+  { id: 'cpmax_c1', nombre: 'ChargePointMaxProfile, connectorId 1, en A', purpose: 'ChargePointMaxProfile', connectorId: 1, unit: 'A' },
   { id: 'txdef_c1', nombre: 'TxDefaultProfile, connectorId 1, en A', purpose: 'TxDefaultProfile', connectorId: 1, unit: 'A' },
   { id: 'txdef_c0', nombre: 'TxDefaultProfile, connectorId 0, en A', purpose: 'TxDefaultProfile', connectorId: 0, unit: 'A' },
   { id: 'cpmax_c0_w', nombre: 'ChargePointMaxProfile, connectorId 0, en W', purpose: 'ChargePointMaxProfile', connectorId: 0, unit: 'W' },
