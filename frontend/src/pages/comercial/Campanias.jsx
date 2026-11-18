@@ -82,7 +82,7 @@ export default function Campanias() {
             <div>
               <CardTitle>{editando ? 'Editar campaña' : 'Nueva campaña'}</CardTitle>
               <p className="mt-1 text-sm text-muted-foreground">
-                Armá el asunto y el mensaje con el asistente, o vos mismo. A quién y cuándo se le manda se elige despues, en Contactos.
+                Paso 1: armá el asunto y el mensaje (con el asistente o vos mismo). A quién y cuándo se le manda se elige en el paso 2, desde Contactos.
               </p>
             </div>
             <Button size="sm" variant="outline" onClick={() => { setOpen(false); setEditando(null); }}>

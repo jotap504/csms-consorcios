@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
-import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
-  Plus, Upload, Sparkles, Send, Inbox, CheckSquare, Square, Megaphone, Trash2,
+  Plus, Upload, Sparkles, Send, Inbox, CheckSquare, Square,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { toast } from '@/lib/toast';
 import AdminLayout from '@/components/AdminLayout';
+import EnviarCampaniaDialog from '@/components/EnviarCampaniaDialog';
 import {
   Card, CardHeader, CardTitle, CardContent,
   Table, TableHeader, TableBody, TableRow, TableHead, TableCell,
@@ -28,8 +29,6 @@ const FILTROS = [
   { value: 'inactivos_30d', label: 'Sin contacto hace +30 dias' },
   { value: 'sin_email', label: 'Sin email cargado' },
 ];
-
-const RAMP_SCHEDULE_DEFAULT = [200, 200, 400, 400, 600, 600, 1000, 1000];
 
 const EMPTY_FORM = {
   apellido: '', nombre: '', tipo_contacto: 'Otros', email: '', administracion_empresa: '',
@@ -64,15 +63,7 @@ export default function Contactos() {
 
   const [contactosSeleccionados, setContactosSeleccionados] = useState(new Set());
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [campanias, setCampanias] = useState([]);
-  const [campaniasLoading, setCampaniasLoading] = useState(false);
-  const [campaniasError, setCampaniasError] = useState(false);
-  const [campaniaElegidaId, setCampaniaElegidaId] = useState(null);
-  const [rampSchedule, setRampSchedule] = useState(RAMP_SCHEDULE_DEFAULT);
-  const [horaInicio, setHoraInicio] = useState('09:00');
-  const [horaFin, setHoraFin] = useState('19:00');
-  const [iniciaEn, setIniciaEn] = useState('');
-  const [enviandoCampania, setEnviandoCampania] = useState(false);
+  const [campaniaIdInicial, setCampaniaIdInicial] = useState(null);
   const [revisandoBandeja, setRevisandoBandeja] = useState(false);
 
   const FILTER_KEYS = ['estado', 'filtro', 'tipo_contacto'];
@@ -114,21 +105,11 @@ export default function Contactos() {
 
   useEffect(() => {
     if (campaniaIdParam) {
+      setCampaniaIdInicial(Number(campaniaIdParam));
       setPickerOpen(true);
-      setCampaniaElegidaId(Number(campaniaIdParam));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  function abrirPicker() {
-    setPickerOpen(true);
-    setCampaniasLoading(true);
-    setCampaniasError(false);
-    api.get('/comercial/campanias')
-      .then(({ data }) => setCampanias(data))
-      .catch(() => { setCampaniasError(true); toast.error('No se pudieron cargar las campañas.'); })
-      .finally(() => setCampaniasLoading(false));
-  }
 
   function seleccionarTodos() {
     setContactosSeleccionados(new Set(
@@ -201,48 +182,14 @@ export default function Contactos() {
     });
   }
 
-  function actualizarDiaSchedule(idx, valor) {
-    const n = Number(valor);
-    setRampSchedule((prev) => prev.map((v, i) => (i === idx ? (Number.isFinite(n) && n > 0 ? n : 0) : v)));
-  }
-
-  function agregarDiaSchedule() {
-    setRampSchedule((prev) => [...prev, 100]);
-  }
-
-  function quitarDiaSchedule(idx) {
-    setRampSchedule((prev) => prev.filter((_, i) => i !== idx));
-  }
-
-  const totalProgramado = rampSchedule.reduce((a, b) => a + (b || 0), 0);
-
-  async function handleEnviarCampaniaElegida() {
-    if (!campaniaElegidaId) return;
-    setEnviandoCampania(true);
-    try {
-      const { data } = await api.post(`/comercial/campanias/${campaniaElegidaId}/envios`, {
-        contacto_ids: [...contactosSeleccionados],
-        ramp_schedule: rampSchedule.filter((n) => n > 0),
-        hora_inicio: horaInicio,
-        hora_fin: horaFin,
-        inicia_en: iniciaEn ? new Date(iniciaEn).toISOString() : undefined,
-      });
-      toast.success(data.estado === 'programado'
-        ? `Envío programado para ${data.total_destinatarios} contacto(s). Arranca solo en la fecha/hora elegida.`
-        : `Envío iniciado para ${data.total_destinatarios} contacto(s). Se va a completar en varios días (revisá el progreso en la campaña).`);
-      setPickerOpen(false);
-      setCampaniaElegidaId(null);
-      setRampSchedule(RAMP_SCHEDULE_DEFAULT);
-      setHoraInicio('09:00');
-      setHoraFin('19:00');
-      setIniciaEn('');
-      setContactosSeleccionados(new Set());
-      load();
-    } catch (err) {
-      toast.error(err.response?.data?.error || 'No se pudo enviar la campaña.');
-    } finally {
-      setEnviandoCampania(false);
-    }
+  function handleCampaniaEnviada(data) {
+    toast.success(data.estado === 'programado'
+      ? `Envío programado para ${data.total_destinatarios} contacto(s). Arranca solo en la fecha/hora elegida.`
+      : `Envío iniciado para ${data.total_destinatarios} contacto(s). Se va a completar en varios días (revisá el progreso en la campaña).`);
+    setPickerOpen(false);
+    setCampaniaIdInicial(null);
+    setContactosSeleccionados(new Set());
+    load();
   }
 
   async function handleRevisarBandeja() {
@@ -322,118 +269,17 @@ export default function Contactos() {
               )
             )}
             {contactosSeleccionados.size > 0 && (
-              <Dialog
-                open={pickerOpen}
-                onOpenChange={(o) => {
-                  setPickerOpen(o);
-                  if (!o) {
-                    setCampaniaElegidaId(null);
-                    setRampSchedule(RAMP_SCHEDULE_DEFAULT);
-                    setHoraInicio('09:00');
-                    setHoraFin('19:00');
-                    setIniciaEn('');
-                  }
-                }}
-              >
-                <DialogTrigger asChild>
-                  <Button size="sm" variant="outline" onClick={abrirPicker}>
-                    <Send className="h-4 w-4" />Enviar campaña ({contactosSeleccionados.size})
-                  </Button>
-                </DialogTrigger>
-                <DialogContent className="max-w-lg">
-                  <DialogHeader>
-                    <DialogTitle>Elegir campaña</DialogTitle>
-                    <DialogDescription>Se manda a {contactosSeleccionados.size} contacto(s) seleccionado(s) (se omiten los marcados "No contactar" o sin email).</DialogDescription>
-                  </DialogHeader>
-                  {campaniasLoading && <p className="text-sm text-muted-foreground">Cargando...</p>}
-                  {!campaniasLoading && campaniasError && (
-                    <div className="flex flex-col items-center gap-2 py-8 text-center text-sm text-destructive">
-                      <Megaphone className="h-8 w-8 opacity-40" />
-                      No se pudieron cargar las campañas (error de red o sesion vencida).
-                      <Button size="sm" variant="outline" onClick={abrirPicker}>Reintentar</Button>
-                    </div>
-                  )}
-                  {!campaniasLoading && !campaniasError && campanias.length === 0 && (
-                    <div className="flex flex-col items-center gap-2 py-8 text-center text-sm text-muted-foreground">
-                      <Megaphone className="h-8 w-8 opacity-40" />
-                      Todavia no creaste ninguna campaña.
-                      <Link to="/comercial/campanias" className="font-medium text-accent hover:underline">Crear una campaña →</Link>
-                    </div>
-                  )}
-                  {!campaniasLoading && !campaniasError && campanias.length > 0 && (
-                    <div className="flex flex-col gap-3">
-                      <div className="flex max-h-72 flex-col gap-1.5 overflow-y-auto">
-                        {campanias.map((c) => (
-                          <button
-                            key={c.id}
-                            type="button"
-                            onClick={() => setCampaniaElegidaId(c.id)}
-                            className={`rounded-lg border p-2.5 text-left text-sm transition-colors ${c.id === campaniaElegidaId ? 'border-accent bg-accent/10' : 'border-border hover:bg-muted/50'}`}
-                          >
-                            <p className="font-medium">{c.asunto}</p>
-                            <p className="truncate text-xs text-muted-foreground">{c.resumen}</p>
-                          </button>
-                        ))}
-                      </div>
-                      <Link to="/comercial/campanias" className="text-xs font-medium text-accent hover:underline">+ Crear otra campaña</Link>
-
-                      {campaniaElegidaId && (
-                        <div className="flex flex-col gap-2 rounded-lg border border-border p-3">
-                          <p className="text-sm font-medium">Plan de envío</p>
-                          <p className="text-xs text-muted-foreground">Cuántos contactos se mandan por día - va subiendo de a poco para no quemar la reputación del remitente.</p>
-                          {rampSchedule.map((cantidad, i) => (
-                            <div key={i} className="flex items-center gap-2">
-                              <span className="w-14 shrink-0 text-xs text-muted-foreground">Día {i + 1}</span>
-                              <Input
-                                type="number"
-                                min={1}
-                                value={cantidad}
-                                onChange={(e) => actualizarDiaSchedule(i, e.target.value)}
-                                className="h-8 w-24"
-                              />
-                              <Button size="sm" variant="ghost" onClick={() => quitarDiaSchedule(i)}>
-                                <Trash2 className="h-3.5 w-3.5" />
-                              </Button>
-                            </div>
-                          ))}
-                          <Button size="sm" variant="outline" onClick={agregarDiaSchedule} className="self-start">
-                            <Plus className="h-3.5 w-3.5" />Agregar día
-                          </Button>
-                          <p className="text-xs text-muted-foreground">
-                            Programados: {totalProgramado} de {contactosSeleccionados.size}.
-                            {totalProgramado < contactosSeleccionados.size && ` El resto (${contactosSeleccionados.size - totalProgramado}) se manda el día ${rampSchedule.length + 1}.`}
-                          </p>
-                          <div className="mt-1 flex items-center gap-2 border-t border-border pt-2">
-                            <span className="text-xs text-muted-foreground">Horario (Argentina):</span>
-                            <Input type="time" value={horaInicio} onChange={(e) => setHoraInicio(e.target.value)} className="h-8 w-28" />
-                            <span className="text-xs text-muted-foreground">a</span>
-                            <Input type="time" value={horaFin} onChange={(e) => setHoraFin(e.target.value)} className="h-8 w-28" />
-                          </div>
-                          <p className="text-xs text-muted-foreground">El lote de cada día se reparte dentro de esa ventana en vez de mandarse todo junto.</p>
-                          <div className="mt-1 flex items-center gap-2 border-t border-border pt-2">
-                            <span className="text-xs text-muted-foreground">Arrancar el:</span>
-                            <Input type="datetime-local" value={iniciaEn} onChange={(e) => setIniciaEn(e.target.value)} className="h-8 w-auto" />
-                            {iniciaEn && (
-                              <Button size="sm" variant="ghost" onClick={() => setIniciaEn('')}>Quitar</Button>
-                            )}
-                          </div>
-                          <p className="text-xs text-muted-foreground">Dejalo vacío para arrancar ahora mismo.</p>
-                        </div>
-                      )}
-
-                      <Button
-                        className="self-end"
-                        loading={enviandoCampania}
-                        disabled={!campaniaElegidaId}
-                        onClick={handleEnviarCampaniaElegida}
-                      >
-                        <Send className="h-4 w-4" />{iniciaEn ? 'Programar envío' : `Enviar a ${contactosSeleccionados.size} contacto(s)`}
-                      </Button>
-                    </div>
-                  )}
-                </DialogContent>
-              </Dialog>
+              <Button size="sm" variant="outline" onClick={() => { setCampaniaIdInicial(null); setPickerOpen(true); }}>
+                <Send className="h-4 w-4" />Enviar campaña ({contactosSeleccionados.size})
+              </Button>
             )}
+            <EnviarCampaniaDialog
+              open={pickerOpen}
+              onOpenChange={(o) => { setPickerOpen(o); if (!o) setCampaniaIdInicial(null); }}
+              contactoIds={[...contactosSeleccionados]}
+              campaniaInicialId={campaniaIdInicial}
+              onEnviado={handleCampaniaEnviada}
+            />
             <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) setForm(EMPTY_FORM); }}>
               <DialogTrigger asChild>
                 <Button size="sm"><Plus className="h-4 w-4" />Nuevo contacto</Button>
