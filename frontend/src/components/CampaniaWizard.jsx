@@ -2,7 +2,7 @@ import {
   useEffect, useRef, useState,
 } from 'react';
 import {
-  Send, Sparkles, Loader2, ImagePlus, Upload, Save, Building2, Eye, Pencil, ArrowUp, ArrowDown, X,
+  Send, Sparkles, Loader2, ImagePlus, Upload, Save, Building2, Eye, Pencil, ArrowUp, ArrowDown, X, PenSquare,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { toast } from '@/lib/toast';
@@ -65,6 +65,9 @@ export default function CampaniaWizard({ campaniaInicial, onGuardado }) {
   const [guardando, setGuardando] = useState(false);
   const [logo, setLogo] = useState(null);
   const [vistaPreviaActiva, setVistaPreviaActiva] = useState(false);
+  // Modo manual: salta el chat con la IA y abre el editor directo, vacio -
+  // para el caso simple de "1 titulo, 1 imagen y nada mas" sin asistencia.
+  const [modoManual, setModoManual] = useState(Boolean(campaniaInicial));
   const editorRef = useRef(null);
   const scrollRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -151,7 +154,7 @@ export default function CampaniaWizard({ campaniaInicial, onGuardado }) {
     }
   };
 
-  const hayBorrador = Boolean(cuerpoHtml);
+  const hayBorrador = modoManual || Boolean(cuerpoHtml);
   const imagenesEnCuerpo = extraerImagenesDelCuerpo(cuerpoHtml);
 
   function handleMoverImagen(index, direccion) {
@@ -178,13 +181,21 @@ export default function CampaniaWizard({ campaniaInicial, onGuardado }) {
   }
 
   return (
-    <div className="grid gap-4 lg:grid-cols-[320px_1fr]">
+    <div className={`grid gap-4 ${modoManual ? '' : 'lg:grid-cols-[320px_1fr]'}`}>
+      {!modoManual && (
       <div className="flex h-[340px] flex-col rounded-lg border border-border lg:h-[420px]">
         <div ref={scrollRef} className="flex-1 overflow-y-auto p-3">
           {messages.length === 0 && (
-            <p className="mt-4 text-center text-sm text-muted-foreground">
-              Contame que campaña queres mandar (a quien, para que, que tono) y te armo un borrador.
-            </p>
+            <>
+              <p className="mt-4 text-center text-sm text-muted-foreground">
+                Contame que campaña queres mandar (a quien, para que, que tono) y te armo un borrador.
+              </p>
+              <div className="mt-3 flex justify-center">
+                <Button type="button" size="sm" variant="outline" onClick={() => setModoManual(true)}>
+                  <PenSquare className="h-3.5 w-3.5" />Armar yo mismo (sin asistente)
+                </Button>
+              </div>
+            </>
           )}
           <div className="flex flex-col gap-2">
             {messages.map((m, i) => (
@@ -215,13 +226,19 @@ export default function CampaniaWizard({ campaniaInicial, onGuardado }) {
           </Button>
         </form>
       </div>
+      )}
 
       <div className="flex flex-col gap-3">
         {!hayBorrador && (
           <div className="flex h-[340px] flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-border text-center text-sm text-muted-foreground lg:h-[420px]">
             <Sparkles className="h-8 w-8 opacity-40" />
-            El borrador (asunto + mensaje) va a aparecer aca cuando charles con el asistente.
+            El borrador (asunto + mensaje) va a aparecer aca cuando charles con el asistente, o podes armarlo vos.
           </div>
+        )}
+        {modoManual && !campaniaInicial && (
+          <Button type="button" size="sm" variant="ghost" className="self-start" onClick={() => setModoManual(false)}>
+            <Sparkles className="h-3.5 w-3.5" />Usar el asistente IA en su lugar
+          </Button>
         )}
         {hayBorrador && (
           <>

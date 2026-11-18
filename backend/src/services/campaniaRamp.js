@@ -16,7 +16,7 @@
 const { pool } = require('../db');
 const { elasticEmailConfigurado, enviarViaElasticEmail, ElasticEmailPermanentError } = require('./elasticEmail');
 const { prepararImagenesInline, personalizarCuerpo } = require('./campaniaEnvioHelpers');
-const { tokenBaja } = require('../lib/tokenBaja');
+const { tokenBaja, tokenPixel, tokenClick } = require('../lib/tokenBaja');
 
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://192.168.1.38';
 
@@ -253,11 +253,13 @@ async function procesarRun(run) {
     // eslint-disable-next-line no-await-in-loop
     if (i > 0) await delay(DELAY_ENTRE_ENVIOS_MS);
     const bajaUrl = `${FRONTEND_URL}/api/comercial/baja?c=${destinatario.contacto_id}&t=${tokenBaja(destinatario.contacto_id)}`;
+    const pixelUrl = `${FRONTEND_URL}/api/comercial/pixel/${destinatario.id}?t=${tokenPixel(destinatario.id)}`;
+    const clickBaseUrl = `${FRONTEND_URL}/api/comercial/click/${destinatario.id}?t=${tokenClick(destinatario.id)}`;
     try {
       // eslint-disable-next-line no-await-in-loop
       const contactoRow = await pool.query('SELECT nombre, apellido FROM comercial_contactos WHERE id = $1', [destinatario.contacto_id]);
       const contacto = contactoRow.rows[0] || {};
-      const { html, text } = personalizarCuerpo({ cuerpoConImagenesInline, contacto, bajaUrl });
+      const { html, text } = personalizarCuerpo({ cuerpoConImagenesInline, contacto, bajaUrl, pixelUrl, clickBaseUrl });
       // eslint-disable-next-line no-await-in-loop
       const { messageId } = await enviarViaElasticEmail({
         to: destinatario.email, subject: run.asunto_snapshot, html, text, attachments: attachmentsBase,
@@ -329,6 +331,13 @@ async function procesarRun(run) {
 async function tickRamp() {
   if (!elasticEmailConfigurado()) return { procesados: 0 };
   await sincronizarEventosElasticEmail();
+  // Activa los envios programados cuya fecha/hora de inicio ya llego - a
+  // partir de ahi es un run 'en_curso' normal, el resto del ticker no
+  // necesita distinguirlos.
+  await pool.query(
+    `UPDATE comercial_campania_envios SET estado = 'en_curso', actualizado_en = NOW()
+       WHERE estado = 'programado' AND inicia_en <= NOW()`,
+  );
   const { rows: runs } = await pool.query(`SELECT * FROM comercial_campania_envios WHERE estado = 'en_curso' ORDER BY id`);
   let procesados = 0;
   // eslint-disable-next-line no-restricted-syntax

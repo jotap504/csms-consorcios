@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  Plus, Send, Pencil, Trash2, Megaphone, ArrowLeft,
+  Plus, Send, Pencil, Trash2, Megaphone, ArrowLeft, MailOpen, MousePointerClick, MailWarning,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { toast } from '@/lib/toast';
@@ -20,6 +20,7 @@ function formatFecha(iso) {
 }
 
 const ENVIO_BOTON = {
+  programado: { variant: 'outline', label: () => 'Programado' },
   en_curso: { variant: 'accent', label: (c) => `En curso ${c.envio_enviados}/${c.envio_total}` },
   pausado: { variant: 'destructive', label: () => 'Pausado' },
   completado: { variant: 'outline', label: () => 'Ver envío' },
@@ -81,7 +82,7 @@ export default function Campanias() {
             <div>
               <CardTitle>{editando ? 'Editar campaña' : 'Nueva campaña'}</CardTitle>
               <p className="mt-1 text-sm text-muted-foreground">
-                Armá el asunto y el mensaje con el asistente. A quién y cuándo se le manda se elige despues, en Contactos.
+                Armá el asunto y el mensaje con el asistente, o vos mismo. A quién y cuándo se le manda se elige despues, en Contactos.
               </p>
             </div>
             <Button size="sm" variant="outline" onClick={() => { setOpen(false); setEditando(null); }}>
@@ -111,7 +112,7 @@ export default function Campanias() {
           {!loading && campanias.length > 0 && (
             <div className="flex flex-col gap-3">
               {campanias.map((c) => {
-                const envioActivo = c.envio_estado === 'en_curso' || c.envio_estado === 'pausado';
+                const envioActivo = ['en_curso', 'pausado', 'programado'].includes(c.envio_estado);
                 const botonEnvio = ENVIO_BOTON[c.envio_estado];
                 return (
                   <div key={c.id} className="rounded-xl border border-border p-3.5">
@@ -126,6 +127,18 @@ export default function Campanias() {
                       Creada: {formatFecha(c.creado_en)}
                       {c.ultimo_envio_en && ` · Último envío: ${formatFecha(c.ultimo_envio_en)}`}
                     </p>
+                    {c.envio_enviados > 0 && (
+                      <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                        <span className="flex items-center gap-1"><MailOpen className="h-3.5 w-3.5" />{Math.round((c.envio_abiertos / c.envio_enviados) * 100)}% abiertos ({c.envio_abiertos})</span>
+                        <span className="flex items-center gap-1"><MousePointerClick className="h-3.5 w-3.5" />{Math.round((c.envio_clicks / c.envio_enviados) * 100)}% clicks ({c.envio_clicks})</span>
+                        {c.envio_rebotados > 0 && (
+                          <span className="flex items-center gap-1 text-amber-600"><MailWarning className="h-3.5 w-3.5" />{c.envio_rebotados} rebotado(s)</span>
+                        )}
+                        {c.envio_quejas > 0 && (
+                          <span className="flex items-center gap-1 text-rose-600"><MailWarning className="h-3.5 w-3.5" />{c.envio_quejas} queja(s)</span>
+                        )}
+                      </div>
+                    )}
                     <div className="mt-3 flex flex-wrap items-center gap-1.5">
                       {c.envio_id && botonEnvio && (
                         <Button size="sm" variant={botonEnvio.variant} onClick={() => navigate(`/comercial/envios/${c.envio_id}`)}>

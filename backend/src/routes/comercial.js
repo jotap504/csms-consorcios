@@ -13,7 +13,7 @@ const pdfParse = require('pdf-parse');
 const { pool } = require('../db');
 const { authenticate, requirePermission } = require('../auth/middleware');
 const { calcularTroncal, DISCLAIMER_PREDIMENSIONADO } = require('../lib/electricoEV');
-const { tokenBaja } = require('../lib/tokenBaja');
+const { tokenBaja, tokenPixel, tokenClick } = require('../lib/tokenBaja');
 const {
   mailConfigurado, enviarMail, enviarYRegistrarMail, revisarBandeja,
 } = require('../services/mail');
@@ -90,6 +90,62 @@ router.get('/baja', async (req, res) => {
   }
   await pool.query('UPDATE comercial_contactos SET no_contactar = TRUE WHERE id = $1', [contactoId]);
   res.send('<html><body style="font-family:sans-serif;text-align:center;padding:60px"><p>Listo, no vas a recibir mas campañas de mail nuestras.</p></body></html>');
+});
+
+// Sin autenticacion a proposito, igual que /baja: lo pide el <img> del
+// cliente de mail del destinatario, sin sesion. 1x1 gif transparente fijo
+// (no depende de ninguna libreria de imagenes) + no-store para que cada
+// carga real pegue al servidor. Solo cuenta la PRIMERA apertura (abierto_en
+// IS NULL) para no inflar comercial_campania_envios.abiertos con clientes de
+// mail que vuelven a pedir la imagen en cada vista del mismo mail.
+const PIXEL_GIF = Buffer.from('R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==', 'base64');
+router.get('/pixel/:destId', async (req, res) => {
+  res.set({ 'Content-Type': 'image/gif', 'Cache-Control': 'no-store, no-cache, must-revalidate' });
+  const destId = Number(req.params.destId);
+  const token = req.query.t;
+  if (destId && token === tokenPixel(destId)) {
+    const result = await pool.query(
+      `UPDATE comercial_campania_envios_destinatarios SET abierto_en = NOW()
+         WHERE id = $1 AND abierto_en IS NULL RETURNING envio_id`,
+      [destId],
+    ).catch(() => null);
+    if (result?.rowCount > 0) {
+      await pool.query(
+        'UPDATE comercial_campania_envios SET abiertos = abiertos + 1 WHERE id = $1',
+        [result.rows[0].envio_id],
+      ).catch(() => {});
+    }
+  }
+  res.send(PIXEL_GIF);
+});
+
+// Sin autenticacion, igual que /pixel: lo clickea el destinatario desde el
+// mail. Cuenta el click (primera vez, mismo criterio que /pixel) y redirige
+// al link real - asi el click queda registrado aunque el destinatario tenga
+// bloqueadas las imagenes remotas (por eso el click es mas confiable que el
+// pixel para saber que alguien interactuo de verdad).
+router.get('/click/:destId', async (req, res) => {
+  const destId = Number(req.params.destId);
+  const token = req.query.t;
+  const destino = req.query.u;
+  // Solo http(s): nunca redirigir a javascript:/data: aunque el link venga
+  // de nuestro propio html (defensa en profundidad, no deberia pasar nunca).
+  const destinoValido = typeof destino === 'string' && /^https?:\/\//i.test(destino);
+  if (!destId || !token || token !== tokenClick(destId) || !destinoValido) {
+    return res.status(400).send('Link invalido.');
+  }
+  const result = await pool.query(
+    `UPDATE comercial_campania_envios_destinatarios SET clickeado_en = NOW()
+       WHERE id = $1 AND clickeado_en IS NULL RETURNING envio_id`,
+    [destId],
+  ).catch(() => null);
+  if (result?.rowCount > 0) {
+    await pool.query(
+      'UPDATE comercial_campania_envios SET clicks = clicks + 1 WHERE id = $1',
+      [result.rows[0].envio_id],
+    ).catch(() => {});
+  }
+  res.redirect(destino);
 });
 
 router.use(authenticate, requirePermission('comercial'));
@@ -1934,10 +1990,11 @@ router.get('/campanias', async (_req, res) => {
   const result = await pool.query(
     `SELECT ca.id, ca.asunto, LEFT(regexp_replace(ca.cuerpo_html, '<[^>]+>', ' ', 'g'), 160) AS resumen,
             ca.creado_por_nombre, ca.creado_en, ca.actualizado_en, ca.veces_enviada, ca.ultimo_envio_en,
-            e.id AS envio_id, e.estado AS envio_estado, e.enviados AS envio_enviados, e.total_destinatarios AS envio_total
+            e.id AS envio_id, e.estado AS envio_estado, e.enviados AS envio_enviados, e.total_destinatarios AS envio_total,
+            e.abiertos AS envio_abiertos, e.clicks AS envio_clicks, e.rebotados AS envio_rebotados, e.quejas AS envio_quejas
        FROM comercial_campanias ca
        LEFT JOIN LATERAL (
-         SELECT id, estado, enviados, total_destinatarios FROM comercial_campania_envios
+         SELECT id, estado, enviados, total_destinatarios, abiertos, clicks, rebotados, quejas FROM comercial_campania_envios
           WHERE campania_id = ca.id ORDER BY creado_en DESC LIMIT 1
        ) e ON TRUE
        ORDER BY ca.actualizado_en DESC`,
@@ -1976,7 +2033,7 @@ router.put('/campanias/:id', async (req, res) => {
 
 router.delete('/campanias/:id', async (req, res) => {
   const activo = await pool.query(
-    `SELECT 1 FROM comercial_campania_envios WHERE campania_id = $1 AND estado IN ('en_curso', 'pausado')`,
+    `SELECT 1 FROM comercial_campania_envios WHERE campania_id = $1 AND estado IN ('en_curso', 'pausado', 'programado')`,
     [req.params.id],
   );
   if (activo.rowCount > 0) return res.status(409).json({ error: 'Hay un envío en curso o pausado para esta campaña. Cancelalo antes de borrarla.' });
@@ -2003,7 +2060,7 @@ router.post('/campanias/:id/envios', async (req, res) => {
   const { asunto, cuerpo_html: cuerpoHtml } = campania.rows[0];
 
   const activo = await pool.query(
-    `SELECT 1 FROM comercial_campania_envios WHERE campania_id = $1 AND estado IN ('en_curso', 'pausado')`,
+    `SELECT 1 FROM comercial_campania_envios WHERE campania_id = $1 AND estado IN ('en_curso', 'pausado', 'programado')`,
     [req.params.id],
   );
   if (activo.rowCount > 0) return res.status(409).json({ error: 'Ya hay un envío en curso o pausado para esta campaña.' });
@@ -2037,12 +2094,24 @@ router.post('/campanias/:id/envios', async (req, res) => {
     return res.status(400).json({ error: 'hora_inicio debe ser anterior a hora_fin (no se soportan ventanas que crucen la medianoche).' });
   }
 
+  // Inicio programado: opcional, fecha/hora futura (ISO) en la que el ticker
+  // de campaniaRamp.js pasa el envio de 'programado' a 'en_curso' solo. Sin
+  // esto (o si ya paso), arranca de una en 'en_curso' como antes.
+  const { inicia_en: iniciaEnRaw } = req.body ?? {};
+  let iniciaEn = null;
+  if (iniciaEnRaw) {
+    const fecha = new Date(iniciaEnRaw);
+    if (Number.isNaN(fecha.getTime())) return res.status(400).json({ error: 'inicia_en no es una fecha valida.' });
+    if (fecha.getTime() > Date.now()) iniciaEn = fecha;
+  }
+  const estadoInicial = iniciaEn ? 'programado' : 'en_curso';
+
   const responsableNombre = await responsableActual(req);
   const envio = await pool.query(
     `INSERT INTO comercial_campania_envios
-       (campania_id, asunto_snapshot, cuerpo_html_snapshot, total_destinatarios, ramp_schedule, hora_inicio, hora_fin, creado_por_usuario_id, creado_por_nombre)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
-    [req.params.id, asunto, cuerpoHtml, contactos.rowCount, rampSchedule, horaInicio, horaFin, req.user.sub, responsableNombre],
+       (campania_id, estado, inicia_en, asunto_snapshot, cuerpo_html_snapshot, total_destinatarios, ramp_schedule, hora_inicio, hora_fin, creado_por_usuario_id, creado_por_nombre)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id`,
+    [req.params.id, estadoInicial, iniciaEn, asunto, cuerpoHtml, contactos.rowCount, rampSchedule, horaInicio, horaFin, req.user.sub, responsableNombre],
   );
   const envioId = envio.rows[0].id;
 
@@ -2053,7 +2122,9 @@ router.post('/campanias/:id/envios', async (req, res) => {
   );
 
   const omitidosSinEmail = contactoIds.length - contactos.rowCount;
-  res.status(201).json({ envio_id: envioId, total_destinatarios: contactos.rowCount, omitidos_sin_email_o_no_contactar: omitidosSinEmail });
+  res.status(201).json({
+    envio_id: envioId, total_destinatarios: contactos.rowCount, omitidos_sin_email_o_no_contactar: omitidosSinEmail, estado: estadoInicial,
+  });
 });
 
 router.get('/campanias/:id/envios', async (req, res) => {
@@ -2078,6 +2149,8 @@ router.get('/envios/:envioId', async (req, res) => {
     ...envio,
     tasa_rebote: envio.rebotados / base,
     tasa_queja: envio.quejas / base,
+    tasa_apertura: envio.abiertos / base,
+    tasa_click: envio.clicks / base,
   });
 });
 
@@ -2087,13 +2160,17 @@ router.get('/envios/:envioId/destinatarios', async (req, res) => {
   const limit = 50;
   const conditions = ['d.envio_id = $1'];
   const params = [req.params.envioId];
-  if (estado) { params.push(estado); conditions.push(`d.estado = $${params.length}`); }
+  // "abierto" no es un estado de envio (eso queda en d.estado: enviado/
+  // rebotado/etc) sino un flag aparte (abierto_en), asi que se filtra distinto.
+  if (estado === 'abierto') conditions.push('d.abierto_en IS NOT NULL');
+  else if (estado === 'clickeado') conditions.push('d.clickeado_en IS NOT NULL');
+  else if (estado) { params.push(estado); conditions.push(`d.estado = $${params.length}`); }
   const whereSql = `WHERE ${conditions.join(' AND ')}`;
 
   const total = await pool.query(`SELECT COUNT(*) AS n FROM comercial_campania_envios_destinatarios d ${whereSql}`, params);
   params.push(limit, (page - 1) * limit);
   const rows = await pool.query(
-    `SELECT d.id, d.email, d.estado, d.enviado_en, d.error, d.contacto_id,
+    `SELECT d.id, d.email, d.estado, d.enviado_en, d.abierto_en, d.clickeado_en, d.error, d.contacto_id,
             c.apellido AS contacto_apellido, c.nombre AS contacto_nombre
        FROM comercial_campania_envios_destinatarios d
        LEFT JOIN comercial_contactos c ON c.id = d.contacto_id
@@ -2103,6 +2180,79 @@ router.get('/envios/:envioId/destinatarios', async (req, res) => {
     params,
   );
   res.json({ destinatarios: rows.rows, total: Number(total.rows[0].n), page, limit });
+});
+
+// Reenvio a los que no abrieron: toma un envio ya terminado, junta los
+// contactos a los que de verdad se les mando el mail (estado='enviado', no
+// rebotado/fallido/queja) pero no lo abrieron, y crea un envio NUEVO para
+// esos - mismo mecanismo que /campanias/:id/envios (snapshot del asunto/
+// cuerpo ACTUAL de la campaña, no el de la corrida vieja, por si se edito
+// desde entonces). No reenvia a los que ya abrieron ni a los que rebotaron/
+// se quejaron (ya estan de baja automatica igual, ver campaniaRamp.js).
+router.post('/envios/:envioId/reenviar-no-abiertos', async (req, res) => {
+  if (!elasticEmailConfigurado()) return res.status(500).json({ error: 'Elastic Email no configurado en el servidor.' });
+
+  const envioOrigen = await pool.query('SELECT * FROM comercial_campania_envios WHERE id = $1', [req.params.envioId]);
+  if (envioOrigen.rowCount === 0) return res.status(404).json({ error: 'Envío no encontrado.' });
+  const origen = envioOrigen.rows[0];
+  if (!['completado', 'cancelado'].includes(origen.estado)) {
+    return res.status(409).json({ error: 'El envío original todavía está en curso o pausado.' });
+  }
+
+  const campania = await pool.query('SELECT * FROM comercial_campanias WHERE id = $1', [origen.campania_id]);
+  if (campania.rowCount === 0) return res.status(404).json({ error: 'Campaña no encontrada.' });
+  const { asunto, cuerpo_html: cuerpoHtml } = campania.rows[0];
+
+  const activo = await pool.query(
+    `SELECT 1 FROM comercial_campania_envios WHERE campania_id = $1 AND estado IN ('en_curso', 'pausado', 'programado')`,
+    [origen.campania_id],
+  );
+  if (activo.rowCount > 0) return res.status(409).json({ error: 'Ya hay un envío en curso o pausado para esta campaña.' });
+
+  const contactos = await pool.query(
+    `SELECT DISTINCT cc.id, cc.email
+       FROM comercial_campania_envios_destinatarios d
+       JOIN comercial_contactos cc ON cc.id = d.contacto_id
+      WHERE d.envio_id = $1 AND d.estado = 'enviado' AND d.abierto_en IS NULL
+        AND cc.no_contactar = FALSE AND cc.email IS NOT NULL`,
+    [req.params.envioId],
+  );
+  if (contactos.rowCount === 0) return res.status(400).json({ error: 'No hay contactos sin abrir para reenviar (o ya se dieron de baja).' });
+
+  const { ramp_schedule: rampScheduleRaw, hora_inicio: horaInicioRaw, hora_fin: horaFinRaw } = req.body ?? {};
+  let rampSchedule = null;
+  if (rampScheduleRaw !== undefined && rampScheduleRaw !== null) {
+    if (!Array.isArray(rampScheduleRaw) || rampScheduleRaw.some((n) => !Number.isInteger(n) || n <= 0)) {
+      return res.status(400).json({ error: 'ramp_schedule debe ser una lista de enteros positivos.' });
+    }
+    rampSchedule = rampScheduleRaw;
+  }
+  const HHMM_REGEX = /^([01]\d|2[0-3]):[0-5]\d$/;
+  const horaInicio = horaInicioRaw ?? '09:00';
+  const horaFin = horaFinRaw ?? '19:00';
+  if (!HHMM_REGEX.test(horaInicio) || !HHMM_REGEX.test(horaFin)) {
+    return res.status(400).json({ error: 'hora_inicio y hora_fin deben tener formato HH:MM.' });
+  }
+  if (horaInicio >= horaFin) {
+    return res.status(400).json({ error: 'hora_inicio debe ser anterior a hora_fin (no se soportan ventanas que crucen la medianoche).' });
+  }
+
+  const responsableNombre = await responsableActual(req);
+  const envio = await pool.query(
+    `INSERT INTO comercial_campania_envios
+       (campania_id, asunto_snapshot, cuerpo_html_snapshot, total_destinatarios, ramp_schedule, hora_inicio, hora_fin, creado_por_usuario_id, creado_por_nombre)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
+    [origen.campania_id, asunto, cuerpoHtml, contactos.rowCount, rampSchedule, horaInicio, horaFin, req.user.sub, responsableNombre],
+  );
+  const envioId = envio.rows[0].id;
+
+  await pool.query(
+    `INSERT INTO comercial_campania_envios_destinatarios (envio_id, contacto_id, email)
+     SELECT $1, id, email FROM comercial_contactos WHERE id = ANY($2)`,
+    [envioId, contactos.rows.map((c) => c.id)],
+  );
+
+  res.status(201).json({ envio_id: envioId, total_destinatarios: contactos.rowCount });
 });
 
 router.post('/envios/:envioId/pausar', async (req, res) => {
@@ -2129,7 +2279,7 @@ router.post('/envios/:envioId/reanudar', async (req, res) => {
 router.post('/envios/:envioId/cancelar', async (req, res) => {
   const result = await pool.query(
     `UPDATE comercial_campania_envios SET estado = 'cancelado', actualizado_en = NOW()
-       WHERE id = $1 AND estado IN ('en_curso', 'pausado') RETURNING *`,
+       WHERE id = $1 AND estado IN ('en_curso', 'pausado', 'programado') RETURNING *`,
     [req.params.envioId],
   );
   if (result.rowCount === 0) return res.status(404).json({ error: 'Envío no encontrado o ya está terminado.' });

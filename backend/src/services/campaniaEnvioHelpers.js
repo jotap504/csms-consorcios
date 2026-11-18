@@ -38,17 +38,34 @@ function prepararImagenesInline(cuerpoHtml) {
 // escribe estos placeholders (ver campaniaSystemPrompt) esperando que se
 // completen por destinatario; sin esto llegaban literales ("Hola [Nombre],").
 // Agrega tambien el footer de baja con el link personalizado del contacto.
+// Reescribe los <a href="http(s)://..."> del cuerpo para que pasen por el
+// redirect de tracking (/comercial/click/:destId) en vez de ir directo al
+// destino - asi se puede contar el click antes de mandar al link real. Se
+// aplica ANTES de agregar el footer de baja, para no trackear ese link (la
+// baja tiene que ser directa y confiable, sin depender de un redirect mas).
+function reescribirLinksParaTracking(html, clickBaseUrl) {
+  if (!clickBaseUrl) return html;
+  return html.replace(/(<a[^>]*\shref=["'])(https?:\/\/[^"']+)(["'])/gi, (full, pre, url, post) => (
+    `${pre}${clickBaseUrl}&u=${encodeURIComponent(url)}${post}`
+  ));
+}
+
 function personalizarCuerpo({
-  cuerpoConImagenesInline, contacto, bajaUrl,
+  cuerpoConImagenesInline, contacto, bajaUrl, pixelUrl, clickBaseUrl,
 }) {
   const nombreCompleto = `${contacto.nombre || ''} ${contacto.apellido || ''}`.trim();
-  const cuerpoPersonalizado = cuerpoConImagenesInline
+  const cuerpoPersonalizado = reescribirLinksParaTracking(cuerpoConImagenesInline, clickBaseUrl)
     .replace(/\[Nombre Completo\]/gi, nombreCompleto || 'estimado/a')
     .replace(/\[Nombre\]/gi, contacto.nombre || 'estimado/a')
     .replace(/\[Apellido\]/gi, contacto.apellido || '');
   const footerHtml = `<p style="margin-top:24px;font-size:11px;color:#999;">Si no queres recibir mas mails nuestros, <a href="${bajaUrl}" style="color:#999;">hace click aca para darte de baja</a>.</p>`;
-  const html = cuerpoPersonalizado + footerHtml;
-  const text = `${html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()}\n\nDarte de baja: ${bajaUrl}`;
+  // Pixel de 1x1 invisible, solo en el html (nunca en el text plano) - asi se
+  // detecta la apertura cuando el cliente de mail carga imagenes remotas. No
+  // es 100% confiable (Gmail/Apple a veces precargan igual, o el destinatario
+  // bloquea imagenes), pero es la señal estandar de la industria.
+  const pixelHtml = pixelUrl ? `<img src="${pixelUrl}" width="1" height="1" alt="" style="display:none;width:1px;height:1px;border:0;" />` : '';
+  const html = cuerpoPersonalizado + footerHtml + pixelHtml;
+  const text = `${(cuerpoPersonalizado + footerHtml).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()}\n\nDarte de baja: ${bajaUrl}`;
   return { html, text };
 }
 

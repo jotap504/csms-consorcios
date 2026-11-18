@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import {
-  ArrowLeft, Send, PauseCircle, PlayCircle, XCircle, Users, MailWarning, AlertTriangle, List,
+  ArrowLeft, Send, PauseCircle, PlayCircle, XCircle, Users, MailWarning, AlertTriangle, List, MailOpen, MousePointerClick, Repeat,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { toast } from '@/lib/toast';
@@ -13,6 +13,7 @@ import {
 import { SUPERADMIN_NAV } from '../superadmin/navConfig';
 
 const ESTADO_BADGE = {
+  programado: { variant: 'outline', label: 'Programado' },
   en_curso: { variant: 'accent', label: 'En curso' },
   pausado: { variant: 'destructive', label: 'Pausado' },
   completado: { variant: 'default', label: 'Completado' },
@@ -30,6 +31,8 @@ const DEST_ESTADO_BADGE = {
 const DEST_FILTROS = [
   { value: '', label: 'Todos' },
   { value: 'enviado', label: 'Enviados' },
+  { value: 'abierto', label: 'Abiertos' },
+  { value: 'clickeado', label: 'Clicks' },
   { value: 'pendiente', label: 'Pendientes' },
   { value: 'fallido', label: 'Fallidos' },
   { value: 'rebotado', label: 'Rebotados' },
@@ -48,6 +51,7 @@ export default function EnvioDetalle() {
   const navigate = useNavigate();
   const [envio, setEnvio] = useState(null);
   const [accionando, setAccionando] = useState(false);
+  const [reenviando, setReenviando] = useState(false);
   const [destinatarios, setDestinatarios] = useState(null);
   const [filtroEstado, setFiltroEstado] = useState('');
   const [paginaDest, setPaginaDest] = useState(1);
@@ -88,7 +92,7 @@ export default function EnvioDetalle() {
   }, [envioId, filtroEstado, paginaDest]);
 
   useEffect(() => {
-    if (!envio || !['en_curso', 'pausado'].includes(envio.estado)) {
+    if (!envio || !['en_curso', 'pausado', 'programado'].includes(envio.estado)) {
       if (intervalRef.current) clearInterval(intervalRef.current);
       return undefined;
     }
@@ -106,6 +110,22 @@ export default function EnvioDetalle() {
       toast.error(err.response?.data?.error || 'No se pudo actualizar el envío.');
     } finally {
       setAccionando(false);
+    }
+  }
+
+  async function handleReenviarNoAbiertos() {
+    const noAbiertos = envio.enviados - envio.abiertos;
+    // eslint-disable-next-line no-alert
+    if (!window.confirm(`Se va a crear un nuevo envío para los ${noAbiertos} contacto(s) que no abrieron este. Continuar?`)) return;
+    setReenviando(true);
+    try {
+      const { data } = await api.post(`/comercial/envios/${envioId}/reenviar-no-abiertos`);
+      toast.success(`Nuevo envío creado para ${data.total_destinatarios} contacto(s).`);
+      navigate(`/comercial/envios/${data.envio_id}`);
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'No se pudo reenviar a los que no abrieron.');
+    } finally {
+      setReenviando(false);
     }
   }
 
@@ -130,7 +150,9 @@ export default function EnvioDetalle() {
         <CardHeader className="flex-row flex-wrap items-center justify-between gap-3">
           <div>
             <CardTitle>{envio.campania_asunto}</CardTitle>
-            <p className="mt-1 text-xs text-muted-foreground">Día {envio.dia_actual} · Último lote: {formatFechaHora(envio.ultimo_lote_en)}</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {envio.estado === 'programado' ? `Arranca: ${formatFechaHora(envio.inicia_en)}` : `Día ${envio.dia_actual} · Último lote: ${formatFechaHora(envio.ultimo_lote_en)}`}
+            </p>
             <p className="mt-1 text-xs text-muted-foreground">
               Plan: {envio.ramp_schedule?.length ? `${envio.ramp_schedule.join(', ')}, resto` : 'default'}
               {' · '}Ventana: {envio.hora_inicio}-{envio.hora_fin}
@@ -156,9 +178,11 @@ export default function EnvioDetalle() {
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-6">
             <StatCard icon={Users} label="Destinatarios" value={envio.total_destinatarios} color="primary" />
             <StatCard icon={Send} label="Enviados" value={envio.enviados} hint={`Fallidos: ${envio.fallidos}`} color="emerald" />
+            <StatCard icon={MailOpen} label="Abiertos" value={envio.abiertos} hint={`${(envio.tasa_apertura * 100).toFixed(1)}%`} color="primary" />
+            <StatCard icon={MousePointerClick} label="Clicks" value={envio.clicks} hint={`${(envio.tasa_click * 100).toFixed(1)}%`} color="primary" />
             <StatCard icon={MailWarning} label="Rebotados" value={envio.rebotados} hint={`${(envio.tasa_rebote * 100).toFixed(1)}%`} color="amber" />
             <StatCard icon={AlertTriangle} label="Quejas" value={envio.quejas} hint={`${(envio.tasa_queja * 100).toFixed(2)}%`} color="rose" />
           </div>
@@ -174,7 +198,7 @@ export default function EnvioDetalle() {
                 <PauseCircle className="h-4 w-4" />Pausar
               </Button>
             )}
-            {['en_curso', 'pausado'].includes(envio.estado) && (
+            {['en_curso', 'pausado', 'programado'].includes(envio.estado) && (
               <Button
                 size="sm"
                 variant="destructive"
@@ -185,6 +209,11 @@ export default function EnvioDetalle() {
                 }}
               >
                 <XCircle className="h-4 w-4" />Cancelar
+              </Button>
+            )}
+            {envio.estado === 'completado' && envio.enviados > envio.abiertos && (
+              <Button size="sm" variant="outline" loading={reenviando} onClick={handleReenviarNoAbiertos}>
+                <Repeat className="h-4 w-4" />Reenviar a no abiertos ({envio.enviados - envio.abiertos})
               </Button>
             )}
             {['completado', 'cancelado'].includes(envio.estado) && (
@@ -223,6 +252,8 @@ export default function EnvioDetalle() {
                   <TableHead className="hidden sm:table-cell">Email</TableHead>
                   <TableHead>Estado</TableHead>
                   <TableHead className="hidden md:table-cell">Enviado</TableHead>
+                  <TableHead className="hidden md:table-cell">Abierto</TableHead>
+                  <TableHead className="hidden lg:table-cell">Click</TableHead>
                   <TableHead className="hidden lg:table-cell">Detalle</TableHead>
                 </TableRow>
               </TableHeader>
@@ -239,6 +270,8 @@ export default function EnvioDetalle() {
                       <TableCell className="hidden truncate text-sm text-muted-foreground sm:table-cell">{d.email}</TableCell>
                       <TableCell><Badge variant={destBadge.variant}>{destBadge.label}</Badge></TableCell>
                       <TableCell className="hidden whitespace-nowrap text-sm text-muted-foreground md:table-cell">{formatFechaHora(d.enviado_en)}</TableCell>
+                      <TableCell className="hidden whitespace-nowrap text-sm text-muted-foreground md:table-cell">{d.abierto_en ? formatFechaHora(d.abierto_en) : '-'}</TableCell>
+                      <TableCell className="hidden whitespace-nowrap text-sm text-muted-foreground lg:table-cell">{d.clickeado_en ? formatFechaHora(d.clickeado_en) : '-'}</TableCell>
                       <TableCell className="hidden max-w-[220px] truncate text-xs text-muted-foreground lg:table-cell">{d.error || '-'}</TableCell>
                     </TableRow>
                   );

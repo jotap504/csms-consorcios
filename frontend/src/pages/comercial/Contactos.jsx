@@ -71,6 +71,7 @@ export default function Contactos() {
   const [rampSchedule, setRampSchedule] = useState(RAMP_SCHEDULE_DEFAULT);
   const [horaInicio, setHoraInicio] = useState('09:00');
   const [horaFin, setHoraFin] = useState('19:00');
+  const [iniciaEn, setIniciaEn] = useState('');
   const [enviandoCampania, setEnviandoCampania] = useState(false);
   const [revisandoBandeja, setRevisandoBandeja] = useState(false);
 
@@ -224,13 +225,17 @@ export default function Contactos() {
         ramp_schedule: rampSchedule.filter((n) => n > 0),
         hora_inicio: horaInicio,
         hora_fin: horaFin,
+        inicia_en: iniciaEn ? new Date(iniciaEn).toISOString() : undefined,
       });
-      toast.success(`Envío iniciado para ${data.total_destinatarios} contacto(s). Se va a completar en varios días (revisá el progreso en la campaña).`);
+      toast.success(data.estado === 'programado'
+        ? `Envío programado para ${data.total_destinatarios} contacto(s). Arranca solo en la fecha/hora elegida.`
+        : `Envío iniciado para ${data.total_destinatarios} contacto(s). Se va a completar en varios días (revisá el progreso en la campaña).`);
       setPickerOpen(false);
       setCampaniaElegidaId(null);
       setRampSchedule(RAMP_SCHEDULE_DEFAULT);
       setHoraInicio('09:00');
       setHoraFin('19:00');
+      setIniciaEn('');
       setContactosSeleccionados(new Set());
       load();
     } catch (err) {
@@ -326,6 +331,7 @@ export default function Contactos() {
                     setRampSchedule(RAMP_SCHEDULE_DEFAULT);
                     setHoraInicio('09:00');
                     setHoraFin('19:00');
+                    setIniciaEn('');
                   }
                 }}
               >
@@ -404,6 +410,14 @@ export default function Contactos() {
                             <Input type="time" value={horaFin} onChange={(e) => setHoraFin(e.target.value)} className="h-8 w-28" />
                           </div>
                           <p className="text-xs text-muted-foreground">El lote de cada día se reparte dentro de esa ventana en vez de mandarse todo junto.</p>
+                          <div className="mt-1 flex items-center gap-2 border-t border-border pt-2">
+                            <span className="text-xs text-muted-foreground">Arrancar el:</span>
+                            <Input type="datetime-local" value={iniciaEn} onChange={(e) => setIniciaEn(e.target.value)} className="h-8 w-auto" />
+                            {iniciaEn && (
+                              <Button size="sm" variant="ghost" onClick={() => setIniciaEn('')}>Quitar</Button>
+                            )}
+                          </div>
+                          <p className="text-xs text-muted-foreground">Dejalo vacío para arrancar ahora mismo.</p>
                         </div>
                       )}
 
@@ -413,7 +427,7 @@ export default function Contactos() {
                         disabled={!campaniaElegidaId}
                         onClick={handleEnviarCampaniaElegida}
                       >
-                        <Send className="h-4 w-4" />Enviar a {contactosSeleccionados.size} contacto(s)
+                        <Send className="h-4 w-4" />{iniciaEn ? 'Programar envío' : `Enviar a ${contactosSeleccionados.size} contacto(s)`}
                       </Button>
                     </div>
                   )}
