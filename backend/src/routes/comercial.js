@@ -10,6 +10,7 @@ const crypto = require('crypto');
 const multer = require('multer');
 const XLSX = require('xlsx');
 const pdfParse = require('pdf-parse');
+const { pdfPaginasAImagenes } = require('../lib/pdfImagenes');
 const { pool } = require('../db');
 const { authenticate, requirePermission } = require('../auth/middleware');
 const { calcularTroncal, DISCLAIMER_PREDIMENSIONADO } = require('../lib/electricoEV');
@@ -527,11 +528,28 @@ router.post('/catalogo-items/importar-preview', uploadMemory.single('file'), asy
           { type: 'image_url', image_url: { url: `data:${mimeType};base64,${base64}` } },
         ],
       }];
+    } else if (name.endsWith('.pdf')) {
+      const rawContent = (await pdfParse(req.file.buffer)).text;
+      if (rawContent && rawContent.trim().length >= 30) {
+        messages = [{ role: 'user', content: `${prompt}\n\nContenido del documento (lista de precios del proveedor):\n${rawContent.slice(0, 60000)}` }];
+      } else {
+        // PDF sin texto seleccionable (escaneo/foto) - lo rasterizamos a
+        // imagenes y las mandamos como si fuera una foto, en vez de fallar.
+        const paginas = pdfPaginasAImagenes(req.file.buffer);
+        if (paginas.length === 0) {
+          return res.status(400).json({ error: 'El PDF no tiene texto ni se pudo leer como imagen. Proba con una imagen o una planilla.' });
+        }
+        messages = [{
+          role: 'user',
+          content: [
+            { type: 'text', text: prompt },
+            ...paginas.map((p) => ({ type: 'image_url', image_url: { url: `data:${p.mimeType};base64,${p.base64}` } })),
+          ],
+        }];
+      }
     } else {
       let rawContent;
-      if (name.endsWith('.pdf')) {
-        rawContent = (await pdfParse(req.file.buffer)).text;
-      } else if (name.endsWith('.xlsx') || name.endsWith('.xls')) {
+      if (name.endsWith('.xlsx') || name.endsWith('.xls')) {
         const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
         const sheet = workbook.Sheets[workbook.SheetNames[0]];
         rawContent = JSON.stringify(XLSX.utils.sheet_to_json(sheet, { defval: '' }));
@@ -1675,16 +1693,31 @@ router.post('/contactos/importar-preview', uploadMemory.single('file'), async (r
           { type: 'image_url', image_url: { url: `data:${mimeType};base64,${base64}` } },
         ],
       }];
+    } else if (name.endsWith('.pdf')) {
+      const rawContent = (await pdfParse(req.file.buffer)).text;
+      if (rawContent && rawContent.trim().length >= 30) {
+        messages = [{ role: 'user', content: `${IMPORTAR_CONTACTOS_PROMPT}\n\nContenido del documento:\n${rawContent.slice(0, 60000)}` }];
+      } else {
+        // PDF sin texto seleccionable (escaneo/foto) - lo rasterizamos a
+        // imagenes y las mandamos como si fuera una foto, en vez de fallar.
+        const paginas = pdfPaginasAImagenes(req.file.buffer);
+        if (paginas.length === 0) {
+          return res.status(400).json({ error: 'El PDF no tiene texto ni se pudo leer como imagen. Proba con una imagen o una planilla.' });
+        }
+        messages = [{
+          role: 'user',
+          content: [
+            { type: 'text', text: IMPORTAR_CONTACTOS_PROMPT },
+            ...paginas.map((p) => ({ type: 'image_url', image_url: { url: `data:${p.mimeType};base64,${p.base64}` } })),
+          ],
+        }];
+      }
     } else {
       let rawContent;
-      if (name.endsWith('.pdf')) {
-        rawContent = (await pdfParse(req.file.buffer)).text;
-      } else if (name.endsWith('.xlsx') || name.endsWith('.xls') || name.endsWith('.csv')) {
+      if (name.endsWith('.xlsx') || name.endsWith('.xls') || name.endsWith('.csv')) {
         const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
         const sheet = workbook.Sheets[workbook.SheetNames[0]];
         rawContent = JSON.stringify(XLSX.utils.sheet_to_json(sheet, { defval: '' }));
-      } else if (name.endsWith('.txt') || name.endsWith('.csv')) {
-        rawContent = req.file.buffer.toString('utf8');
       } else {
         rawContent = req.file.buffer.toString('utf8');
       }
