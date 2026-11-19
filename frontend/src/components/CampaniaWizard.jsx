@@ -288,7 +288,7 @@ export default function CampaniaWizard({ campaniaInicial, onGuardado }) {
                   <input
                     ref={fileInputRef}
                     type="file"
-                    accept="image/*"
+                    accept="image/*,application/pdf"
                     className="hidden"
                     onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) handleSubirImagen(f); }}
                   />

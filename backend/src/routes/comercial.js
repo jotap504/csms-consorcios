@@ -2494,11 +2494,28 @@ router.post('/campanias/imagen-ia', async (req, res) => {
 
 router.post('/campanias/imagen-subir', upload.single('archivo'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'Falta el archivo.' });
-  if (!IMAGE_MIME_TYPES.includes(req.file.mimetype)) {
-    fs.unlinkSync(req.file.path);
-    return res.status(400).json({ error: 'El archivo debe ser una imagen (jpg, png, webp o gif).' });
+  if (IMAGE_MIME_TYPES.includes(req.file.mimetype)) {
+    return res.json({ filename: req.file.filename });
   }
-  res.json({ filename: req.file.filename });
+  if (req.file.mimetype === 'application/pdf') {
+    // El PDF no sirve como <img> de mail - convertimos su primera pagina a
+    // PNG (mismo helper que el fallback de importar-preview) y usamos esa
+    // imagen en su lugar.
+    try {
+      const [pagina] = pdfPaginasAImagenes(fs.readFileSync(req.file.path), { maxPaginas: 1 });
+      fs.unlinkSync(req.file.path);
+      if (!pagina) return res.status(400).json({ error: 'No se pudo convertir el PDF a imagen.' });
+      const filename = `${crypto.randomUUID()}.png`;
+      fs.writeFileSync(path.join(UPLOADS_DIR, filename), Buffer.from(pagina.base64, 'base64'));
+      return res.json({ filename });
+    } catch (err) {
+      console.error('Error convirtiendo PDF a imagen:', err.message);
+      if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+      return res.status(400).json({ error: 'No se pudo convertir el PDF a imagen.' });
+    }
+  }
+  fs.unlinkSync(req.file.path);
+  return res.status(400).json({ error: 'El archivo debe ser una imagen (jpg, png, webp o gif) o un PDF.' });
 });
 
 // ---------------------------------------------------------------------------
