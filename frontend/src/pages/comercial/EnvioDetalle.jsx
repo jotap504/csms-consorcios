@@ -46,6 +46,13 @@ function formatFechaHora(iso) {
   });
 }
 
+function formatEstimado(iso) {
+  if (!iso) return '-';
+  const fecha = new Date(iso);
+  if (fecha.getTime() <= Date.now()) return 'Próximo chequeo';
+  return `~ ${formatFechaHora(iso)}`;
+}
+
 export default function EnvioDetalle() {
   const { envioId } = useParams();
   const navigate = useNavigate();
@@ -251,7 +258,7 @@ export default function EnvioDetalle() {
                   <TableHead>Contacto</TableHead>
                   <TableHead className="hidden sm:table-cell">Email</TableHead>
                   <TableHead>Estado</TableHead>
-                  <TableHead className="hidden md:table-cell">Enviado</TableHead>
+                  <TableHead className="hidden md:table-cell">Enviado / Estimado</TableHead>
                   <TableHead className="hidden md:table-cell">Abierto</TableHead>
                   <TableHead className="hidden lg:table-cell">Click</TableHead>
                   <TableHead className="hidden lg:table-cell">Detalle</TableHead>
@@ -269,7 +276,9 @@ export default function EnvioDetalle() {
                       </TableCell>
                       <TableCell className="hidden truncate text-sm text-muted-foreground sm:table-cell">{d.email}</TableCell>
                       <TableCell><Badge variant={destBadge.variant}>{destBadge.label}</Badge></TableCell>
-                      <TableCell className="hidden whitespace-nowrap text-sm text-muted-foreground md:table-cell">{formatFechaHora(d.enviado_en)}</TableCell>
+                      <TableCell className="hidden whitespace-nowrap text-sm text-muted-foreground md:table-cell">
+                        {d.estado === 'pendiente' ? formatEstimado(d.estimado_envio) : formatFechaHora(d.enviado_en)}
+                      </TableCell>
                       <TableCell className="hidden whitespace-nowrap text-sm text-muted-foreground md:table-cell">{d.abierto_en ? formatFechaHora(d.abierto_en) : '-'}</TableCell>
                       <TableCell className="hidden whitespace-nowrap text-sm text-muted-foreground lg:table-cell">{d.clickeado_en ? formatFechaHora(d.clickeado_en) : '-'}</TableCell>
                       <TableCell className="hidden max-w-[220px] truncate text-xs text-muted-foreground lg:table-cell">{d.error || '-'}</TableCell>

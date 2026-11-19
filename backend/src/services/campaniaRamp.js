@@ -353,4 +353,36 @@ async function tickRamp() {
   return { procesados };
 }
 
-module.exports = { tickRamp, evaluarUmbrales };
+// Estima cuando le toca el turno a un destinatario todavia pendiente, dada
+// su posicion (1-indexada) entre TODOS los destinatarios del envio -
+// contando los ya procesados (enviados/fallidos/rebotados/quejas) mas su
+// propio lugar entre los pendientes. Es una aproximacion para mostrar en la
+// UI (ver EnvioDetalle.jsx): usa la misma logica de dia/franja horaria que
+// procesarRun(), pero no replica el redondeo por tick (Math.ceil) asi que
+// puede variar en minutos contra el envio real.
+function estimarProximoEnvio(envio, posicionGlobal) {
+  const schedule = envio.ramp_schedule && envio.ramp_schedule.length > 0 ? envio.ramp_schedule : rampSchedule();
+
+  let dia = 1;
+  while (dia <= schedule.length && objetivoAcumulado(dia, schedule) < posicionGlobal) dia += 1;
+
+  const diasDesdeHoy = Math.max(dia - Math.max(envio.dia_actual, 1), 0);
+  const fecha = new Date(`${fechaLocal()}T00:00:00-03:00`);
+  fecha.setDate(fecha.getDate() + diasDesdeHoy);
+
+  const inicioMin = minutosDesdeMedianoche(envio.hora_inicio);
+  const finMin = minutosDesdeMedianoche(envio.hora_fin);
+
+  let horaEstimadaMin = inicioMin;
+  if (finMin > inicioMin) {
+    const objetivoPrevio = objetivoAcumulado(dia - 1, schedule);
+    const cuotaDelDia = dia <= schedule.length ? schedule[dia - 1] : Math.max(envio.total_destinatarios - objetivoPrevio, 1);
+    const fraccion = Math.min(Math.max((posicionGlobal - objetivoPrevio) / cuotaDelDia, 0), 1);
+    horaEstimadaMin = inicioMin + fraccion * (finMin - inicioMin);
+  }
+
+  fecha.setMinutes(fecha.getMinutes() + horaEstimadaMin);
+  return fecha;
+}
+
+module.exports = { tickRamp, evaluarUmbrales, estimarProximoEnvio };

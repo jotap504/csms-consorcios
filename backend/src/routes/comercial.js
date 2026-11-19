@@ -11,6 +11,7 @@ const multer = require('multer');
 const XLSX = require('xlsx');
 const pdfParse = require('pdf-parse');
 const { pdfPaginasAImagenes } = require('../lib/pdfImagenes');
+const { estimarProximoEnvio } = require('../services/campaniaRamp');
 const { pool } = require('../db');
 const { authenticate, requirePermission } = require('../auth/middleware');
 const { calcularTroncal, DISCLAIMER_PREDIMENSIONADO } = require('../lib/electricoEV');
@@ -2204,7 +2205,9 @@ router.get('/envios/:envioId/destinatarios', async (req, res) => {
   params.push(limit, (page - 1) * limit);
   const rows = await pool.query(
     `SELECT d.id, d.email, d.estado, d.enviado_en, d.abierto_en, d.clickeado_en, d.error, d.contacto_id,
-            c.apellido AS contacto_apellido, c.nombre AS contacto_nombre
+            c.apellido AS contacto_apellido, c.nombre AS contacto_nombre,
+            (SELECT COUNT(*) FROM comercial_campania_envios_destinatarios d2
+               WHERE d2.envio_id = d.envio_id AND d2.estado = 'pendiente' AND d2.id <= d.id) AS posicion_pendiente
        FROM comercial_campania_envios_destinatarios d
        LEFT JOIN comercial_contactos c ON c.id = d.contacto_id
        ${whereSql}
@@ -2212,7 +2215,29 @@ router.get('/envios/:envioId/destinatarios', async (req, res) => {
        LIMIT $${params.length - 1} OFFSET $${params.length}`,
     params,
   );
-  res.json({ destinatarios: rows.rows, total: Number(total.rows[0].n), page, limit });
+
+  // Para los pendientes de esta pagina, estimamos cuando les toca el turno
+  // (ver estimarProximoEnvio en campaniaRamp.js) - solo tiene sentido si el
+  // envio esta efectivamente mandando (en_curso).
+  let destinatarios = rows.rows;
+  if (destinatarios.some((d) => d.estado === 'pendiente')) {
+    const envioRes = await pool.query(
+      `SELECT estado, ramp_schedule, hora_inicio, hora_fin, dia_actual, total_destinatarios,
+              (SELECT COUNT(*) FROM comercial_campania_envios_destinatarios WHERE envio_id = $1 AND estado != 'pendiente') AS procesados
+         FROM comercial_campania_envios WHERE id = $1`,
+      [req.params.envioId],
+    );
+    const envio = envioRes.rows[0];
+    if (envio && envio.estado === 'en_curso') {
+      destinatarios = destinatarios.map((d) => {
+        if (d.estado !== 'pendiente') return d;
+        const posicionGlobal = Number(envio.procesados) + Number(d.posicion_pendiente);
+        return { ...d, estimado_envio: estimarProximoEnvio(envio, posicionGlobal) };
+      });
+    }
+  }
+
+  res.json({ destinatarios, total: Number(total.rows[0].n), page, limit });
 });
 
 // Reenvio a los que no abrieron: toma un envio ya terminado, junta los
