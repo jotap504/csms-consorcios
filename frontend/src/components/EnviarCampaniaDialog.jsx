@@ -21,7 +21,7 @@ function velocidades(total) {
   return [
     { id: 'lento', label: 'Lento', icon: Turtle, desc: '100/día. Más seguro para dominios nuevos.', build: () => buildFlat(100, total) },
     { id: 'normal', label: 'Normal', icon: Gauge, desc: 'Sube de a poco, de 200 a 1000/día.', build: () => RAMP_NORMAL },
-    { id: 'rapido', label: 'Rápido', icon: Zap, desc: 'Todo junto, dentro del horario elegido.', build: () => [Math.max(total, 1)] },
+    { id: 'rapido', label: 'Rápido', icon: Zap, desc: 'Todo junto, apenas se confirma (sin esperar franja horaria).', build: () => [Math.max(total, 1)] },
     { id: 'personalizado', label: 'Personalizado', icon: Settings2, desc: 'Elegís vos cuánto mandar cada día.', build: null },
   ];
 }
@@ -65,6 +65,17 @@ export default function EnviarCampaniaDialog({ open, onOpenChange, contactoIds, 
     setVelocidad(id);
     const preset = velocidades(total).find((v) => v.id === id);
     if (preset?.build) setRampSchedule(preset.build());
+    // "Rapido" tiene que mandar todo apenas corra el ticker, sin esperar
+    // una franja horaria - con hora_fin <= hora_inicio, procesarRun() en
+    // campaniaRamp.js toma la fraccion de ventana como 1 (modo catch-up) y
+    // manda la cuota del dia entera en el primer tick.
+    if (id === 'rapido') {
+      setHoraInicio('00:00');
+      setHoraFin('00:00');
+    } else if (horaInicio === '00:00' && horaFin === '00:00') {
+      setHoraInicio('09:00');
+      setHoraFin('19:00');
+    }
   }
 
   function actualizarDia(idx, valor) {
@@ -204,15 +215,19 @@ export default function EnviarCampaniaDialog({ open, onOpenChange, contactoIds, 
                 )}
               </div>
 
-              <div>
-                <p className="mb-1.5 text-sm font-medium">Horario de envío (Argentina)</p>
-                <div className="flex items-center gap-2">
-                  <Input type="time" value={horaInicio} onChange={(e) => setHoraInicio(e.target.value)} className="h-9 w-28" />
-                  <span className="text-xs text-muted-foreground">a</span>
-                  <Input type="time" value={horaFin} onChange={(e) => setHoraFin(e.target.value)} className="h-9 w-28" />
+              {velocidad === 'rapido' ? (
+                <p className="text-xs text-muted-foreground">Sin franja horaria: se manda apenas corre el próximo chequeo (cada pocos minutos), a cualquier hora.</p>
+              ) : (
+                <div>
+                  <p className="mb-1.5 text-sm font-medium">Horario de envío (Argentina)</p>
+                  <div className="flex items-center gap-2">
+                    <Input type="time" value={horaInicio} onChange={(e) => setHoraInicio(e.target.value)} className="h-9 w-28" />
+                    <span className="text-xs text-muted-foreground">a</span>
+                    <Input type="time" value={horaFin} onChange={(e) => setHoraFin(e.target.value)} className="h-9 w-28" />
+                  </div>
+                  <p className="mt-1 text-xs text-muted-foreground">El lote de cada día se reparte dentro de esa ventana en vez de mandarse todo junto.</p>
                 </div>
-                <p className="mt-1 text-xs text-muted-foreground">El lote de cada día se reparte dentro de esa ventana en vez de mandarse todo junto.</p>
-              </div>
+              )}
 
               <div>
                 <p className="mb-1.5 text-sm font-medium">¿Cuándo arranca?</p>
