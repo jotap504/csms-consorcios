@@ -2499,13 +2499,14 @@ router.post('/campanias/imagen-subir', upload.single('archivo'), async (req, res
   }
   if (req.file.mimetype === 'application/pdf') {
     // El PDF no sirve como <img> de mail - convertimos su primera pagina a
-    // PNG (mismo helper que el fallback de importar-preview) y usamos esa
+    // JPEG (mismo helper que el fallback de importar-preview, acotado a
+    // 1600px de lado para que la imagen no tarde en cargar) y usamos esa
     // imagen en su lugar.
     try {
       const [pagina] = pdfPaginasAImagenes(fs.readFileSync(req.file.path), { maxPaginas: 1 });
       fs.unlinkSync(req.file.path);
       if (!pagina) return res.status(400).json({ error: 'No se pudo convertir el PDF a imagen.' });
-      const filename = `${crypto.randomUUID()}.png`;
+      const filename = `${crypto.randomUUID()}.jpg`;
       fs.writeFileSync(path.join(UPLOADS_DIR, filename), Buffer.from(pagina.base64, 'base64'));
       return res.json({ filename });
     } catch (err) {
