@@ -106,7 +106,6 @@ export default function Contactos() {
   useEffect(() => {
     if (campaniaIdParam) {
       setCampaniaIdInicial(Number(campaniaIdParam));
-      setPickerOpen(true);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -269,7 +268,7 @@ export default function Contactos() {
               )
             )}
             {contactosSeleccionados.size > 0 && (
-              <Button size="sm" variant="outline" onClick={() => { setCampaniaIdInicial(null); setPickerOpen(true); }}>
+              <Button size="sm" variant="outline" onClick={() => setPickerOpen(true)}>
                 <Send className="h-4 w-4" />Enviar campaña ({contactosSeleccionados.size})
               </Button>
             )}
@@ -412,6 +411,12 @@ export default function Contactos() {
           </div>
         </CardHeader>
         <CardContent>
+          {campaniaIdInicial && !pickerOpen && (
+            <div className="mb-3 flex items-center justify-between gap-2 rounded-lg border border-accent/40 bg-accent/10 p-2.5 text-sm">
+              <span>Campaña elegida: seleccioná los contactos y hacé click en &quot;Enviar campaña&quot;.</span>
+              <Button size="sm" variant="ghost" onClick={() => setCampaniaIdInicial(null)}>Cancelar</Button>
+            </div>
+          )}
           {loading ? (
             <p className="text-sm text-muted-foreground">Cargando...</p>
           ) : contactos.length === 0 ? (
