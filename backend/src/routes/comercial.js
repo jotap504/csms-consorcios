@@ -2124,7 +2124,10 @@ router.post('/campanias/:id/envios', async (req, res) => {
   if (!HHMM_REGEX.test(horaInicio) || !HHMM_REGEX.test(horaFin)) {
     return res.status(400).json({ error: 'hora_inicio y hora_fin deben tener formato HH:MM.' });
   }
-  if (horaInicio >= horaFin) {
+  // hora_inicio === hora_fin es el modo "Rapido" del frontend (manda todo en
+  // el proximo tick, ver EnviarCampaniaDialog.jsx) - solo se rechaza una
+  // ventana invertida real, que cruzaria la medianoche.
+  if (horaInicio > horaFin) {
     return res.status(400).json({ error: 'hora_inicio debe ser anterior a hora_fin (no se soportan ventanas que crucen la medianoche).' });
   }
 
@@ -2291,7 +2294,7 @@ router.post('/envios/:envioId/reenviar-no-abiertos', async (req, res) => {
   if (!HHMM_REGEX.test(horaInicio) || !HHMM_REGEX.test(horaFin)) {
     return res.status(400).json({ error: 'hora_inicio y hora_fin deben tener formato HH:MM.' });
   }
-  if (horaInicio >= horaFin) {
+  if (horaInicio > horaFin) {
     return res.status(400).json({ error: 'hora_inicio debe ser anterior a hora_fin (no se soportan ventanas que crucen la medianoche).' });
   }
 
