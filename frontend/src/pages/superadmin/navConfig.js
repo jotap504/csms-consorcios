@@ -1,6 +1,6 @@
 import {
   LayoutDashboard, Building2, Zap, Truck, Package, Receipt, Wallet, Factory, Handshake, Users, Inbox, Megaphone, UserCog, AlertTriangle,
-  MapPin, Radio,
+  MapPin, Radio, ClipboardList,
 } from 'lucide-react';
 
 // Compartido por todas las paginas del lado superadmin (sidebar de AdminLayout).
@@ -12,6 +12,8 @@ export const SUPERADMIN_NAV = [
   { to: '/comercial', label: 'Comercial', icon: Users, section: 'Comercial' },
   { to: '/comercial/bandeja', label: 'Bandeja', icon: Inbox },
   { to: '/comercial/campanias', label: 'Campañas', icon: Megaphone },
+
+  { to: '/gestion', label: 'Organizacion', icon: ClipboardList, section: 'Interno' },
 
   { to: '/superadmin/edificios', label: 'Locaciones', icon: Building2, section: 'Operaciones' },
   { to: '/superadmin/contabilidad', label: 'Contabilidad', icon: Wallet },

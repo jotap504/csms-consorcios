@@ -15,6 +15,7 @@ app.use('/superadmin', require('./routes/superadmin'));
 app.use('/admin', require('./routes/admin'));
 app.use('/contabilidad', require('./routes/contabilidad'));
 app.use('/comercial', require('./routes/comercial'));
+app.use('/gestion', require('./routes/gestion'));
 app.use('/asistente', require('./routes/asistente'));
 app.use('/consorcio', require('./routes/consorcio'));
 app.use('/residente', require('./routes/residente'));

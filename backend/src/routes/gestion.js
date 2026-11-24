@@ -1,0 +1,415 @@
+// Organizacion interna de Bilon (no es para consorcios/clientes): tareas y
+// pendientes separados por "negocio" (Wallbox, Drones, Detector de
+// incendio, etc), con adjuntos, log de auditoria, chat interno y comparador
+// de presupuestos de proveedores con IA. Ver schema_gestion.sql.
+
+const express = require('express');
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+const multer = require('multer');
+const pdfParse = require('pdf-parse');
+const { pdfPaginasAImagenes } = require('../lib/pdfImagenes');
+const { pool } = require('../db');
+const { authenticate, requirePermission } = require('../auth/middleware');
+
+const UPLOADS_DIR = path.join(__dirname, '..', '..', 'uploads', 'gestion');
+fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: UPLOADS_DIR,
+    filename: (_req, file, cb) => {
+      const ext = path.extname(file.originalname).slice(0, 10);
+      cb(null, `${crypto.randomUUID()}${ext}`);
+    },
+  }),
+  limits: { fileSize: 25 * 1024 * 1024, files: 5 },
+});
+
+function tipoPorMime(mimetype) {
+  if (!mimetype) return 'otro';
+  if (mimetype.startsWith('audio/')) return 'audio';
+  if (mimetype.startsWith('image/')) return 'imagen';
+  if (mimetype === 'application/pdf') return 'pdf';
+  if (mimetype.startsWith('text/') || mimetype.includes('document') || mimetype.includes('sheet')) return 'documento';
+  return 'otro';
+}
+
+const router = express.Router();
+
+// Sin autenticacion con Bearer header a proposito: los <img>/<audio> del
+// navegador no lo mandan (mismo caso que /comercial/archivos). Nombre de
+// archivo es un UUID no listable.
+router.get('/archivos/:filename', (req, res) => {
+  const filePath = path.join(UPLOADS_DIR, path.basename(req.params.filename));
+  if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Archivo no encontrado.' });
+  res.sendFile(filePath);
+});
+
+router.use(authenticate, requirePermission('gestion_interna'));
+
+async function usuarioActual(req) {
+  const result = await pool.query('SELECT nombre, email FROM usuarios WHERE id = $1', [req.user.sub]);
+  return { id: req.user.sub, nombre: result.rows[0]?.nombre || result.rows[0]?.email || null };
+}
+
+async function registrarLog({
+  negocioId, entidadTipo, entidadId, accion, detalle, usuario,
+}) {
+  await pool.query(
+    `INSERT INTO gestion_log (negocio_id, entidad_tipo, entidad_id, accion, detalle, usuario_id, usuario_nombre)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+    [negocioId, entidadTipo, entidadId ?? null, accion, detalle ?? null, usuario.id, usuario.nombre],
+  );
+}
+
+// --- Negocios ---
+
+router.get('/negocios', async (_req, res) => {
+  const { rows } = await pool.query(
+    `SELECT n.*,
+            (SELECT COUNT(*) FROM gestion_tareas WHERE negocio_id = n.id AND estado != 'hecho') AS pendientes
+       FROM gestion_negocios n WHERE n.activo = TRUE ORDER BY n.orden, n.nombre`,
+  );
+  res.json(rows);
+});
+
+router.post('/negocios', async (req, res) => {
+  const nombre = (req.body?.nombre ?? '').trim();
+  if (!nombre) return res.status(400).json({ error: 'nombre es requerido.' });
+  const usuario = await usuarioActual(req);
+  try {
+    const { rows } = await pool.query(
+      `INSERT INTO gestion_negocios (nombre, orden) VALUES ($1, COALESCE((SELECT MAX(orden) + 1 FROM gestion_negocios), 0)) RETURNING *`,
+      [nombre],
+    );
+    await registrarLog({
+      negocioId: rows[0].id, entidadTipo: 'negocio', entidadId: rows[0].id, accion: 'creado', detalle: nombre, usuario,
+    });
+    res.status(201).json(rows[0]);
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'Ya existe un negocio con ese nombre.' });
+    throw err;
+  }
+});
+
+router.patch('/negocios/:id', async (req, res) => {
+  const { nombre, orden, activo } = req.body ?? {};
+  const usuario = await usuarioActual(req);
+  const { rows } = await pool.query(
+    `UPDATE gestion_negocios SET
+       nombre = COALESCE($2, nombre), orden = COALESCE($3, orden), activo = COALESCE($4, activo)
+       WHERE id = $1 RETURNING *`,
+    [req.params.id, nombre ?? null, orden ?? null, activo ?? null],
+  );
+  if (!rows[0]) return res.status(404).json({ error: 'Negocio no encontrado.' });
+  await registrarLog({
+    negocioId: rows[0].id, entidadTipo: 'negocio', entidadId: rows[0].id, accion: 'editado', detalle: JSON.stringify(req.body), usuario,
+  });
+  res.json(rows[0]);
+});
+
+// --- Tareas ---
+
+router.get('/negocios/:id/tareas', async (req, res) => {
+  const { estado } = req.query;
+  const params = [req.params.id];
+  let whereEstado = '';
+  if (estado) { params.push(estado); whereEstado = `AND estado = $${params.length}`; }
+  const { rows } = await pool.query(
+    `SELECT * FROM gestion_tareas WHERE negocio_id = $1 ${whereEstado} ORDER BY
+       CASE estado WHEN 'en_curso' THEN 0 WHEN 'pendiente' THEN 1 ELSE 2 END,
+       vence_en IS NULL, vence_en, creado_en DESC`,
+    params,
+  );
+  res.json(rows);
+});
+
+router.post('/negocios/:id/tareas', async (req, res) => {
+  const {
+    titulo, descripcion, asignado_a_usuario_id: asignadoId, asignado_a_nombre: asignadoNombre, vence_en: venceEn,
+  } = req.body ?? {};
+  if (!titulo?.trim()) return res.status(400).json({ error: 'titulo es requerido.' });
+  const usuario = await usuarioActual(req);
+  const { rows } = await pool.query(
+    `INSERT INTO gestion_tareas
+       (negocio_id, titulo, descripcion, asignado_a_usuario_id, asignado_a_nombre, vence_en, creado_por_usuario_id, creado_por_nombre)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+    [req.params.id, titulo.trim(), descripcion ?? null, asignadoId ?? null, asignadoNombre ?? null, venceEn ?? null, usuario.id, usuario.nombre],
+  );
+  await registrarLog({
+    negocioId: req.params.id, entidadTipo: 'tarea', entidadId: rows[0].id, accion: 'creada', detalle: titulo.trim(), usuario,
+  });
+  res.status(201).json(rows[0]);
+});
+
+router.patch('/tareas/:id', async (req, res) => {
+  const {
+    titulo, descripcion, estado, asignado_a_usuario_id: asignadoId, asignado_a_nombre: asignadoNombre, vence_en: venceEn,
+  } = req.body ?? {};
+  if (estado && !['pendiente', 'en_curso', 'hecho'].includes(estado)) {
+    return res.status(400).json({ error: 'estado invalido.' });
+  }
+  const usuario = await usuarioActual(req);
+  const anterior = await pool.query('SELECT * FROM gestion_tareas WHERE id = $1', [req.params.id]);
+  if (!anterior.rows[0]) return res.status(404).json({ error: 'Tarea no encontrada.' });
+
+  const { rows } = await pool.query(
+    `UPDATE gestion_tareas SET
+       titulo = COALESCE($2, titulo), descripcion = COALESCE($3, descripcion), estado = COALESCE($4, estado),
+       asignado_a_usuario_id = COALESCE($5, asignado_a_usuario_id), asignado_a_nombre = COALESCE($6, asignado_a_nombre),
+       vence_en = COALESCE($7, vence_en), actualizado_en = NOW()
+       WHERE id = $1 RETURNING *`,
+    [req.params.id, titulo ?? null, descripcion ?? null, estado ?? null, asignadoId ?? null, asignadoNombre ?? null, venceEn ?? null],
+  );
+  const detalle = estado && estado !== anterior.rows[0].estado ? `estado: ${anterior.rows[0].estado} -> ${estado}` : 'edicion';
+  await registrarLog({
+    negocioId: rows[0].negocio_id, entidadTipo: 'tarea', entidadId: rows[0].id, accion: 'editada', detalle, usuario,
+  });
+  res.json(rows[0]);
+});
+
+router.delete('/tareas/:id', async (req, res) => {
+  const usuario = await usuarioActual(req);
+  const { rows } = await pool.query('DELETE FROM gestion_tareas WHERE id = $1 RETURNING *', [req.params.id]);
+  if (!rows[0]) return res.status(404).json({ error: 'Tarea no encontrada.' });
+  await registrarLog({
+    negocioId: rows[0].negocio_id, entidadTipo: 'tarea', entidadId: rows[0].id, accion: 'eliminada', detalle: rows[0].titulo, usuario,
+  });
+  res.status(204).end();
+});
+
+// --- Adjuntos ---
+
+router.get('/negocios/:id/adjuntos', async (req, res) => {
+  const { rows } = await pool.query(
+    `SELECT * FROM gestion_adjuntos WHERE negocio_id = $1 ORDER BY subido_en DESC`,
+    [req.params.id],
+  );
+  res.json(rows);
+});
+
+router.post('/negocios/:id/adjuntos', upload.array('archivos', 5), async (req, res) => {
+  const files = req.files ?? [];
+  if (files.length === 0) return res.status(400).json({ error: 'No se recibio ningun archivo.' });
+  const usuario = await usuarioActual(req);
+  const tareaId = req.body?.tarea_id || null;
+
+  const creados = [];
+  for (const file of files) {
+    const tipo = tipoPorMime(file.mimetype);
+    // eslint-disable-next-line no-await-in-loop
+    const { rows } = await pool.query(
+      `INSERT INTO gestion_adjuntos
+         (negocio_id, tarea_id, tipo, archivo_path, nombre_original, mime_type, tamano_bytes, subido_por_usuario_id, subido_por_nombre)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+      [req.params.id, tareaId, tipo, file.filename, file.originalname, file.mimetype, file.size, usuario.id, usuario.nombre],
+    );
+    creados.push(rows[0]);
+  }
+  await registrarLog({
+    negocioId: req.params.id, entidadTipo: 'adjunto', entidadId: creados[0]?.id, accion: 'subido', detalle: `${creados.length} archivo(s)`, usuario,
+  });
+  res.status(201).json(creados);
+});
+
+router.delete('/adjuntos/:id', async (req, res) => {
+  const usuario = await usuarioActual(req);
+  const { rows } = await pool.query('DELETE FROM gestion_adjuntos WHERE id = $1 RETURNING *', [req.params.id]);
+  if (!rows[0]) return res.status(404).json({ error: 'Adjunto no encontrado.' });
+  fs.unlink(path.join(UPLOADS_DIR, rows[0].archivo_path), () => {});
+  await registrarLog({
+    negocioId: rows[0].negocio_id, entidadTipo: 'adjunto', entidadId: rows[0].id, accion: 'eliminado', detalle: rows[0].nombre_original, usuario,
+  });
+  res.status(204).end();
+});
+
+// --- Log de auditoria ---
+
+router.get('/negocios/:id/log', async (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 100, 300);
+  const { rows } = await pool.query(
+    `SELECT * FROM gestion_log WHERE negocio_id = $1 ORDER BY creado_en DESC LIMIT $2`,
+    [req.params.id, limit],
+  );
+  res.json(rows);
+});
+
+// --- Chat interno ---
+
+router.get('/negocios/:id/chat', async (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 100, 300);
+  const { rows } = await pool.query(
+    `SELECT m.*, a.nombre_original AS adjunto_nombre, a.tipo AS adjunto_tipo, a.archivo_path AS adjunto_path
+       FROM gestion_chat_mensajes m LEFT JOIN gestion_adjuntos a ON a.id = m.adjunto_id
+       WHERE m.negocio_id = $1 ORDER BY m.creado_en DESC LIMIT $2`,
+    [req.params.id, limit],
+  );
+  res.json(rows.reverse());
+});
+
+router.post('/negocios/:id/chat', async (req, res) => {
+  const { mensaje, adjunto_id: adjuntoId } = req.body ?? {};
+  if (!mensaje?.trim() && !adjuntoId) return res.status(400).json({ error: 'mensaje o adjunto_id es requerido.' });
+  const usuario = await usuarioActual(req);
+  const { rows } = await pool.query(
+    `INSERT INTO gestion_chat_mensajes (negocio_id, usuario_id, usuario_nombre, mensaje, adjunto_id)
+       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+    [req.params.id, usuario.id, usuario.nombre, (mensaje ?? '').trim(), adjuntoId ?? null],
+  );
+  res.status(201).json(rows[0]);
+});
+
+// Pregunta a la IA usando TODO el historial del chat del negocio (mas sus
+// tareas) como contexto - asi se puede encontrar informacion vieja sin
+// scrollear ("que se habia dicho del proveedor X").
+router.post('/negocios/:id/chat/preguntar', async (req, res) => {
+  const { pregunta } = req.body ?? {};
+  if (!pregunta?.trim()) return res.status(400).json({ error: 'pregunta es requerida.' });
+  if (!process.env.OPENROUTER_API_KEY) return res.status(503).json({ error: 'IA no configurada (falta OPENROUTER_API_KEY).' });
+
+  const negocioRes = await pool.query('SELECT nombre FROM gestion_negocios WHERE id = $1', [req.params.id]);
+  if (!negocioRes.rows[0]) return res.status(404).json({ error: 'Negocio no encontrado.' });
+
+  const mensajes = await pool.query(
+    `SELECT usuario_nombre, mensaje, creado_en FROM gestion_chat_mensajes WHERE negocio_id = $1 ORDER BY creado_en LIMIT 500`,
+    [req.params.id],
+  );
+  const tareas = await pool.query(
+    `SELECT titulo, estado, descripcion FROM gestion_tareas WHERE negocio_id = $1 ORDER BY creado_en DESC LIMIT 100`,
+    [req.params.id],
+  );
+
+  const contexto = [
+    `Tareas del negocio "${negocioRes.rows[0].nombre}":`,
+    ...tareas.rows.map((t) => `- [${t.estado}] ${t.titulo}${t.descripcion ? `: ${t.descripcion}` : ''}`),
+    '',
+    'Historial del chat interno:',
+    ...mensajes.rows.map((m) => `${m.creado_en.toISOString()} ${m.usuario_nombre}: ${m.mensaje}`),
+  ].join('\n').slice(-40000);
+
+  try {
+    const aiRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'anthropic/claude-sonnet-5',
+        temperature: 0.2,
+        messages: [
+          {
+            role: 'system',
+            content: 'Respondes preguntas sobre el chat interno y las tareas de un negocio, usando SOLO la informacion de contexto dada. Si no esta en el contexto, decilo. Respondes en español, breve y directo, sin markdown.',
+          },
+          { role: 'user', content: `Contexto:\n${contexto}\n\nPregunta: ${pregunta.trim()}` },
+        ],
+      }),
+    });
+    const data = await aiRes.json();
+    if (!aiRes.ok) return res.status(502).json({ error: 'El servicio de IA no pudo procesar la pregunta.' });
+    res.json({ respuesta: (data.choices?.[0]?.message?.content ?? '').trim() });
+  } catch (err) {
+    console.error('Error llamando a OpenRouter (chat/preguntar):', err);
+    res.status(502).json({ error: 'No se pudo comunicar con el servicio de IA.' });
+  }
+});
+
+// --- Comparador de presupuestos ---
+
+// Convierte un adjunto ya subido (pdf/imagen/documento) en contenido legible
+// por la IA - mismo patron que /comercial/catalogo-items/importar-preview.
+async function adjuntoAContenidoIA(adjunto) {
+  const filePath = path.join(UPLOADS_DIR, adjunto.archivo_path);
+  const buffer = fs.readFileSync(filePath);
+  if (adjunto.tipo === 'imagen') {
+    return { type: 'image', mimeType: adjunto.mime_type, base64: buffer.toString('base64') };
+  }
+  if (adjunto.tipo === 'pdf') {
+    const parsed = await pdfParse(buffer).catch(() => null);
+    if (parsed?.text?.trim()) return { type: 'text', text: parsed.text.slice(0, 40000) };
+    const paginas = pdfPaginasAImagenes(buffer);
+    if (paginas.length > 0) return { type: 'images', images: paginas };
+    return { type: 'text', text: '(PDF sin texto legible)' };
+  }
+  return { type: 'text', text: buffer.toString('utf8').slice(0, 40000) };
+}
+
+router.post('/negocios/:id/comparar-presupuestos', async (req, res) => {
+  const { titulo, proveedores } = req.body ?? {};
+  if (!titulo?.trim()) return res.status(400).json({ error: 'titulo es requerido.' });
+  if (!Array.isArray(proveedores) || proveedores.length < 2 || proveedores.length > 3) {
+    return res.status(400).json({ error: 'proveedores debe tener entre 2 y 3 items: [{ nombre, adjunto_id }].' });
+  }
+  if (!process.env.OPENROUTER_API_KEY) return res.status(503).json({ error: 'IA no configurada (falta OPENROUTER_API_KEY).' });
+
+  const adjuntoIds = proveedores.map((p) => Number(p.adjunto_id));
+  const adjuntosRes = await pool.query(
+    `SELECT * FROM gestion_adjuntos WHERE id = ANY($1::int[]) AND negocio_id = $2`,
+    [adjuntoIds, req.params.id],
+  );
+  const adjuntosPorId = new Map(adjuntosRes.rows.map((a) => [a.id, a]));
+  if (adjuntosPorId.size !== adjuntoIds.length) return res.status(400).json({ error: 'Algun adjunto no existe en este negocio.' });
+
+  const usuario = await usuarioActual(req);
+  const content = [{
+    type: 'text',
+    text: `Compara estos ${proveedores.length} presupuestos de proveedores distintos para "${titulo.trim()}". Para cada proveedor identifica items/materiales, cantidades, precios unitarios y totales, condiciones de pago/entrega y cualquier observacion relevante. Devolve EXCLUSIVAMENTE un JSON valido (sin markdown ni backticks) con la forma:\n{"items_comparados": [{"item": "...", "por_proveedor": {"NombreProveedor": {"precio": "...", "detalle": "..."}}}], "resumen": "texto breve con la recomendacion y por que"}\n\nProveedores en orden: ${proveedores.map((p) => p.nombre).join(', ')}.`,
+  }];
+
+  for (const prov of proveedores) {
+    const adjunto = adjuntosPorId.get(Number(prov.adjunto_id));
+    // eslint-disable-next-line no-await-in-loop
+    const datos = await adjuntoAContenidoIA(adjunto);
+    content.push({ type: 'text', text: `--- Presupuesto de ${prov.nombre} (${adjunto.nombre_original}) ---` });
+    if (datos.type === 'text') content.push({ type: 'text', text: datos.text });
+    else if (datos.type === 'image') content.push({ type: 'image_url', image_url: { url: `data:${datos.mimeType};base64,${datos.base64}` } });
+    else if (datos.type === 'images') {
+      for (const img of datos.images) content.push({ type: 'image_url', image_url: { url: `data:${img.mimeType};base64,${img.base64}` } });
+    }
+  }
+
+  try {
+    const aiRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'anthropic/claude-sonnet-5', temperature: 0, messages: [{ role: 'user', content }] }),
+    });
+    const data = await aiRes.json();
+    if (!aiRes.ok) {
+      console.error('Error de OpenRouter (comparar-presupuestos):', data);
+      return res.status(502).json({ error: 'El servicio de IA no pudo procesar los presupuestos.' });
+    }
+    let text = (data.choices?.[0]?.message?.content ?? '').trim();
+    text = text.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/, '');
+    let resultado;
+    try {
+      resultado = JSON.parse(text);
+    } catch {
+      console.error('IA devolvio JSON invalido (comparar-presupuestos):', text);
+      return res.status(502).json({ error: 'La IA no devolvio un formato valido. Proba con archivos mas claros.' });
+    }
+
+    const { rows } = await pool.query(
+      `INSERT INTO gestion_comparativas (negocio_id, titulo, proveedores, resultado, creado_por_usuario_id, creado_por_nombre)
+         VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+      [req.params.id, titulo.trim(), JSON.stringify(proveedores), JSON.stringify(resultado), usuario.id, usuario.nombre],
+    );
+    await registrarLog({
+      negocioId: req.params.id, entidadTipo: 'comparativa', entidadId: rows[0].id, accion: 'creada', detalle: titulo.trim(), usuario,
+    });
+    res.status(201).json(rows[0]);
+  } catch (err) {
+    console.error('Error llamando a OpenRouter (comparar-presupuestos):', err);
+    res.status(502).json({ error: 'No se pudo comunicar con el servicio de IA.' });
+  }
+});
+
+router.get('/negocios/:id/comparativas', async (req, res) => {
+  const { rows } = await pool.query(
+    `SELECT * FROM gestion_comparativas WHERE negocio_id = $1 ORDER BY creado_en DESC`,
+    [req.params.id],
+  );
+  res.json(rows);
+});
+
+module.exports = router;

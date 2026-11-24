@@ -33,6 +33,8 @@ import RelevamientoEditor from '@/pages/comercial/RelevamientoEditor';
 import InformeVer from '@/pages/comercial/InformeVer';
 import InformeImprimir from '@/pages/comercial/InformeImprimir';
 import AgenteInformes from '@/pages/comercial/AgenteInformes';
+import GestionNegocios from '@/pages/gestion/Negocios';
+import GestionNegocioDetalle from '@/pages/gestion/NegocioDetalle';
 import StockPage from '@/pages/StockPage';
 import InstaladorHome from '@/pages/InstaladorHome';
 import AdminConsorcio from '@/pages/AdminConsorcio';
@@ -207,6 +209,22 @@ export default function App() {
         element={
           <ProtectedRoute roles={['superadmin', 'comercial']}>
             <ComercialEnvioDetalle />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/gestion"
+        element={
+          <ProtectedRoute roles={['superadmin', 'instalador']}>
+            <GestionNegocios />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/gestion/:id"
+        element={
+          <ProtectedRoute roles={['superadmin', 'instalador']}>
+            <GestionNegocioDetalle />
           </ProtectedRoute>
         }
       />
