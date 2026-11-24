@@ -373,6 +373,12 @@ function estimarProximoEnvio(envio, posicionGlobal) {
   const inicioMin = minutosDesdeMedianoche(envio.hora_inicio);
   const finMin = minutosDesdeMedianoche(envio.hora_fin);
 
+  // Modo "Rapido" (hora_inicio === hora_fin, ver EnviarCampaniaDialog.jsx):
+  // no hay ventana que esparcir, procesarRun manda todo en el proximo tick -
+  // mostrar "ahora" en vez de medianoche (que ya quedo en el pasado y
+  // confundia en la UI, pareciendo que no habia horario y de repente se mando).
+  if (finMin <= inicioMin) return new Date();
+
   let horaEstimadaMin = inicioMin;
   if (finMin > inicioMin) {
     const objetivoPrevio = objetivoAcumulado(dia - 1, schedule);
