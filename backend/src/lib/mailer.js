@@ -1,14 +1,19 @@
-// Stub mailer: no SMTP credentials configured yet. Logs the email instead of
-// sending it so the rest of the reset/invite flow can be built and tested now.
-// Swap this function's body for a real nodemailer transport once SMTP
-// credentials (host/user/pass or an API key) are available — nothing else
-// in the app needs to change.
+// Mails de sistema (reset de contrasena, invitaciones, contacto publico) -
+// usa el mismo SMTP que services/mail.js (Zoho, comercial@bilon.com.ar). Si
+// no esta configurado (ej. desarrollo local sin credenciales), cae al stub
+// de log para no romper esos flujos.
+const { mailConfigurado, enviarMail } = require('../services/mail');
+
 async function sendMail({ to, subject, html }) {
-  console.log('--- EMAIL STUB (SMTP no configurado) ---');
-  console.log(`Para: ${to}`);
-  console.log(`Asunto: ${subject}`);
-  console.log(html);
-  console.log('-----------------------------------------');
+  if (!mailConfigurado()) {
+    console.log('--- EMAIL STUB (SMTP no configurado) ---');
+    console.log(`Para: ${to}`);
+    console.log(`Asunto: ${subject}`);
+    console.log(html);
+    console.log('-----------------------------------------');
+    return;
+  }
+  await enviarMail({ to, subject, html });
 }
 
 module.exports = { sendMail };
