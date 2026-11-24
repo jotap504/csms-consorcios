@@ -3,6 +3,8 @@ const app = require('./app');
 const { mailConfigurado, revisarBandeja } = require('./services/mail');
 const { elasticEmailConfigurado } = require('./services/elasticEmail');
 const { tickRamp } = require('./services/campaniaRamp');
+const { telegramConfigurado } = require('./services/telegram');
+const { tickRecordatorios } = require('./services/telegramRecordatorios');
 const { reloadPermissionsCache } = require('./auth/permissions');
 
 const PORT = process.env.PORT || 3001;
@@ -36,4 +38,17 @@ if (elasticEmailConfigurado()) {
       })
       .catch((err) => console.error('[envios] Error en ramp automatico:', err.message));
   }, 20 * 60 * 1000);
+}
+
+// Recordatorios de tareas con vencimiento (ver schema_gestion_telegram.sql)
+// cada 5 minutos - el margen contra aviso_previo_minutos no necesita mas
+// resolucion que esa.
+if (telegramConfigurado()) {
+  setInterval(() => {
+    tickRecordatorios()
+      .then(({ avisados }) => {
+        if (avisados > 0) console.log(`[telegram] ${avisados} recordatorio(s) mandado(s).`);
+      })
+      .catch((err) => console.error('[telegram] Error en recordatorios automaticos:', err.message));
+  }, 5 * 60 * 1000);
 }

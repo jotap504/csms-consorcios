@@ -12,6 +12,7 @@ const pdfParse = require('pdf-parse');
 const { pdfPaginasAImagenes } = require('../lib/pdfImagenes');
 const { pool } = require('../db');
 const { authenticate, requirePermission } = require('../auth/middleware');
+const { telegramConfigurado, enviarMensajeTelegram, descargarArchivoTelegram } = require('../services/telegram');
 
 const UPLOADS_DIR = path.join(__dirname, '..', '..', 'uploads', 'gestion');
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
@@ -47,12 +48,210 @@ router.get('/archivos/:filename', (req, res) => {
   res.sendFile(filePath);
 });
 
+async function usuarioPorId(id) {
+  const result = await pool.query('SELECT nombre, email FROM usuarios WHERE id = $1', [id]);
+  return { id, nombre: result.rows[0]?.nombre || result.rows[0]?.email || null };
+}
+
+async function negocioPorDefecto(negocios) {
+  const existente = negocios.find((n) => n.nombre.toLowerCase() === 'general');
+  if (existente) return existente;
+  const { rows } = await pool.query(
+    `INSERT INTO gestion_negocios (nombre, orden) VALUES ('General', COALESCE((SELECT MAX(orden) + 1 FROM gestion_negocios), 0))
+       ON CONFLICT (nombre) DO UPDATE SET nombre = EXCLUDED.nombre RETURNING id, nombre`,
+  );
+  return rows[0];
+}
+
+// Descarga el archivo adjunto del mensaje de Telegram (documento, foto o
+// nota de voz) y lo guarda como gestion_adjuntos del negocio ya resuelto.
+async function descargarYGuardarAdjuntoTelegram(message, negocioId, usuario) {
+  let fileId; let nombreOriginal; let mimeType;
+  if (message.document) {
+    ({ file_id: fileId, file_name: nombreOriginal = 'documento', mime_type: mimeType } = message.document);
+  } else if (Array.isArray(message.photo) && message.photo.length > 0) {
+    fileId = message.photo[message.photo.length - 1].file_id;
+    nombreOriginal = 'foto.jpg';
+    mimeType = 'image/jpeg';
+  } else if (message.voice || message.audio) {
+    const audio = message.voice || message.audio;
+    fileId = audio.file_id;
+    nombreOriginal = message.voice ? 'nota_de_voz.ogg' : (message.audio.file_name || 'audio.mp3');
+    mimeType = message.voice ? 'audio/ogg' : (message.audio.mime_type || 'audio/mpeg');
+  } else {
+    return null;
+  }
+
+  const { buffer, nombre } = await descargarArchivoTelegram(fileId, nombreOriginal);
+  const ext = path.extname(nombre) || (mimeType === 'image/jpeg' ? '.jpg' : '');
+  const filename = `${crypto.randomUUID()}${ext}`;
+  fs.writeFileSync(path.join(UPLOADS_DIR, filename), buffer);
+  const { rows } = await pool.query(
+    `INSERT INTO gestion_adjuntos
+       (negocio_id, tipo, archivo_path, nombre_original, mime_type, tamano_bytes, subido_por_usuario_id, subido_por_nombre)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
+    [negocioId, tipoPorMime(mimeType), filename, nombreOriginal, mimeType, buffer.length, usuario.id, usuario.nombre],
+  );
+  return rows[0].id;
+}
+
+// Cuando el mensaje no dice explicitamente "negocio: ...", le pedimos a la
+// IA que decida si es una tarea con fecha (ej. "reunion con cliente 12/12
+// 10hs") o una nota suelta, y a que negocio corresponde.
+async function clasificarMensajeConIA(mensaje, negocios) {
+  const hoy = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Argentina/Buenos_Aires' }).format(new Date());
+  const aiRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'anthropic/claude-sonnet-5',
+      temperature: 0,
+      messages: [{
+        role: 'user',
+        content: `Hoy es ${hoy} (zona horaria America/Argentina/Buenos_Aires). Llego un mensaje de Telegram sin indicar a que negocio corresponde. Los negocios disponibles son: ${negocios.map((n) => n.nombre).join(', ')}.
+Mensaje: "${mensaje}"
+Decidi si es una TAREA con fecha/hora concreta (reunion, llamado, vencimiento) o una NOTA sin fecha. Si es tarea, calcula vence_en en ISO 8601 con offset -03:00. Devolve EXCLUSIVAMENTE un JSON valido (sin markdown ni backticks) con la forma:
+{"tipo": "tarea" o "nota", "negocio": "<uno de los negocios de la lista o null>", "titulo": "<resumen corto>", "vence_en": "<ISO 8601 o null>", "aviso_previo_minutos": <numero, default 60>}`,
+      }],
+    }),
+  });
+  const data = await aiRes.json();
+  if (!aiRes.ok) throw new Error('OpenRouter no respondio ok.');
+  let texto = (data.choices?.[0]?.message?.content ?? '').trim();
+  texto = texto.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/, '');
+  return JSON.parse(texto);
+}
+
+async function interpretarYGuardarMensajeTelegram({ chatId, usuario, message, text }) {
+  const { rows: negocios } = await pool.query('SELECT id, nombre FROM gestion_negocios WHERE activo = TRUE ORDER BY orden');
+
+  const match = text.match(/^([^:]{2,40}):\s*([\s\S]*)$/);
+  let negocioExplicito = null;
+  let contenido = text;
+  if (match) {
+    const candidato = negocios.find((n) => n.nombre.toLowerCase() === match[1].trim().toLowerCase());
+    if (candidato) { negocioExplicito = candidato; contenido = match[2].trim(); }
+  }
+
+  let clasificacion = null;
+  if (!negocioExplicito && process.env.OPENROUTER_API_KEY && contenido) {
+    clasificacion = await clasificarMensajeConIA(contenido, negocios).catch((err) => {
+      console.error('[telegram] Error clasificando con IA:', err.message);
+      return null;
+    });
+  }
+
+  const destino = negocioExplicito
+    || negocios.find((n) => n.nombre.toLowerCase() === (clasificacion?.negocio || '').toLowerCase())
+    || await negocioPorDefecto(negocios);
+
+  let adjuntoId = null;
+  try {
+    adjuntoId = await descargarYGuardarAdjuntoTelegram(message, destino.id, usuario);
+  } catch (err) {
+    console.error('[telegram] Error descargando adjunto de Telegram:', err.message);
+  }
+
+  if (clasificacion?.tipo === 'tarea' && clasificacion.vence_en) {
+    const avisoMin = clasificacion.aviso_previo_minutos || 60;
+    const { rows } = await pool.query(
+      `INSERT INTO gestion_tareas
+         (negocio_id, titulo, creado_por_usuario_id, creado_por_nombre, asignado_a_usuario_id, asignado_a_nombre, vence_en, aviso_previo_minutos)
+         VALUES ($1, $2, $3, $4, $3, $4, $5, $6) RETURNING *`,
+      [destino.id, clasificacion.titulo || contenido, usuario.id, usuario.nombre, clasificacion.vence_en, avisoMin],
+    );
+    await registrarLog({
+      negocioId: destino.id, entidadTipo: 'tarea', entidadId: rows[0].id, accion: 'creada', detalle: `via Telegram: ${rows[0].titulo}`, usuario,
+    });
+    const fecha = new Intl.DateTimeFormat('es-AR', {
+      timeZone: 'America/Argentina/Buenos_Aires', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit',
+    }).format(new Date(clasificacion.vence_en));
+    await enviarMensajeTelegram(chatId, `Agendado en ${destino.nombre}: ${rows[0].titulo} - ${fecha}hs. Te aviso ${avisoMin} min antes.`);
+    return;
+  }
+
+  await pool.query(
+    `INSERT INTO gestion_chat_mensajes (negocio_id, usuario_id, usuario_nombre, mensaje, adjunto_id) VALUES ($1, $2, $3, $4, $5)`,
+    [destino.id, usuario.id, usuario.nombre, contenido || (adjuntoId ? 'Adjunto' : '(vacio)'), adjuntoId],
+  );
+  await enviarMensajeTelegram(chatId, `Anotado en ${destino.nombre}.`);
+}
+
+async function procesarUpdateTelegram(update) {
+  const message = update.message;
+  if (!message || !message.chat) return;
+  const chatId = message.chat.id;
+  const text = (message.text || message.caption || '').trim();
+
+  if (text.startsWith('/vincular')) {
+    const codigo = text.split(/\s+/)[1];
+    if (!codigo) {
+      await enviarMensajeTelegram(chatId, 'Uso: /vincular <codigo> (lo generas desde el panel, en Organizacion > Vincular Telegram).');
+      return;
+    }
+    const { rows } = await pool.query(
+      'SELECT usuario_id FROM telegram_codigos WHERE codigo = $1 AND expira_en > NOW()',
+      [codigo.toUpperCase()],
+    );
+    if (!rows[0]) {
+      await enviarMensajeTelegram(chatId, 'Codigo invalido o vencido. Genera uno nuevo desde el panel.');
+      return;
+    }
+    await pool.query('DELETE FROM telegram_vinculos WHERE usuario_id = $1 OR chat_id = $2', [rows[0].usuario_id, chatId]);
+    await pool.query('INSERT INTO telegram_vinculos (usuario_id, chat_id) VALUES ($1, $2)', [rows[0].usuario_id, chatId]);
+    await pool.query('DELETE FROM telegram_codigos WHERE codigo = $1', [codigo.toUpperCase()]);
+    const usuario = await usuarioPorId(rows[0].usuario_id);
+    await enviarMensajeTelegram(chatId, `Listo, vinculado como ${usuario.nombre}. Ya podes escribirme (ej. "Wallbox: che tengo un presupuesto nuevo" con el PDF adjunto, o "reunion con cliente 12/12 10hs").`);
+    return;
+  }
+
+  const vinculo = await pool.query('SELECT usuario_id FROM telegram_vinculos WHERE chat_id = $1', [chatId]);
+  if (!vinculo.rows[0]) {
+    await enviarMensajeTelegram(chatId, 'No te tengo vinculado. Entra al panel (Organizacion > Vincular Telegram) y mandame el codigo con /vincular <codigo>.');
+    return;
+  }
+  const usuario = await usuarioPorId(vinculo.rows[0].usuario_id);
+  await interpretarYGuardarMensajeTelegram({ chatId, usuario, message, text });
+}
+
+// Publico (sin Bearer) a proposito - lo llama Telegram, no el navegador.
+// Protegido por el secret token que Telegram manda en este header (seteado
+// al registrar el webhook, ver deploy). Responde 200 de entrada y procesa
+// despues: Telegram no necesita esperar, y asi un reintento por timeout no
+// duplica el procesamiento visible para el usuario.
+router.post('/telegram/webhook', (req, res) => {
+  if (!telegramConfigurado() || req.header('x-telegram-bot-api-secret-token') !== process.env.TELEGRAM_WEBHOOK_SECRET) {
+    return res.status(401).end();
+  }
+  res.json({ ok: true });
+  procesarUpdateTelegram(req.body).catch((err) => console.error('[telegram] Error procesando update:', err));
+});
+
 router.use(authenticate, requirePermission('gestion_interna'));
 
 async function usuarioActual(req) {
-  const result = await pool.query('SELECT nombre, email FROM usuarios WHERE id = $1', [req.user.sub]);
-  return { id: req.user.sub, nombre: result.rows[0]?.nombre || result.rows[0]?.email || null };
+  return usuarioPorId(req.user.sub);
 }
+
+// Codigo de un solo uso para vincular el chat de Telegram del usuario
+// logueado - cada usuario (cada "linea") vincula el suyo, y a partir de ahi
+// el bot sabe quien le escribe.
+router.get('/telegram/vincular', async (req, res) => {
+  const usuario = await usuarioActual(req);
+  const codigo = crypto.randomBytes(4).toString('hex').toUpperCase();
+  await pool.query('DELETE FROM telegram_codigos WHERE usuario_id = $1', [usuario.id]);
+  await pool.query(
+    `INSERT INTO telegram_codigos (codigo, usuario_id, expira_en) VALUES ($1, $2, NOW() + INTERVAL '15 minutes')`,
+    [codigo, usuario.id],
+  );
+  const vinculo = await pool.query('SELECT 1 FROM telegram_vinculos WHERE usuario_id = $1', [usuario.id]);
+  res.json({
+    codigo,
+    expira_en_minutos: 15,
+    bot_username: process.env.TELEGRAM_BOT_USERNAME || null,
+    ya_vinculado: vinculo.rows.length > 0,
+  });
+});
 
 async function registrarLog({
   negocioId, entidadTipo, entidadId, accion, detalle, usuario,

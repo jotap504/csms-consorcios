@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, Boxes } from 'lucide-react';
+import { Plus, Boxes, Send } from 'lucide-react';
 import { api } from '@/lib/api';
 import { toast } from '@/lib/toast';
 import AdminLayout from '@/components/AdminLayout';
@@ -9,6 +9,45 @@ import {
   Dialog, DialogTrigger, DialogContent, DialogHeader, DialogTitle, DialogDescription, Input, Label,
 } from '@/components/ui';
 import { SUPERADMIN_NAV } from '../superadmin/navConfig';
+
+function VincularTelegramDialog() {
+  const [open, setOpen] = useState(false);
+  const [datos, setDatos] = useState(null);
+
+  const abrir = async () => {
+    setOpen(true);
+    try {
+      const { data } = await api.get('/gestion/telegram/vincular');
+      setDatos(data);
+    } catch {
+      toast.error('No se pudo generar el codigo de vinculacion.');
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button size="sm" variant="outline" onClick={abrir}><Send className="h-4 w-4" />Vincular Telegram</Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Vincular Telegram</DialogTitle>
+          <DialogDescription>
+            {datos?.bot_username ? `Abri Telegram, buscá @${datos.bot_username} y mandale este mensaje:` : 'Mandale este mensaje al bot desde Telegram:'}
+          </DialogDescription>
+        </DialogHeader>
+        {!datos && <p className="text-sm text-muted-foreground">Generando codigo...</p>}
+        {datos && (
+          <div className="flex flex-col gap-2">
+            <code className="rounded-md bg-muted px-3 py-2 text-center text-lg font-semibold">/vincular {datos.codigo}</code>
+            <p className="text-xs text-muted-foreground">Vale por {datos.expira_en_minutos} minutos. Despues podes escribirle "Wallbox: ..." con un archivo adjunto, o "reunion con cliente 12/12 10hs" para que te agende y te avise.</p>
+            {datos.ya_vinculado && <p className="text-xs text-amber-600">Ya tenias un chat vinculado - este codigo lo va a reemplazar.</p>}
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
 
 export default function Negocios() {
   const navigate = useNavigate();
@@ -50,6 +89,8 @@ export default function Negocios() {
       <Card>
         <CardHeader className="flex-row flex-wrap items-center justify-between gap-3">
           <CardTitle>Negocios</CardTitle>
+          <div className="flex items-center gap-2">
+          <VincularTelegramDialog />
           <Dialog open={open} onOpenChange={setOpen}>
             <DialogTrigger asChild>
               <Button size="sm"><Plus className="h-4 w-4" />Nuevo negocio</Button>
@@ -68,6 +109,7 @@ export default function Negocios() {
               </form>
             </DialogContent>
           </Dialog>
+          </div>
         </CardHeader>
         <CardContent>
           {loading && <p className="p-4 text-sm text-muted-foreground">Cargando...</p>}
