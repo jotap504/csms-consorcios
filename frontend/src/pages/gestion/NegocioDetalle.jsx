@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
-  ArrowLeft, Plus, Trash2, Send, Sparkles, Paperclip, ScrollText, FileBarChart2,
+  ArrowLeft, Plus, Trash2, Send, Sparkles, Paperclip, ScrollText, FileBarChart2, Upload, ClipboardPaste,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { toast } from '@/lib/toast';
@@ -246,6 +246,9 @@ function ComparadorTab({ negocioId }) {
   const [filas, setFilas] = useState([{ nombre: '', adjunto_id: '' }, { nombre: '', adjunto_id: '' }]);
   const [comparando, setComparando] = useState(false);
   const [resultado, setResultado] = useState(null);
+  const [pegarAbierto, setPegarAbierto] = useState(false);
+  const [textoPegado, setTextoPegado] = useState('');
+  const [guardandoTexto, setGuardandoTexto] = useState(false);
   const fileRef = useRef(null);
 
   const load = () => {
@@ -254,8 +257,7 @@ function ComparadorTab({ negocioId }) {
   };
   useEffect(() => { load(); }, [negocioId]);
 
-  const subir = async (e) => {
-    const files = Array.from(e.target.files || []);
+  const subirArchivos = async (files) => {
     if (files.length === 0) return;
     const form = new FormData();
     files.forEach((f) => form.append('archivos', f));
@@ -265,9 +267,23 @@ function ComparadorTab({ negocioId }) {
       load();
     } catch {
       toast.error('No se pudo subir el archivo.');
-    } finally {
-      if (fileRef.current) fileRef.current.value = '';
     }
+  };
+
+  const subir = async (e) => {
+    const files = Array.from(e.target.files || []);
+    await subirArchivos(files);
+    if (fileRef.current) fileRef.current.value = '';
+  };
+
+  const guardarTextoPegado = async () => {
+    if (!textoPegado.trim()) return;
+    setGuardandoTexto(true);
+    const archivo = new File([textoPegado], `presupuesto-${Date.now()}.txt`, { type: 'text/plain' });
+    await subirArchivos([archivo]);
+    setGuardandoTexto(false);
+    setTextoPegado('');
+    setPegarAbierto(false);
   };
 
   const comparar = async () => {
@@ -295,8 +311,31 @@ function ComparadorTab({ negocioId }) {
     <div className="flex flex-col gap-4">
       <Card>
         <CardHeader><CardTitle className="text-base">Archivos</CardTitle></CardHeader>
-        <CardContent className="flex flex-col gap-2">
-          <input ref={fileRef} type="file" multiple onChange={subir} className="text-sm" />
+        <CardContent className="flex flex-col gap-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <input ref={fileRef} type="file" multiple onChange={subir} className="hidden" />
+            <Button size="sm" variant="outline" onClick={() => fileRef.current?.click()}>
+              <Upload className="h-4 w-4" />Subir archivo
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => setPegarAbierto((v) => !v)}>
+              <ClipboardPaste className="h-4 w-4" />Pegar texto
+            </Button>
+          </div>
+          {pegarAbierto && (
+            <div className="flex flex-col gap-2">
+              <textarea
+                autoFocus
+                placeholder="Pegá aca el presupuesto en texto plano..."
+                value={textoPegado}
+                onChange={(e) => setTextoPegado(e.target.value)}
+                rows={6}
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              />
+              <Button size="sm" onClick={guardarTextoPegado} disabled={guardandoTexto || !textoPegado.trim()}>
+                {guardandoTexto ? 'Guardando...' : 'Guardar como adjunto'}
+              </Button>
+            </div>
+          )}
           <div className="flex flex-col gap-1.5">
             {adjuntos.map((a) => (
               <a key={a.id} href={`${api.defaults.baseURL}/gestion/archivos/${a.archivo_path}`} target="_blank" rel="noreferrer" className="flex items-center gap-2 text-sm text-accent underline">
