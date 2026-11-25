@@ -31,6 +31,7 @@ const upload = multer({
 function tipoPorMime(mimetype) {
   if (!mimetype) return 'otro';
   if (mimetype.startsWith('audio/')) return 'audio';
+  if (mimetype.startsWith('video/')) return 'video';
   if (mimetype.startsWith('image/')) return 'imagen';
   if (mimetype === 'application/pdf') return 'pdf';
   if (mimetype.startsWith('text/') || mimetype.includes('document') || mimetype.includes('sheet')) return 'documento';
@@ -529,6 +530,9 @@ async function adjuntoAContenidoIA(adjunto) {
     const paginas = pdfPaginasAImagenes(buffer);
     if (paginas.length > 0) return { type: 'images', images: paginas };
     return { type: 'text', text: '(PDF sin texto legible)' };
+  }
+  if (adjunto.tipo === 'video' || adjunto.tipo === 'audio') {
+    return { type: 'text', text: `(Archivo ${adjunto.tipo} "${adjunto.nombre_original}" - no se puede leer como texto para la comparacion)` };
   }
   return { type: 'text', text: buffer.toString('utf8').slice(0, 40000) };
 }
