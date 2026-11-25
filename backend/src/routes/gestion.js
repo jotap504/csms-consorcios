@@ -425,6 +425,88 @@ router.delete('/adjuntos/:id', async (req, res) => {
   res.status(204).end();
 });
 
+// --- Proveedores de presupuesto (ficha persistente, separada de la
+// comparacion puntual) ---
+
+const PROVEEDOR_ADJUNTO_JOINS = `
+  LEFT JOIN gestion_adjuntos pa ON pa.id = p.presupuesto_adjunto_id
+  LEFT JOIN gestion_adjuntos da ON da.id = p.descripcion_adjunto_id
+  LEFT JOIN gestion_adjuntos fa ON fa.id = p.foto_adjunto_id
+  LEFT JOIN gestion_adjuntos va ON va.id = p.video_adjunto_id
+`;
+const PROVEEDOR_ADJUNTO_COLUMNAS = `
+  pa.nombre_original AS presupuesto_adjunto_nombre, pa.archivo_path AS presupuesto_adjunto_path, pa.tipo AS presupuesto_adjunto_tipo, pa.mime_type AS presupuesto_adjunto_mime,
+  da.nombre_original AS descripcion_adjunto_nombre, da.archivo_path AS descripcion_adjunto_path, da.tipo AS descripcion_adjunto_tipo, da.mime_type AS descripcion_adjunto_mime,
+  fa.nombre_original AS foto_adjunto_nombre, fa.archivo_path AS foto_adjunto_path, fa.tipo AS foto_adjunto_tipo,
+  va.nombre_original AS video_adjunto_nombre, va.archivo_path AS video_adjunto_path, va.tipo AS video_adjunto_tipo
+`;
+
+router.get('/negocios/:id/proveedores', async (req, res) => {
+  const { rows } = await pool.query(
+    `SELECT p.*, ${PROVEEDOR_ADJUNTO_COLUMNAS}
+       FROM gestion_proveedores_presupuesto p ${PROVEEDOR_ADJUNTO_JOINS}
+       WHERE p.negocio_id = $1 ORDER BY p.id`,
+    [req.params.id],
+  );
+  res.json(rows);
+});
+
+router.post('/negocios/:id/proveedores', async (req, res) => {
+  const nombre = (req.body?.nombre ?? '').trim();
+  if (!nombre) return res.status(400).json({ error: 'nombre es requerido.' });
+  const contacto = (req.body?.contacto ?? '').trim() || null;
+  const usuario = await usuarioActual(req);
+  const { rows } = await pool.query(
+    `INSERT INTO gestion_proveedores_presupuesto (negocio_id, nombre, contacto, creado_por_usuario_id, creado_por_nombre)
+       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+    [req.params.id, nombre, contacto, usuario.id, usuario.nombre],
+  );
+  await registrarLog({
+    negocioId: req.params.id, entidadTipo: 'proveedor', entidadId: rows[0].id, accion: 'creado', detalle: nombre, usuario,
+  });
+  res.status(201).json({ ...rows[0] });
+});
+
+const PROVEEDOR_CAMPOS_EDITABLES = [
+  'nombre', 'contacto', 'resumen',
+  'presupuesto_texto', 'presupuesto_adjunto_id',
+  'descripcion_texto', 'descripcion_adjunto_id',
+  'foto_adjunto_id', 'video_adjunto_id',
+];
+
+router.patch('/proveedores/:id', async (req, res) => {
+  const campos = Object.keys(req.body ?? {}).filter((k) => PROVEEDOR_CAMPOS_EDITABLES.includes(k));
+  if (campos.length === 0) return res.status(400).json({ error: 'No se envio ningun campo editable.' });
+  const usuario = await usuarioActual(req);
+  const sets = campos.map((campo, i) => `${campo} = $${i + 2}`).join(', ');
+  const valores = campos.map((campo) => req.body[campo]);
+  const { rows } = await pool.query(
+    `UPDATE gestion_proveedores_presupuesto SET ${sets}, actualizado_en = NOW() WHERE id = $1 RETURNING *`,
+    [req.params.id, ...valores],
+  );
+  if (!rows[0]) return res.status(404).json({ error: 'Proveedor no encontrado.' });
+  await registrarLog({
+    negocioId: rows[0].negocio_id, entidadTipo: 'proveedor', entidadId: rows[0].id, accion: 'actualizado', detalle: campos.join(', '), usuario,
+  });
+  const { rows: completo } = await pool.query(
+    `SELECT p.*, ${PROVEEDOR_ADJUNTO_COLUMNAS}
+       FROM gestion_proveedores_presupuesto p ${PROVEEDOR_ADJUNTO_JOINS}
+       WHERE p.id = $1`,
+    [req.params.id],
+  );
+  res.json(completo[0]);
+});
+
+router.delete('/proveedores/:id', async (req, res) => {
+  const usuario = await usuarioActual(req);
+  const { rows } = await pool.query('DELETE FROM gestion_proveedores_presupuesto WHERE id = $1 RETURNING *', [req.params.id]);
+  if (!rows[0]) return res.status(404).json({ error: 'Proveedor no encontrado.' });
+  await registrarLog({
+    negocioId: rows[0].negocio_id, entidadTipo: 'proveedor', entidadId: rows[0].id, accion: 'eliminado', detalle: rows[0].nombre, usuario,
+  });
+  res.status(204).end();
+});
+
 // --- Log de auditoria ---
 
 router.get('/negocios/:id/log', async (req, res) => {
@@ -537,21 +619,33 @@ async function adjuntoAContenidoIA(adjunto) {
   return { type: 'text', text: buffer.toString('utf8').slice(0, 40000) };
 }
 
+// Snapshot liviano del adjunto de un campo (presupuesto/descripcion/foto/
+// video) tal como viene de la query con join, para guardar en el historial
+// de comparativas sin depender de que el proveedor siga existiendo despues.
+function snapshotAdjuntoCampo(row, prefijo) {
+  const path_ = row[`${prefijo}_adjunto_path`];
+  if (!path_) return null;
+  return { nombre_original: row[`${prefijo}_adjunto_nombre`], archivo_path: path_, tipo: row[`${prefijo}_adjunto_tipo`] };
+}
+
 router.post('/negocios/:id/comparar-presupuestos', async (req, res) => {
-  const { titulo, proveedores } = req.body ?? {};
+  const { titulo, proveedor_ids: proveedorIds } = req.body ?? {};
   if (!titulo?.trim()) return res.status(400).json({ error: 'titulo es requerido.' });
-  if (!Array.isArray(proveedores) || proveedores.length < 2 || proveedores.length > 3) {
-    return res.status(400).json({ error: 'proveedores debe tener entre 2 y 3 items: [{ nombre, adjunto_id }].' });
+  if (!Array.isArray(proveedorIds) || proveedorIds.length < 2 || proveedorIds.length > 3) {
+    return res.status(400).json({ error: 'proveedor_ids debe tener entre 2 y 3 ids.' });
   }
   if (!process.env.OPENROUTER_API_KEY) return res.status(503).json({ error: 'IA no configurada (falta OPENROUTER_API_KEY).' });
 
-  const adjuntoIds = proveedores.map((p) => Number(p.adjunto_id));
-  const adjuntosRes = await pool.query(
-    `SELECT * FROM gestion_adjuntos WHERE id = ANY($1::int[]) AND negocio_id = $2`,
-    [adjuntoIds, req.params.id],
+  const { rows: proveedores } = await pool.query(
+    `SELECT p.*, ${PROVEEDOR_ADJUNTO_COLUMNAS}
+       FROM gestion_proveedores_presupuesto p ${PROVEEDOR_ADJUNTO_JOINS}
+       WHERE p.id = ANY($1::int[]) AND p.negocio_id = $2`,
+    [proveedorIds.map(Number), req.params.id],
   );
-  const adjuntosPorId = new Map(adjuntosRes.rows.map((a) => [a.id, a]));
-  if (adjuntosPorId.size !== adjuntoIds.length) return res.status(400).json({ error: 'Algun adjunto no existe en este negocio.' });
+  if (proveedores.length !== proveedorIds.length) return res.status(400).json({ error: 'Algun proveedor no existe en este negocio.' });
+  if (proveedores.some((p) => !p.presupuesto_texto && !p.presupuesto_adjunto_path)) {
+    return res.status(400).json({ error: 'Todos los proveedores elegidos necesitan un presupuesto (texto o adjunto).' });
+  }
 
   const usuario = await usuarioActual(req);
   const content = [{
@@ -559,16 +653,52 @@ router.post('/negocios/:id/comparar-presupuestos', async (req, res) => {
     text: `Compara estos ${proveedores.length} presupuestos de proveedores distintos para "${titulo.trim()}". Para cada proveedor identifica items/materiales, cantidades, precios unitarios y totales, condiciones de pago/entrega y cualquier observacion relevante. Devolve EXCLUSIVAMENTE un JSON valido (sin markdown ni backticks) con la forma:\n{"items_comparados": [{"item": "...", "por_proveedor": {"NombreProveedor": {"precio": "...", "detalle": "..."}}}], "resumen": "texto breve con la recomendacion y por que"}\n\nProveedores en orden: ${proveedores.map((p) => p.nombre).join(', ')}.`,
   }];
 
+  const snapshot = [];
   for (const prov of proveedores) {
-    const adjunto = adjuntosPorId.get(Number(prov.adjunto_id));
-    // eslint-disable-next-line no-await-in-loop
-    const datos = await adjuntoAContenidoIA(adjunto);
-    content.push({ type: 'text', text: `--- Presupuesto de ${prov.nombre} (${adjunto.nombre_original}) ---` });
-    if (datos.type === 'text') content.push({ type: 'text', text: datos.text });
-    else if (datos.type === 'image') content.push({ type: 'image_url', image_url: { url: `data:${datos.mimeType};base64,${datos.base64}` } });
-    else if (datos.type === 'images') {
-      for (const img of datos.images) content.push({ type: 'image_url', image_url: { url: `data:${img.mimeType};base64,${img.base64}` } });
+    content.push({
+      type: 'text',
+      text: `--- Proveedor: ${prov.nombre}${prov.contacto ? ` (contacto: ${prov.contacto})` : ''} ---\n${prov.resumen ? `Resumen: ${prov.resumen}\n` : ''}`,
+    });
+
+    content.push({ type: 'text', text: 'Presupuesto:' });
+    if (prov.presupuesto_texto) {
+      content.push({ type: 'text', text: prov.presupuesto_texto });
+    } else {
+      const adjunto = { tipo: prov.presupuesto_adjunto_tipo, mime_type: prov.presupuesto_adjunto_mime, archivo_path: prov.presupuesto_adjunto_path, nombre_original: prov.presupuesto_adjunto_nombre };
+      // eslint-disable-next-line no-await-in-loop
+      const datos = await adjuntoAContenidoIA(adjunto);
+      if (datos.type === 'text') content.push({ type: 'text', text: datos.text });
+      else if (datos.type === 'image') content.push({ type: 'image_url', image_url: { url: `data:${datos.mimeType};base64,${datos.base64}` } });
+      else if (datos.type === 'images') {
+        for (const img of datos.images) content.push({ type: 'image_url', image_url: { url: `data:${img.mimeType};base64,${img.base64}` } });
+      }
     }
+
+    if (prov.descripcion_texto || prov.descripcion_adjunto_path) {
+      content.push({ type: 'text', text: 'Descripcion tecnica:' });
+      if (prov.descripcion_texto) {
+        content.push({ type: 'text', text: prov.descripcion_texto });
+      } else {
+        const adjunto = { tipo: prov.descripcion_adjunto_tipo, mime_type: prov.descripcion_adjunto_mime, archivo_path: prov.descripcion_adjunto_path, nombre_original: prov.descripcion_adjunto_nombre };
+        // eslint-disable-next-line no-await-in-loop
+        const datos = await adjuntoAContenidoIA(adjunto);
+        if (datos.type === 'text') content.push({ type: 'text', text: datos.text });
+        else if (datos.type === 'image') content.push({ type: 'image_url', image_url: { url: `data:${datos.mimeType};base64,${datos.base64}` } });
+      }
+    }
+
+    snapshot.push({
+      proveedor_id: prov.id,
+      nombre: prov.nombre,
+      contacto: prov.contacto,
+      resumen: prov.resumen,
+      presupuesto_texto: prov.presupuesto_texto,
+      presupuesto_adjunto: snapshotAdjuntoCampo(prov, 'presupuesto'),
+      descripcion_texto: prov.descripcion_texto,
+      descripcion_adjunto: snapshotAdjuntoCampo(prov, 'descripcion'),
+      foto_adjunto: snapshotAdjuntoCampo(prov, 'foto'),
+      video_adjunto: snapshotAdjuntoCampo(prov, 'video'),
+    });
   }
 
   try {
@@ -589,13 +719,13 @@ router.post('/negocios/:id/comparar-presupuestos', async (req, res) => {
       resultado = JSON.parse(text);
     } catch {
       console.error('IA devolvio JSON invalido (comparar-presupuestos):', text);
-      return res.status(502).json({ error: 'La IA no devolvio un formato valido. Proba con archivos mas claros.' });
+      return res.status(502).json({ error: 'La IA no devolvio un formato valido. Proba con presupuestos mas claros.' });
     }
 
     const { rows } = await pool.query(
       `INSERT INTO gestion_comparativas (negocio_id, titulo, proveedores, resultado, creado_por_usuario_id, creado_por_nombre)
          VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-      [req.params.id, titulo.trim(), JSON.stringify(proveedores), JSON.stringify(resultado), usuario.id, usuario.nombre],
+      [req.params.id, titulo.trim(), JSON.stringify(snapshot), JSON.stringify(resultado), usuario.id, usuario.nombre],
     );
     await registrarLog({
       negocioId: req.params.id, entidadTipo: 'comparativa', entidadId: rows[0].id, accion: 'creada', detalle: titulo.trim(), usuario,

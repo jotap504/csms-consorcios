@@ -11,7 +11,7 @@ import {
   Card, CardHeader, CardTitle, CardContent, Badge, Button, Input, Label,
   Dialog, DialogTrigger, DialogContent, DialogHeader, DialogTitle,
   Select, SelectTrigger, SelectValue, SelectContent, SelectItem,
-  Tabs, TabsList, TabsTrigger, TabsContent,
+  Tabs, TabsList, TabsTrigger, TabsContent, Switch,
 } from '@/components/ui';
 import { SUPERADMIN_NAV } from '../superadmin/navConfig';
 
@@ -264,64 +264,73 @@ function AdjuntoRow({ adjunto, onQuitar }) {
   );
 }
 
-function SubirAdjunto({ negocioId, onSubido }) {
-  const fileRef = useRef(null);
-  const [pegarAbierto, setPegarAbierto] = useState(false);
-  const [textoPegado, setTextoPegado] = useState('');
+// Campo que puede ser texto escrito a mano O un archivo subido, nunca los
+// dos a la vez (presupuesto y descripcion tecnica) - usado dentro de la
+// ficha de cada proveedor.
+function CampoTextoOArchivo({
+  negocioId, proveedorId, campoTexto, campoAdjuntoId, textoValor, adjunto, label, placeholder, accept, onUpdated,
+}) {
+  const [forzarTexto, setForzarTexto] = useState(false);
   const [subiendo, setSubiendo] = useState(false);
+  const fileRef = useRef(null);
 
-  const subirArchivo = async (file) => {
-    setSubiendo(true);
-    const form = new FormData();
-    form.append('archivos', file);
+  const patch = async (campos) => {
     try {
-      const { data } = await api.post(`/gestion/negocios/${negocioId}/adjuntos`, form);
-      onSubido(data[0]);
-      toast.success('Archivo subido.');
+      const { data } = await api.patch(`/gestion/proveedores/${proveedorId}`, campos);
+      onUpdated(data);
     } catch {
-      toast.error('No se pudo subir el archivo.');
-    } finally {
-      setSubiendo(false);
+      toast.error('No se pudo guardar.');
     }
   };
 
   const subir = async (e) => {
     const file = e.target.files?.[0];
-    if (file) await subirArchivo(file);
-    if (fileRef.current) fileRef.current.value = '';
+    if (!file) return;
+    setSubiendo(true);
+    const form = new FormData();
+    form.append('archivos', file);
+    try {
+      const { data } = await api.post(`/gestion/negocios/${negocioId}/adjuntos`, form);
+      setForzarTexto(false);
+      await patch({ [campoAdjuntoId]: data[0].id, [campoTexto]: null });
+    } catch {
+      toast.error('No se pudo subir el archivo.');
+    } finally {
+      setSubiendo(false);
+      if (fileRef.current) fileRef.current.value = '';
+    }
   };
 
-  const guardarTextoPegado = async () => {
-    if (!textoPegado.trim()) return;
-    const archivo = new File([textoPegado], `presupuesto-${Date.now()}.txt`, { type: 'text/plain' });
-    await subirArchivo(archivo);
-    setTextoPegado('');
-    setPegarAbierto(false);
-  };
+  const mostrarTexto = !adjunto && (forzarTexto || Boolean(textoValor));
 
   return (
-    <div className="flex flex-col gap-2">
-      <div className="flex flex-wrap items-center gap-2">
-        <input ref={fileRef} type="file" accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.xls,.xlsx,.txt" onChange={subir} className="hidden" />
-        <Button size="sm" variant="outline" disabled={subiendo} onClick={() => fileRef.current?.click()}>
-          <Upload className="h-4 w-4" />{subiendo ? 'Subiendo...' : 'Subir archivo'}
-        </Button>
-        <Button size="sm" variant="outline" onClick={() => setPegarAbierto((v) => !v)}>
-          <ClipboardPaste className="h-4 w-4" />Pegar texto
-        </Button>
-      </div>
-      {pegarAbierto && (
-        <div className="flex flex-col gap-2">
+    <div className="flex flex-col gap-1.5">
+      <Label className="text-xs text-muted-foreground">{label}</Label>
+      {adjunto ? (
+        <AdjuntoRow adjunto={adjunto} onQuitar={() => patch({ [campoAdjuntoId]: null })} />
+      ) : mostrarTexto ? (
+        <div className="flex flex-col gap-1.5">
           <textarea
-            autoFocus
-            placeholder="Pegá aca el presupuesto en texto plano..."
-            value={textoPegado}
-            onChange={(e) => setTextoPegado(e.target.value)}
-            rows={5}
+            key={`${proveedorId}-${campoTexto}-${textoValor || ''}`}
+            autoFocus={!textoValor}
+            defaultValue={textoValor || ''}
+            onBlur={(e) => { if (e.target.value !== (textoValor || '')) patch({ [campoTexto]: e.target.value }); }}
+            placeholder={placeholder}
+            rows={3}
             className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
           />
-          <Button size="sm" disabled={subiendo || !textoPegado.trim()} onClick={guardarTextoPegado}>
-            {subiendo ? 'Guardando...' : 'Guardar presupuesto'}
+          <Button size="sm" variant="outline" onClick={() => { setForzarTexto(false); patch({ [campoTexto]: null }); }}>
+            Quitar texto
+          </Button>
+        </div>
+      ) : (
+        <div className="flex flex-wrap gap-2">
+          <input ref={fileRef} type="file" accept={accept} onChange={subir} className="hidden" />
+          <Button size="sm" variant="outline" disabled={subiendo} onClick={() => fileRef.current?.click()}>
+            <Upload className="h-4 w-4" />{subiendo ? 'Subiendo...' : 'Subir archivo'}
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => setForzarTexto(true)}>
+            <ClipboardPaste className="h-4 w-4" />Escribir texto
           </Button>
         </div>
       )}
@@ -329,108 +338,238 @@ function SubirAdjunto({ negocioId, onSubido }) {
   );
 }
 
-function FilaProveedor({ fila, onChange, onSubido }) {
+// Foto/video: solo archivo, sin alternativa de texto.
+function CampoArchivoSimple({
+  negocioId, proveedorId, campo, adjunto, label, accept, onUpdated,
+}) {
+  const [subiendo, setSubiendo] = useState(false);
+  const fileRef = useRef(null);
+
+  const subir = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setSubiendo(true);
+    const form = new FormData();
+    form.append('archivos', file);
+    try {
+      const { data } = await api.post(`/gestion/negocios/${negocioId}/adjuntos`, form);
+      const { data: proveedor } = await api.patch(`/gestion/proveedores/${proveedorId}`, { [campo]: data[0].id });
+      onUpdated(proveedor);
+    } catch {
+      toast.error('No se pudo subir el archivo.');
+    } finally {
+      setSubiendo(false);
+      if (fileRef.current) fileRef.current.value = '';
+    }
+  };
+
+  const quitar = async () => {
+    try {
+      const { data } = await api.patch(`/gestion/proveedores/${proveedorId}`, { [campo]: null });
+      onUpdated(data);
+    } catch {
+      toast.error('No se pudo guardar.');
+    }
+  };
+
   return (
-    <div className="flex flex-col gap-2 rounded-lg border border-border p-3">
-      <Input placeholder="Nombre proveedor" value={fila.nombre} onChange={(e) => onChange({ ...fila, nombre: e.target.value })} />
-      {fila.adjunto ? (
-        <AdjuntoRow adjunto={fila.adjunto} onQuitar={() => onChange({ ...fila, adjunto_id: '', adjunto: null })} />
+    <div className="flex flex-col gap-1.5">
+      <Label className="text-xs text-muted-foreground">{label}</Label>
+      {adjunto ? (
+        <AdjuntoRow adjunto={adjunto} onQuitar={quitar} />
       ) : (
-        <SubirAdjunto
-          negocioId={fila.negocioId}
-          onSubido={(adjunto) => {
-            onChange({ ...fila, adjunto_id: String(adjunto.id), adjunto });
-            onSubido();
-          }}
-        />
+        <>
+          <input ref={fileRef} type="file" accept={accept} onChange={subir} className="hidden" />
+          <Button size="sm" variant="outline" disabled={subiendo} onClick={() => fileRef.current?.click()}>
+            <Upload className="h-4 w-4" />{subiendo ? 'Subiendo...' : `Subir ${label.toLowerCase()}`}
+          </Button>
+        </>
       )}
     </div>
   );
 }
 
-// El borrador (titulo + nombre/adjunto_id de cada fila, nunca el archivo en
-// si, que ya quedo subido en el server) se guarda en sessionStorage - en el
-// celular, abrir el selector nativo de "Subir archivo" puede hacer que el
-// navegador descargue la pestaña en segundo plano y la recargue al volver,
-// perdiendo el estado de React aunque el archivo ya se haya subido bien.
-function draftKey(negocioId) {
-  return `gestion_comparador_draft_${negocioId}`;
+function adjuntoDe(proveedor, prefijo) {
+  const path_ = proveedor[`${prefijo}_adjunto_path`];
+  if (!path_) return null;
+  return {
+    nombre_original: proveedor[`${prefijo}_adjunto_nombre`],
+    archivo_path: path_,
+    tipo: proveedor[`${prefijo}_adjunto_tipo`],
+  };
 }
 
-function cargarBorrador(negocioId) {
-  try {
-    const raw = sessionStorage.getItem(draftKey(negocioId));
-    if (!raw) return null;
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
-}
+// Ficha persistente de un proveedor: nombre, contacto, resumen, presupuesto
+// (texto o adjunto), descripcion tecnica (texto o adjunto), foto, video -
+// cada campo se guarda solo con PATCH apenas se completa, asi queda todo
+// en el servidor al toque y no depende de terminar la comparacion.
+function ProveedorCard({
+  negocioId, proveedor, seleccionado, onToggleSeleccion, onUpdated, onEliminado,
+}) {
+  const patch = async (campos) => {
+    try {
+      const { data } = await api.patch(`/gestion/proveedores/${proveedor.id}`, campos);
+      onUpdated(data);
+    } catch {
+      toast.error('No se pudo guardar.');
+    }
+  };
 
-function guardarBorrador(negocioId, titulo, filas) {
-  try {
-    sessionStorage.setItem(draftKey(negocioId), JSON.stringify({
-      titulo,
-      filas: filas.map((f) => ({ nombre: f.nombre, adjunto_id: f.adjunto_id })),
-    }));
-  } catch {
-    // sessionStorage lleno/bloqueado: el borrador simplemente no persiste.
-  }
-}
+  const eliminar = async () => {
+    // eslint-disable-next-line no-alert
+    if (!window.confirm(`¿Borrar proveedor "${proveedor.nombre}"?`)) return;
+    try {
+      await api.delete(`/gestion/proveedores/${proveedor.id}`);
+      onEliminado(proveedor.id);
+    } catch {
+      toast.error('No se pudo borrar el proveedor.');
+    }
+  };
 
-function filasIniciales(negocioId) {
-  const borrador = cargarBorrador(negocioId);
-  if (borrador?.filas?.length >= 2) {
-    return borrador.filas.map((f) => ({
-      negocioId, nombre: f.nombre || '', adjunto_id: f.adjunto_id || '', adjunto: null,
-    }));
-  }
-  return [
-    { negocioId, nombre: '', adjunto_id: '', adjunto: null },
-    { negocioId, nombre: '', adjunto_id: '', adjunto: null },
-  ];
+  return (
+    <Card>
+      <CardContent className="flex flex-col gap-3 pt-5">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <Switch checked={seleccionado} onCheckedChange={onToggleSeleccion} />
+            <span className="text-xs text-muted-foreground">Elegir para comparar</span>
+          </div>
+          <button type="button" onClick={eliminar} className="text-muted-foreground hover:text-destructive">
+            <Trash2 className="h-4 w-4" />
+          </button>
+        </div>
+
+        <Input
+          key={`nombre-${proveedor.id}-${proveedor.nombre}`}
+          defaultValue={proveedor.nombre}
+          onBlur={(e) => { const v = e.target.value.trim(); if (v && v !== proveedor.nombre) patch({ nombre: v }); }}
+          placeholder="Nombre proveedor"
+        />
+        <Input
+          key={`contacto-${proveedor.id}-${proveedor.contacto || ''}`}
+          defaultValue={proveedor.contacto || ''}
+          onBlur={(e) => { if (e.target.value !== (proveedor.contacto || '')) patch({ contacto: e.target.value }); }}
+          placeholder="Contacto (telefono, email, etc)"
+        />
+        <textarea
+          key={`resumen-${proveedor.id}-${proveedor.resumen || ''}`}
+          defaultValue={proveedor.resumen || ''}
+          onBlur={(e) => { if (e.target.value !== (proveedor.resumen || '')) patch({ resumen: e.target.value }); }}
+          placeholder="Resumen / notas"
+          rows={2}
+          className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+        />
+
+        <div className="grid gap-3 sm:grid-cols-2">
+          <CampoTextoOArchivo
+            negocioId={negocioId}
+            proveedorId={proveedor.id}
+            campoTexto="presupuesto_texto"
+            campoAdjuntoId="presupuesto_adjunto_id"
+            textoValor={proveedor.presupuesto_texto}
+            adjunto={adjuntoDe(proveedor, 'presupuesto')}
+            label="Presupuesto"
+            placeholder="Precio, items, condiciones de pago..."
+            accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.txt"
+            onUpdated={onUpdated}
+          />
+          <CampoTextoOArchivo
+            negocioId={negocioId}
+            proveedorId={proveedor.id}
+            campoTexto="descripcion_texto"
+            campoAdjuntoId="descripcion_adjunto_id"
+            textoValor={proveedor.descripcion_texto}
+            adjunto={adjuntoDe(proveedor, 'descripcion')}
+            label="Descripcion tecnica"
+            placeholder="Especificaciones, ficha tecnica..."
+            accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.txt"
+            onUpdated={onUpdated}
+          />
+          <CampoArchivoSimple
+            negocioId={negocioId}
+            proveedorId={proveedor.id}
+            campo="foto_adjunto_id"
+            adjunto={adjuntoDe(proveedor, 'foto')}
+            label="Foto"
+            accept="image/*"
+            onUpdated={onUpdated}
+          />
+          <CampoArchivoSimple
+            negocioId={negocioId}
+            proveedorId={proveedor.id}
+            campo="video_adjunto_id"
+            adjunto={adjuntoDe(proveedor, 'video')}
+            label="Video"
+            accept="video/*"
+            onUpdated={onUpdated}
+          />
+        </div>
+      </CardContent>
+    </Card>
+  );
 }
 
 function ComparadorTab({ negocioId }) {
-  const [adjuntos, setAdjuntos] = useState([]);
+  const [proveedores, setProveedores] = useState([]);
   const [comparativas, setComparativas] = useState([]);
-  const [titulo, setTitulo] = useState(() => cargarBorrador(negocioId)?.titulo || '');
-  const [filas, setFilas] = useState(() => filasIniciales(negocioId));
+  const [seleccionados, setSeleccionados] = useState([]);
+  const [titulo, setTitulo] = useState('');
+  const [nombreNuevo, setNombreNuevo] = useState('');
   const [comparando, setComparando] = useState(false);
   const [resultado, setResultado] = useState(null);
 
   const load = () => {
-    api.get(`/gestion/negocios/${negocioId}/adjuntos`).then(({ data }) => {
-      setAdjuntos(data);
-      // Si el borrador trae adjunto_id sin su objeto (recien restaurado
-      // despues de perder el estado), lo resolvemos contra la lista real.
-      setFilas((prev) => prev.map((f) => (
-        f.adjunto_id && !f.adjunto
-          ? { ...f, adjunto: data.find((a) => String(a.id) === String(f.adjunto_id)) || null }
-          : f
-      )));
-    }).catch(() => {});
+    api.get(`/gestion/negocios/${negocioId}/proveedores`).then(({ data }) => setProveedores(data)).catch(() => {});
     api.get(`/gestion/negocios/${negocioId}/comparativas`).then(({ data }) => setComparativas(data)).catch(() => {});
   };
   useEffect(() => { load(); }, [negocioId]);
-  useEffect(() => { guardarBorrador(negocioId, titulo, filas); }, [negocioId, titulo, filas]);
+
+  const agregarProveedor = async () => {
+    if (!nombreNuevo.trim()) return;
+    try {
+      const { data } = await api.post(`/gestion/negocios/${negocioId}/proveedores`, { nombre: nombreNuevo.trim() });
+      setProveedores((prev) => [...prev, data]);
+      setNombreNuevo('');
+    } catch {
+      toast.error('No se pudo agregar el proveedor.');
+    }
+  };
+
+  const actualizarProveedor = (actualizado) => {
+    setProveedores((prev) => prev.map((p) => (p.id === actualizado.id ? actualizado : p)));
+  };
+
+  const eliminarProveedor = (id) => {
+    setProveedores((prev) => prev.filter((p) => p.id !== id));
+    setSeleccionados((prev) => prev.filter((pid) => pid !== id));
+  };
+
+  const toggleSeleccion = (id) => {
+    setSeleccionados((prev) => {
+      if (prev.includes(id)) return prev.filter((pid) => pid !== id);
+      if (prev.length >= 3) {
+        toast.error('Maximo 3 proveedores por comparacion.');
+        return prev;
+      }
+      return [...prev, id];
+    });
+  };
 
   const comparar = async () => {
-    const proveedores = filas.filter((f) => f.nombre.trim() && f.adjunto_id);
-    if (!titulo.trim() || proveedores.length < 2) {
-      toast.error('Poné un titulo y elegi presupuesto + nombre para al menos 2 proveedores.');
+    if (!titulo.trim() || seleccionados.length < 2) {
+      toast.error('Poné un titulo y elegi 2 o 3 proveedores.');
       return;
     }
     setComparando(true);
     setResultado(null);
     try {
-      const { data } = await api.post(`/gestion/negocios/${negocioId}/comparar-presupuestos`, { titulo: titulo.trim(), proveedores });
+      const { data } = await api.post(`/gestion/negocios/${negocioId}/comparar-presupuestos`, {
+        titulo: titulo.trim(),
+        proveedor_ids: seleccionados,
+      });
       setResultado(data.resultado);
       setTitulo('');
-      setFilas([
-        { negocioId, nombre: '', adjunto_id: '', adjunto: null },
-        { negocioId, nombre: '', adjunto_id: '', adjunto: null },
-      ]);
+      setSeleccionados([]);
       load();
     } catch (err) {
       toast.error(err.response?.data?.error || 'No se pudo comparar los presupuestos.');
@@ -442,22 +581,37 @@ function ComparadorTab({ negocioId }) {
   return (
     <div className="flex flex-col gap-4">
       <Card>
-        <CardHeader><CardTitle className="text-base">Comparar presupuestos (2-3 proveedores)</CardTitle></CardHeader>
+        <CardHeader><CardTitle className="text-base">Proveedores</CardTitle></CardHeader>
         <CardContent className="flex flex-col gap-3">
-          <Input placeholder="Titulo (ej: Presupuesto cargadores edificio X)" value={titulo} onChange={(e) => setTitulo(e.target.value)} />
-          {filas.map((f, i) => (
-            <FilaProveedor
-              key={i}
-              fila={f}
-              onChange={(nueva) => setFilas((prev) => prev.map((p, j) => (j === i ? nueva : p)))}
-              onSubido={load}
+          {proveedores.length === 0 && <p className="text-sm text-muted-foreground">Sin proveedores cargados todavia.</p>}
+          {proveedores.map((p) => (
+            <ProveedorCard
+              key={p.id}
+              negocioId={negocioId}
+              proveedor={p}
+              seleccionado={seleccionados.includes(p.id)}
+              onToggleSeleccion={() => toggleSeleccion(p.id)}
+              onUpdated={actualizarProveedor}
+              onEliminado={eliminarProveedor}
             />
           ))}
-          {filas.length < 3 && (
-            <Button size="sm" variant="outline" onClick={() => setFilas((p) => [...p, { negocioId, nombre: '', adjunto_id: '', adjunto: null }])}>
-              <Plus className="h-4 w-4" />Agregar proveedor
-            </Button>
-          )}
+          <div className="flex gap-2">
+            <Input
+              placeholder="Nombre del nuevo proveedor"
+              value={nombreNuevo}
+              onChange={(e) => setNombreNuevo(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && agregarProveedor()}
+            />
+            <Button variant="outline" onClick={agregarProveedor}><Plus className="h-4 w-4" />Agregar proveedor</Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader><CardTitle className="text-base">Comparar con IA</CardTitle></CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          <Input placeholder="Titulo (ej: Presupuesto cargadores edificio X)" value={titulo} onChange={(e) => setTitulo(e.target.value)} />
+          <p className="text-sm text-muted-foreground">{seleccionados.length} proveedor(es) elegido(s) arriba (2 o 3).</p>
           <Button onClick={comparar} disabled={comparando}><FileBarChart2 className="h-4 w-4" />{comparando ? 'Comparando...' : 'Comparar con IA'}</Button>
         </CardContent>
       </Card>
@@ -488,53 +642,33 @@ function ComparadorTab({ negocioId }) {
       {comparativas.length > 0 && (
         <Card>
           <CardHeader><CardTitle className="text-base">Comparativas anteriores</CardTitle></CardHeader>
-          <CardContent className="flex flex-col gap-2">
+          <CardContent className="flex flex-col gap-3">
             {comparativas.map((c) => (
-              <div key={c.id} className="rounded-lg border border-border p-2.5 text-sm">
+              <div key={c.id} className="rounded-lg border border-border p-3 text-sm">
                 <button type="button" onClick={() => setResultado(c.resultado)} className="w-full text-left hover:underline">
                   <p className="font-medium">{c.titulo}</p>
                   <p className="text-xs text-muted-foreground">{formatFechaHora(c.creado_en)}</p>
                 </button>
-                <div className="mt-1.5 grid gap-1.5 sm:grid-cols-2">
-                  {(c.proveedores || []).map((p, i) => {
-                    const adjunto = adjuntos.find((a) => String(a.id) === String(p.adjunto_id));
-                    return adjunto ? (
-                      <div key={i} className="flex flex-col gap-1">
-                        <span className="text-xs font-medium text-muted-foreground">{p.nombre}</span>
-                        <AdjuntoRow adjunto={adjunto} />
-                      </div>
-                    ) : (
-                      <span key={i} className="text-xs text-muted-foreground">{p.nombre} (archivo eliminado)</span>
-                    );
-                  })}
+                <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                  {(c.proveedores || []).map((p, i) => (
+                    <div key={i} className="flex flex-col gap-1 rounded-md bg-muted/30 p-2">
+                      <span className="text-xs font-medium">{p.nombre}{p.contacto ? ` - ${p.contacto}` : ''}</span>
+                      {p.resumen && <span className="text-xs text-muted-foreground">{p.resumen}</span>}
+                      {p.presupuesto_adjunto && <AdjuntoRow adjunto={p.presupuesto_adjunto} />}
+                      {!p.presupuesto_adjunto && p.presupuesto_texto && <p className="text-xs">{p.presupuesto_texto}</p>}
+                      {p.descripcion_adjunto && <AdjuntoRow adjunto={p.descripcion_adjunto} />}
+                      {!p.descripcion_adjunto && p.descripcion_texto && <p className="text-xs">{p.descripcion_texto}</p>}
+                      {p.foto_adjunto && <AdjuntoRow adjunto={p.foto_adjunto} />}
+                      {p.video_adjunto && <AdjuntoRow adjunto={p.video_adjunto} />}
+                      {!p.proveedor_id && <span className="text-xs text-muted-foreground">(comparativa antigua)</span>}
+                    </div>
+                  ))}
                 </div>
               </div>
             ))}
           </CardContent>
         </Card>
       )}
-
-      <Card>
-        <CardHeader><CardTitle className="text-base">Todos los archivos del negocio</CardTitle></CardHeader>
-        <CardContent className="flex flex-col gap-3">
-          <SubirAdjunto negocioId={negocioId} onSubido={() => load()} />
-          {adjuntos.length === 0 && <p className="text-sm text-muted-foreground">Sin archivos todavia.</p>}
-          <div className="flex flex-col gap-1.5">
-            {adjuntos.map((a) => (
-              <AdjuntoRow key={a.id} adjunto={a} onQuitar={async () => {
-                if (!window.confirm(`¿Borrar "${a.nombre_original}"?`)) return;
-                try {
-                  await api.delete(`/gestion/adjuntos/${a.id}`);
-                  load();
-                } catch {
-                  toast.error('No se pudo borrar el archivo.');
-                }
-              }}
-              />
-            ))}
-          </div>
-        </CardContent>
-      </Card>
     </div>
   );
 }
