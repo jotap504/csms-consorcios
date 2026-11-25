@@ -239,52 +239,101 @@ function ChatTab({ negocioId }) {
   );
 }
 
+function FilaProveedor({ fila, onChange, adjuntos }) {
+  const fileRef = useRef(null);
+  const [pegarAbierto, setPegarAbierto] = useState(false);
+  const [textoPegado, setTextoPegado] = useState('');
+  const [subiendo, setSubiendo] = useState(false);
+
+  const adjunto = adjuntos.find((a) => String(a.id) === String(fila.adjunto_id));
+
+  const subirArchivo = async (file) => {
+    setSubiendo(true);
+    const form = new FormData();
+    form.append('archivos', file);
+    try {
+      const { data } = await api.post(`/gestion/negocios/${fila.negocioId}/adjuntos`, form);
+      onChange({ ...fila, adjunto_id: String(data[0].id) });
+      toast.success('Presupuesto subido.');
+    } catch {
+      toast.error('No se pudo subir el archivo.');
+    } finally {
+      setSubiendo(false);
+    }
+  };
+
+  const subir = async (e) => {
+    const file = e.target.files?.[0];
+    if (file) await subirArchivo(file);
+    if (fileRef.current) fileRef.current.value = '';
+  };
+
+  const guardarTextoPegado = async () => {
+    if (!textoPegado.trim()) return;
+    const archivo = new File([textoPegado], `presupuesto-${Date.now()}.txt`, { type: 'text/plain' });
+    await subirArchivo(archivo);
+    setTextoPegado('');
+    setPegarAbierto(false);
+  };
+
+  return (
+    <div className="flex flex-col gap-2 rounded-lg border border-border p-3">
+      <Input placeholder="Nombre proveedor" value={fila.nombre} onChange={(e) => onChange({ ...fila, nombre: e.target.value })} />
+      {adjunto ? (
+        <div className="flex items-center justify-between gap-2 rounded-md bg-muted/50 px-3 py-2 text-sm">
+          <a href={`${api.defaults.baseURL}/gestion/archivos/${adjunto.archivo_path}`} target="_blank" rel="noreferrer" className="flex items-center gap-2 text-accent underline">
+            <Paperclip className="h-3.5 w-3.5" />{adjunto.nombre_original}
+          </a>
+          <Button size="sm" variant="outline" onClick={() => onChange({ ...fila, adjunto_id: '' })}>Cambiar</Button>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <input ref={fileRef} type="file" onChange={subir} className="hidden" />
+            <Button size="sm" variant="outline" disabled={subiendo} onClick={() => fileRef.current?.click()}>
+              <Upload className="h-4 w-4" />{subiendo ? 'Subiendo...' : 'Subir archivo'}
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => setPegarAbierto((v) => !v)}>
+              <ClipboardPaste className="h-4 w-4" />Pegar texto
+            </Button>
+          </div>
+          {pegarAbierto && (
+            <div className="flex flex-col gap-2">
+              <textarea
+                autoFocus
+                placeholder="Pegá aca el presupuesto en texto plano..."
+                value={textoPegado}
+                onChange={(e) => setTextoPegado(e.target.value)}
+                rows={5}
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              />
+              <Button size="sm" disabled={subiendo || !textoPegado.trim()} onClick={guardarTextoPegado}>
+                {subiendo ? 'Guardando...' : 'Guardar presupuesto'}
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ComparadorTab({ negocioId }) {
   const [adjuntos, setAdjuntos] = useState([]);
   const [comparativas, setComparativas] = useState([]);
   const [titulo, setTitulo] = useState('');
-  const [filas, setFilas] = useState([{ nombre: '', adjunto_id: '' }, { nombre: '', adjunto_id: '' }]);
+  const [filas, setFilas] = useState([
+    { negocioId, nombre: '', adjunto_id: '' },
+    { negocioId, nombre: '', adjunto_id: '' },
+  ]);
   const [comparando, setComparando] = useState(false);
   const [resultado, setResultado] = useState(null);
-  const [pegarAbierto, setPegarAbierto] = useState(false);
-  const [textoPegado, setTextoPegado] = useState('');
-  const [guardandoTexto, setGuardandoTexto] = useState(false);
-  const fileRef = useRef(null);
 
   const load = () => {
     api.get(`/gestion/negocios/${negocioId}/adjuntos`).then(({ data }) => setAdjuntos(data)).catch(() => {});
     api.get(`/gestion/negocios/${negocioId}/comparativas`).then(({ data }) => setComparativas(data)).catch(() => {});
   };
   useEffect(() => { load(); }, [negocioId]);
-
-  const subirArchivos = async (files) => {
-    if (files.length === 0) return;
-    const form = new FormData();
-    files.forEach((f) => form.append('archivos', f));
-    try {
-      await api.post(`/gestion/negocios/${negocioId}/adjuntos`, form);
-      toast.success('Archivo(s) subido(s).');
-      load();
-    } catch {
-      toast.error('No se pudo subir el archivo.');
-    }
-  };
-
-  const subir = async (e) => {
-    const files = Array.from(e.target.files || []);
-    await subirArchivos(files);
-    if (fileRef.current) fileRef.current.value = '';
-  };
-
-  const guardarTextoPegado = async () => {
-    if (!textoPegado.trim()) return;
-    setGuardandoTexto(true);
-    const archivo = new File([textoPegado], `presupuesto-${Date.now()}.txt`, { type: 'text/plain' });
-    await subirArchivos([archivo]);
-    setGuardandoTexto(false);
-    setTextoPegado('');
-    setPegarAbierto(false);
-  };
 
   const comparar = async () => {
     const proveedores = filas.filter((f) => f.nombre.trim() && f.adjunto_id);
@@ -305,65 +354,22 @@ function ComparadorTab({ negocioId }) {
     }
   };
 
-  const presupuestos = adjuntos.filter((a) => ['pdf', 'imagen', 'documento'].includes(a.tipo));
-
   return (
     <div className="flex flex-col gap-4">
-      <Card>
-        <CardHeader><CardTitle className="text-base">Archivos</CardTitle></CardHeader>
-        <CardContent className="flex flex-col gap-3">
-          <div className="flex flex-wrap items-center gap-2">
-            <input ref={fileRef} type="file" multiple onChange={subir} className="hidden" />
-            <Button size="sm" variant="outline" onClick={() => fileRef.current?.click()}>
-              <Upload className="h-4 w-4" />Subir archivo
-            </Button>
-            <Button size="sm" variant="outline" onClick={() => setPegarAbierto((v) => !v)}>
-              <ClipboardPaste className="h-4 w-4" />Pegar texto
-            </Button>
-          </div>
-          {pegarAbierto && (
-            <div className="flex flex-col gap-2">
-              <textarea
-                autoFocus
-                placeholder="Pegá aca el presupuesto en texto plano..."
-                value={textoPegado}
-                onChange={(e) => setTextoPegado(e.target.value)}
-                rows={6}
-                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-              />
-              <Button size="sm" onClick={guardarTextoPegado} disabled={guardandoTexto || !textoPegado.trim()}>
-                {guardandoTexto ? 'Guardando...' : 'Guardar como adjunto'}
-              </Button>
-            </div>
-          )}
-          <div className="flex flex-col gap-1.5">
-            {adjuntos.map((a) => (
-              <a key={a.id} href={`${api.defaults.baseURL}/gestion/archivos/${a.archivo_path}`} target="_blank" rel="noreferrer" className="flex items-center gap-2 text-sm text-accent underline">
-                <Paperclip className="h-3.5 w-3.5" />{a.nombre_original}
-                <Badge variant="muted">{a.tipo}</Badge>
-              </a>
-            ))}
-          </div>
-        </CardContent>
-      </Card>
-
       <Card>
         <CardHeader><CardTitle className="text-base">Comparar presupuestos (2-3 proveedores)</CardTitle></CardHeader>
         <CardContent className="flex flex-col gap-3">
           <Input placeholder="Titulo (ej: Presupuesto cargadores edificio X)" value={titulo} onChange={(e) => setTitulo(e.target.value)} />
           {filas.map((f, i) => (
-            <div key={i} className="flex gap-2">
-              <Input placeholder="Nombre proveedor" value={f.nombre} onChange={(e) => setFilas((prev) => prev.map((p, j) => (j === i ? { ...p, nombre: e.target.value } : p)))} />
-              <Select value={f.adjunto_id} onValueChange={(v) => setFilas((prev) => prev.map((p, j) => (j === i ? { ...p, adjunto_id: v } : p)))}>
-                <SelectTrigger className="w-64"><SelectValue placeholder="Presupuesto subido" /></SelectTrigger>
-                <SelectContent>
-                  {presupuestos.map((a) => <SelectItem key={a.id} value={String(a.id)}>{a.nombre_original}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
+            <FilaProveedor
+              key={i}
+              fila={f}
+              adjuntos={adjuntos}
+              onChange={(nueva) => setFilas((prev) => prev.map((p, j) => (j === i ? nueva : p)))}
+            />
           ))}
           {filas.length < 3 && (
-            <Button size="sm" variant="outline" onClick={() => setFilas((p) => [...p, { nombre: '', adjunto_id: '' }])}>
+            <Button size="sm" variant="outline" onClick={() => setFilas((p) => [...p, { negocioId, nombre: '', adjunto_id: '' }])}>
               <Plus className="h-4 w-4" />Agregar proveedor
             </Button>
           )}
@@ -399,10 +405,24 @@ function ComparadorTab({ negocioId }) {
           <CardHeader><CardTitle className="text-base">Comparativas anteriores</CardTitle></CardHeader>
           <CardContent className="flex flex-col gap-2">
             {comparativas.map((c) => (
-              <button key={c.id} type="button" onClick={() => setResultado(c.resultado)} className="rounded-lg border border-border p-2.5 text-left text-sm hover:bg-muted">
-                <p className="font-medium">{c.titulo}</p>
-                <p className="text-xs text-muted-foreground">{formatFechaHora(c.creado_en)}</p>
-              </button>
+              <div key={c.id} className="rounded-lg border border-border p-2.5 text-sm">
+                <button type="button" onClick={() => setResultado(c.resultado)} className="w-full text-left hover:underline">
+                  <p className="font-medium">{c.titulo}</p>
+                  <p className="text-xs text-muted-foreground">{formatFechaHora(c.creado_en)}</p>
+                </button>
+                <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1">
+                  {(c.proveedores || []).map((p, i) => {
+                    const adjunto = adjuntos.find((a) => String(a.id) === String(p.adjunto_id));
+                    return adjunto ? (
+                      <a key={i} href={`${api.defaults.baseURL}/gestion/archivos/${adjunto.archivo_path}`} target="_blank" rel="noreferrer" className="flex items-center gap-1 text-xs text-accent underline">
+                        <Paperclip className="h-3 w-3" />{p.nombre}
+                      </a>
+                    ) : (
+                      <span key={i} className="text-xs text-muted-foreground">{p.nombre}</span>
+                    );
+                  })}
+                </div>
+              </div>
             ))}
           </CardContent>
         </Card>
