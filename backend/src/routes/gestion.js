@@ -126,10 +126,19 @@ Decidi si es una TAREA con fecha/hora concreta (reunion, llamado, vencimiento) o
 async function interpretarYGuardarMensajeTelegram({ chatId, usuario, message, text }) {
   const { rows: negocios } = await pool.query('SELECT id, nombre FROM gestion_negocios WHERE activo = TRUE ORDER BY orden');
 
+  // Pedido explicito de tarea ("agregar tarea en Wallbox: reclamar muestra" /
+  // "tarea en Wallbox: ...") - el usuario ya dijo que es una tarea, no hace
+  // falta que la IA lo adivine ni que tenga fecha concreta.
+  const matchTareaExplicita = text.match(/^(?:agregar\s+)?tarea\s+en\s+([^:]{2,40}):\s*([\s\S]*)$/i);
   const match = text.match(/^([^:]{2,40}):\s*([\s\S]*)$/);
   let negocioExplicito = null;
   let contenido = text;
-  if (match) {
+  let tareaForzada = false;
+  if (matchTareaExplicita) {
+    negocioExplicito = negocios.find((n) => n.nombre.toLowerCase() === matchTareaExplicita[1].trim().toLowerCase());
+    contenido = matchTareaExplicita[2].trim();
+    tareaForzada = true;
+  } else if (match) {
     const candidato = negocios.find((n) => n.nombre.toLowerCase() === match[1].trim().toLowerCase());
     if (candidato) { negocioExplicito = candidato; contenido = match[2].trim(); }
   }
@@ -140,6 +149,10 @@ async function interpretarYGuardarMensajeTelegram({ chatId, usuario, message, te
       console.error('[telegram] Error clasificando con IA:', err.message);
       return null;
     });
+  } else if (tareaForzada && process.env.OPENROUTER_API_KEY && contenido) {
+    // Negocio ya resuelto por nombre - igual le preguntamos a la IA solo
+    // para que intente sacar una fecha/hora si el texto trae una.
+    clasificacion = await clasificarMensajeConIA(contenido, negocios).catch(() => null);
   }
 
   const destino = negocioExplicito
@@ -153,21 +166,27 @@ async function interpretarYGuardarMensajeTelegram({ chatId, usuario, message, te
     console.error('[telegram] Error descargando adjunto de Telegram:', err.message);
   }
 
-  if (clasificacion?.tipo === 'tarea' && clasificacion.vence_en) {
-    const avisoMin = clasificacion.aviso_previo_minutos || 60;
+  if (tareaForzada || (clasificacion?.tipo === 'tarea' && clasificacion.vence_en)) {
+    const avisoMin = clasificacion?.aviso_previo_minutos || 60;
+    const venceEn = clasificacion?.vence_en || null;
+    const titulo = clasificacion?.titulo || contenido || '(sin titulo)';
     const { rows } = await pool.query(
       `INSERT INTO gestion_tareas
          (negocio_id, titulo, creado_por_usuario_id, creado_por_nombre, asignado_a_usuario_id, asignado_a_nombre, vence_en, aviso_previo_minutos)
          VALUES ($1, $2, $3, $4, $3, $4, $5, $6) RETURNING *`,
-      [destino.id, clasificacion.titulo || contenido, usuario.id, usuario.nombre, clasificacion.vence_en, avisoMin],
+      [destino.id, titulo, usuario.id, usuario.nombre, venceEn, avisoMin],
     );
     await registrarLog({
       negocioId: destino.id, entidadTipo: 'tarea', entidadId: rows[0].id, accion: 'creada', detalle: `via Telegram: ${rows[0].titulo}`, usuario,
     });
-    const fecha = new Intl.DateTimeFormat('es-AR', {
-      timeZone: 'America/Argentina/Buenos_Aires', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit',
-    }).format(new Date(clasificacion.vence_en));
-    await enviarMensajeTelegram(chatId, `Agendado en ${destino.nombre}: ${rows[0].titulo} - ${fecha}hs. Te aviso ${avisoMin} min antes.`);
+    if (venceEn) {
+      const fecha = new Intl.DateTimeFormat('es-AR', {
+        timeZone: 'America/Argentina/Buenos_Aires', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit',
+      }).format(new Date(venceEn));
+      await enviarMensajeTelegram(chatId, `Agendado en ${destino.nombre}: ${rows[0].titulo} - ${fecha}hs. Te aviso ${avisoMin} min antes.`);
+    } else {
+      await enviarMensajeTelegram(chatId, `Tarea creada en ${destino.nombre}: ${rows[0].titulo}`);
+    }
     return;
   }
 
