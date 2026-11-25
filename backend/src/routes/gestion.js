@@ -369,6 +369,20 @@ router.patch('/negocios/:id', async (req, res) => {
 
 // --- Tareas ---
 
+// Tareas de todos los negocios juntas, para el dashboard de Organizacion -
+// asi el usuario ve lo que se viene sin entrar negocio por negocio.
+router.get('/tareas', async (_req, res) => {
+  const { rows } = await pool.query(
+    `SELECT t.*, n.nombre AS negocio_nombre
+       FROM gestion_tareas t
+       JOIN gestion_negocios n ON n.id = t.negocio_id
+       WHERE t.estado != 'hecho' AND n.activo = TRUE
+       ORDER BY t.vence_en IS NULL, t.vence_en, t.creado_en DESC
+       LIMIT 50`,
+  );
+  res.json(rows);
+});
+
 router.get('/negocios/:id/tareas', async (req, res) => {
   const { estado } = req.query;
   const params = [req.params.id];

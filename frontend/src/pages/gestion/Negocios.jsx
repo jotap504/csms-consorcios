@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, Boxes, Send } from 'lucide-react';
+import {
+  Plus, Boxes, Send, Check,
+} from 'lucide-react';
 import { api } from '@/lib/api';
 import { toast } from '@/lib/toast';
 import AdminLayout from '@/components/AdminLayout';
@@ -9,6 +11,53 @@ import {
   Dialog, DialogTrigger, DialogContent, DialogHeader, DialogTitle, DialogDescription, Input, Label,
 } from '@/components/ui';
 import { SUPERADMIN_NAV } from '../superadmin/navConfig';
+
+function TareasProximas({ tareas, onMarcarHecha, onIrA }) {
+  if (tareas.length === 0) return null;
+  const ahora = new Date();
+  const hoyTexto = ahora.toDateString();
+  return (
+    <Card className="mb-4">
+      <CardHeader>
+        <CardTitle>Tareas</CardTitle>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-1.5">
+        {tareas.map((t) => {
+          const vence = t.vence_en ? new Date(t.vence_en) : null;
+          const vencida = vence && vence < ahora;
+          const esHoy = vence && vence.toDateString() === hoyTexto;
+          return (
+            <div key={t.id} className="flex items-center gap-2 rounded-lg border border-border px-3 py-2">
+              <button
+                type="button"
+                title="Marcar hecha"
+                onClick={() => onMarcarHecha(t.id)}
+                className="shrink-0 rounded-full border border-border p-1 text-muted-foreground transition-colors hover:border-accent hover:text-accent"
+              >
+                <Check className="h-3.5 w-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => onIrA(t.negocio_id)}
+                className="flex flex-1 flex-wrap items-center justify-between gap-2 text-left"
+              >
+                <span className="text-sm">{t.titulo}</span>
+                <span className="flex items-center gap-2">
+                  <Badge variant="muted">{t.negocio_nombre}</Badge>
+                  {vence && (
+                    <Badge variant={vencida ? 'destructive' : esHoy ? 'accent' : 'default'}>
+                      {vencida ? 'Vencida' : esHoy ? 'Hoy' : new Intl.DateTimeFormat('es-AR', { day: '2-digit', month: '2-digit' }).format(vence)}
+                    </Badge>
+                  )}
+                </span>
+              </button>
+            </div>
+          );
+        })}
+      </CardContent>
+    </Card>
+  );
+}
 
 function VincularTelegramDialog() {
   const [open, setOpen] = useState(false);
@@ -52,6 +101,7 @@ function VincularTelegramDialog() {
 export default function Negocios() {
   const navigate = useNavigate();
   const [negocios, setNegocios] = useState([]);
+  const [tareas, setTareas] = useState([]);
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(false);
   const [nombre, setNombre] = useState('');
@@ -63,9 +113,23 @@ export default function Negocios() {
       .then(({ data }) => setNegocios(data))
       .catch(() => toast.error('No se pudieron cargar los negocios.'))
       .finally(() => setLoading(false));
+    api.get('/gestion/tareas')
+      .then(({ data }) => setTareas(data.filter((t) => t.vence_en)))
+      .catch(() => {});
   };
 
   useEffect(() => { load(); }, []);
+
+  const marcarHecha = async (tareaId) => {
+    setTareas((prev) => prev.filter((t) => t.id !== tareaId));
+    try {
+      await api.patch(`/gestion/tareas/${tareaId}`, { estado: 'hecho' });
+      load();
+    } catch {
+      toast.error('No se pudo marcar la tarea como hecha.');
+      load();
+    }
+  };
 
   const crear = async (e) => {
     e.preventDefault();
@@ -86,6 +150,7 @@ export default function Negocios() {
 
   return (
     <AdminLayout title="Organizacion" navItems={SUPERADMIN_NAV}>
+      <TareasProximas tareas={tareas} onMarcarHecha={marcarHecha} onIrA={(negocioId) => navigate(`/gestion/${negocioId}`)} />
       <Card>
         <CardHeader className="flex-row flex-wrap items-center justify-between gap-3">
           <CardTitle>Negocios</CardTitle>
