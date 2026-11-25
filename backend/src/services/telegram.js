@@ -10,13 +10,13 @@ function telegramConfigurado() {
   return Boolean(TELEGRAM_BOT_TOKEN);
 }
 
-async function enviarMensajeTelegram(chatId, text) {
+async function enviarMensajeTelegram(chatId, text, replyMarkup) {
   if (!telegramConfigurado()) return;
   try {
     await fetch(`${API_BASE()}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text }),
+      body: JSON.stringify({ chat_id: chatId, text, ...(replyMarkup ? { reply_markup: replyMarkup } : {}) }),
     });
   } catch (err) {
     console.error('[telegram] Error mandando mensaje:', err.message);

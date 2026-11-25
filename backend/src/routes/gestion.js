@@ -123,7 +123,9 @@ Decidi si es una TAREA con fecha/hora concreta (reunion, llamado, vencimiento) o
   return JSON.parse(texto);
 }
 
-async function interpretarYGuardarMensajeTelegram({ chatId, usuario, message, text }) {
+async function interpretarYGuardarMensajeTelegram({
+  chatId, usuario, message, text, negocioActivoId,
+}) {
   const { rows: negocios } = await pool.query('SELECT id, nombre FROM gestion_negocios WHERE activo = TRUE ORDER BY orden');
 
   // Pedido explicito de tarea ("agregar tarea en Wallbox: reclamar muestra" /
@@ -156,6 +158,7 @@ async function interpretarYGuardarMensajeTelegram({ chatId, usuario, message, te
   }
 
   const destino = negocioExplicito
+    || (negocioActivoId && negocios.find((n) => n.id === negocioActivoId))
     || negocios.find((n) => n.nombre.toLowerCase() === (clasificacion?.negocio || '').toLowerCase())
     || await negocioPorDefecto(negocios);
 
@@ -221,17 +224,52 @@ async function procesarUpdateTelegram(update) {
     await pool.query('INSERT INTO telegram_vinculos (usuario_id, chat_id) VALUES ($1, $2)', [rows[0].usuario_id, chatId]);
     await pool.query('DELETE FROM telegram_codigos WHERE codigo = $1', [codigo.toUpperCase()]);
     const usuario = await usuarioPorId(rows[0].usuario_id);
-    await enviarMensajeTelegram(chatId, `Listo, vinculado como ${usuario.nombre}. Ya podes escribirme (ej. "Wallbox: che tengo un presupuesto nuevo" con el PDF adjunto, o "reunion con cliente 12/12 10hs").`);
+    await enviarMensajeTelegram(chatId, `Listo, vinculado como ${usuario.nombre}. Mandame /negocio para elegir a que negocio van tus mensajes (o escribi "Wallbox: che tengo un presupuesto nuevo" / "reunion con cliente 12/12 10hs" como antes).`);
     return;
   }
 
-  const vinculo = await pool.query('SELECT usuario_id FROM telegram_vinculos WHERE chat_id = $1', [chatId]);
+  const vinculo = await pool.query('SELECT usuario_id, negocio_activo_id FROM telegram_vinculos WHERE chat_id = $1', [chatId]);
   if (!vinculo.rows[0]) {
     await enviarMensajeTelegram(chatId, 'No te tengo vinculado. Entra al panel (Organizacion > Vincular Telegram) y mandame el codigo con /vincular <codigo>.');
     return;
   }
   const usuario = await usuarioPorId(vinculo.rows[0].usuario_id);
-  await interpretarYGuardarMensajeTelegram({ chatId, usuario, message, text });
+
+  // /negocio (sin argumento) manda un menu con botones para elegir; tocar
+  // uno (o escribir el nombre tal cual, por las dudas) fija el "negocio
+  // activo" del chat, que despues se usa como default en interpretarYGuardarMensajeTelegram.
+  if (/^\/negocio(\s|$)/i.test(text)) {
+    const { rows: negocios } = await pool.query('SELECT id, nombre FROM gestion_negocios WHERE activo = TRUE ORDER BY orden');
+    const argumento = text.replace(/^\/negocio/i, '').trim();
+    if (!argumento) {
+      await enviarMensajeTelegram(chatId, 'Elegi el negocio para tus proximos mensajes:', {
+        keyboard: negocios.map((n) => [{ text: n.nombre }]),
+        resize_keyboard: true,
+        one_time_keyboard: true,
+      });
+      return;
+    }
+    const elegido = negocios.find((n) => n.nombre.toLowerCase() === argumento.toLowerCase());
+    if (!elegido) {
+      await enviarMensajeTelegram(chatId, `No encontre "${argumento}". Negocios: ${negocios.map((n) => n.nombre).join(', ')}.`);
+      return;
+    }
+    await pool.query('UPDATE telegram_vinculos SET negocio_activo_id = $1 WHERE chat_id = $2', [elegido.id, chatId]);
+    await enviarMensajeTelegram(chatId, `Listo, tus mensajes van a ${elegido.nombre} hasta que cambies con /negocio.`, { remove_keyboard: true });
+    return;
+  }
+
+  const { rows: negociosActivos } = await pool.query('SELECT id, nombre FROM gestion_negocios WHERE activo = TRUE ORDER BY orden');
+  const negocioTocado = negociosActivos.find((n) => n.nombre.toLowerCase() === text.toLowerCase());
+  if (negocioTocado) {
+    await pool.query('UPDATE telegram_vinculos SET negocio_activo_id = $1 WHERE chat_id = $2', [negocioTocado.id, chatId]);
+    await enviarMensajeTelegram(chatId, `Listo, tus mensajes van a ${negocioTocado.nombre} hasta que cambies con /negocio.`, { remove_keyboard: true });
+    return;
+  }
+
+  await interpretarYGuardarMensajeTelegram({
+    chatId, usuario, message, text, negocioActivoId: vinculo.rows[0].negocio_activo_id,
+  });
 }
 
 // Publico (sin Bearer) a proposito - lo llama Telegram, no el navegador.
