@@ -348,22 +348,72 @@ function FilaProveedor({ fila, onChange, onSubido }) {
   );
 }
 
+// El borrador (titulo + nombre/adjunto_id de cada fila, nunca el archivo en
+// si, que ya quedo subido en el server) se guarda en sessionStorage - en el
+// celular, abrir el selector nativo de "Subir archivo" puede hacer que el
+// navegador descargue la pestaña en segundo plano y la recargue al volver,
+// perdiendo el estado de React aunque el archivo ya se haya subido bien.
+function draftKey(negocioId) {
+  return `gestion_comparador_draft_${negocioId}`;
+}
+
+function cargarBorrador(negocioId) {
+  try {
+    const raw = sessionStorage.getItem(draftKey(negocioId));
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function guardarBorrador(negocioId, titulo, filas) {
+  try {
+    sessionStorage.setItem(draftKey(negocioId), JSON.stringify({
+      titulo,
+      filas: filas.map((f) => ({ nombre: f.nombre, adjunto_id: f.adjunto_id })),
+    }));
+  } catch {
+    // sessionStorage lleno/bloqueado: el borrador simplemente no persiste.
+  }
+}
+
+function filasIniciales(negocioId) {
+  const borrador = cargarBorrador(negocioId);
+  if (borrador?.filas?.length >= 2) {
+    return borrador.filas.map((f) => ({
+      negocioId, nombre: f.nombre || '', adjunto_id: f.adjunto_id || '', adjunto: null,
+    }));
+  }
+  return [
+    { negocioId, nombre: '', adjunto_id: '', adjunto: null },
+    { negocioId, nombre: '', adjunto_id: '', adjunto: null },
+  ];
+}
+
 function ComparadorTab({ negocioId }) {
   const [adjuntos, setAdjuntos] = useState([]);
   const [comparativas, setComparativas] = useState([]);
-  const [titulo, setTitulo] = useState('');
-  const [filas, setFilas] = useState([
-    { negocioId, nombre: '', adjunto_id: '', adjunto: null },
-    { negocioId, nombre: '', adjunto_id: '', adjunto: null },
-  ]);
+  const [titulo, setTitulo] = useState(() => cargarBorrador(negocioId)?.titulo || '');
+  const [filas, setFilas] = useState(() => filasIniciales(negocioId));
   const [comparando, setComparando] = useState(false);
   const [resultado, setResultado] = useState(null);
 
   const load = () => {
-    api.get(`/gestion/negocios/${negocioId}/adjuntos`).then(({ data }) => setAdjuntos(data)).catch(() => {});
+    api.get(`/gestion/negocios/${negocioId}/adjuntos`).then(({ data }) => {
+      setAdjuntos(data);
+      // Si el borrador trae adjunto_id sin su objeto (recien restaurado
+      // despues de perder el estado), lo resolvemos contra la lista real.
+      setFilas((prev) => prev.map((f) => (
+        f.adjunto_id && !f.adjunto
+          ? { ...f, adjunto: data.find((a) => String(a.id) === String(f.adjunto_id)) || null }
+          : f
+      )));
+    }).catch(() => {});
     api.get(`/gestion/negocios/${negocioId}/comparativas`).then(({ data }) => setComparativas(data)).catch(() => {});
   };
   useEffect(() => { load(); }, [negocioId]);
+  useEffect(() => { guardarBorrador(negocioId, titulo, filas); }, [negocioId, titulo, filas]);
 
   const comparar = async () => {
     const proveedores = filas.filter((f) => f.nombre.trim() && f.adjunto_id);
@@ -376,6 +426,11 @@ function ComparadorTab({ negocioId }) {
     try {
       const { data } = await api.post(`/gestion/negocios/${negocioId}/comparar-presupuestos`, { titulo: titulo.trim(), proveedores });
       setResultado(data.resultado);
+      setTitulo('');
+      setFilas([
+        { negocioId, nombre: '', adjunto_id: '', adjunto: null },
+        { negocioId, nombre: '', adjunto_id: '', adjunto: null },
+      ]);
       load();
     } catch (err) {
       toast.error(err.response?.data?.error || 'No se pudo comparar los presupuestos.');
